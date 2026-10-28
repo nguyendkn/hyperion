@@ -33,9 +33,10 @@ tasks:
       - "{{.CARGO}} check --workspace --all-targets"
 
   test:
-    desc: Run Rust unit tests
+    desc: Run Rust tests plus the manifest schema drift check
     cmds:
       - "{{.CARGO}} test --workspace"
+      - task: schema:check
 
   schema:gen:
     desc: Regenerate specification/schema/manifest.v1.json from the Rust structs

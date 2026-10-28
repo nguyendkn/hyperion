@@ -52,6 +52,10 @@
           "description": "Compute capability the package was compiled for, e.g. \"sm_90\". The\nruntime accepts the package only on hardware that reports exactly this.",
           "type": "string"
         },
+        "tensor_format": {
+          "description": "Weight packing format of the package. Together with `target_arch` this\nis what the runtime checks before loading (e.g. fp4 needs Blackwell).",
+          "$ref": "#/$defs/TensorFormat"
+        },
         "tokenizer": {
           "description": "Tokenizer configuration serialized alongside the weights.",
           "$ref": "#/$defs/TokenizerConfig",
@@ -66,12 +70,28 @@
         "manifest_version",
         "model_id",
         "target_arch",
+        "tensor_format",
         "model",
         "layers"
       ]
     }
   ],
   "$defs": {
+    "AttentionKind": {
+      "description": "How the attention layers lay out their KV cache. Decides the geometry that\n`num_kv_heads` and `head_dim` describe; a variant with a different cache\nshape (e.g. latent attention) is added here, never guessed from the dims.",
+      "oneOf": [
+        {
+          "description": "Multi-head: `num_kv_heads == num_attention_heads`.",
+          "type": "string",
+          "const": "mha"
+        },
+        {
+          "description": "Grouped-query: `num_kv_heads < num_attention_heads`, divides it evenly.",
+          "type": "string",
+          "const": "gqa"
+        }
+      ]
+    },
     "LayerMapping": {
       "description": "Maps one transformer layer to its weight tensor(s) inside the package blob.\nByte offsets let the loader mmap the blob and slice without copying.",
       "type": "object",
@@ -116,6 +136,10 @@
       "description": "Architecture dimensions of the compiled model. All fields are required: a\nmanifest that cannot say how big its KV cache and vocabulary are is not\nloadable.",
       "type": "object",
       "properties": {
+        "attention": {
+          "description": "KV cache layout; see [`AttentionKind`].",
+          "$ref": "#/$defs/AttentionKind"
+        },
         "head_dim": {
           "description": "Dimension of one attention head.",
           "type": "integer",
@@ -156,11 +180,21 @@
       "additionalProperties": false,
       "required": [
         "num_layers",
+        "attention",
         "num_attention_heads",
         "num_kv_heads",
         "head_dim",
         "vocab_size",
         "max_seq_len"
+      ]
+    },
+    "TensorFormat": {
+      "description": "Weight packing format of a package. Per-tensor dtypes live in\n[`TensorMetadata`]; this is the package-level format the recipe selected.",
+      "type": "string",
+      "enum": [
+        "bf16",
+        "fp8",
+        "fp4"
       ]
     },
     "TensorMetadata": {

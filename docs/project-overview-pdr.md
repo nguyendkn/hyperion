@@ -79,9 +79,9 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 | Decision | Code state |
 |---|---|
 | Triage: exact `target_arch` match only. Ignition compiles per target. PTX fallback, if ever, is an explicit manifest field | **Decided, code pending.** `triage.rs` still allows `Downgrade` when `target < actual`. Also `lib.rs` docs still describe forward-compat |
-| Manifest records `target_arch` and `tensor_format` | `target_arch` yes. `tensor_format` absent from `v1::Manifest` |
+| Manifest records `target_arch` and `tensor_format` | Both present in `v1::Manifest`. Runtime check of arch vs format (fp4 only on Blackwell) is not implemented yet |
 | `ModelConfig` (num_layers, num_kv_heads, head_dim, vocab_size, max_seq_len) in manifest; backends read it | **Manifest done (P0b).** Backends still hard-code dims |
-| Rust structs are schema source of truth; JSON Schema via `schemars`; Ignition validates; Rust/Python round-trip test | **Done (P0b).** Schema generated and committed, drift test, `jsonschema` validation, shared fixtures. `tensor_format` still absent |
+| Rust structs are schema source of truth; JSON Schema via `schemars`; Ignition validates; Rust/Python round-trip test | **Done (P0b).** Schema generated and committed, drift test, `jsonschema` validation, shared fixtures. `tensor_format` and `attention` added |
 | `specification/v1` immutable at first released package | Pre-release: still mutable |
 | `.hyperion` codec is a dedicated crate `helios-pkg` | Not created. `.manifest.json` sidecar placeholder in use |
 | HTTP: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` engine states | Handler also returns 503 for `Draining`, queue-closed, queue-full, and no-scheduler. Decision text and code disagree on `Draining` and scheduler errors |
@@ -132,7 +132,7 @@ Each is a code-reading finding. None was reproduced by running the code.
 8. **SM90 `build.rs` linkage is commented out.** `sm90` feature compiles, but every method returns "not wired". `Taskfile.yml` says "requires TensorRT-LLM + CUDA".
 9. **SM121 unresolved.** Exact-match triage treats `sm_121` and `sm_120` as different. Whether a SM120 package may run on SM121 is not decided.
 10. **Ignition writes no weights and no signature.** `cli.py` has TODOs. `layers` is always `[]`.
-11. **`tensor_format` absent** from manifest (`ModelConfig` was added in P0b; see §6).
+11. ~~`tensor_format` absent~~ Resolved: in v1 with `attention` kind; the loader does not check it yet.
 12. **Taskfile `build:sm120` comment** mentions NVRTC. No NVRTC code exists.
 
 ## 10. Requirement change history
@@ -144,7 +144,7 @@ Each is a code-reading finding. None was reproduced by running the code.
 ## Unresolved questions
 
 1. Does SM120 package run on SM121 device under exact match, or does SM121 need its own build? (CLAUDE.md lists both; no rule.)
-2. Is `tensor_format` a new manifest field in `v1` (pre-release, allowed) or does it wait for `v2`?
+2. ~~`tensor_format` in v1?~~ Resolved: yes, v1 is pre-release.
 3. ~~Manifest tag format~~ Resolved: string `"V1"`.
 4. ~~Schema generation~~ Resolved: `schemars` behind feature `schema`; file committed at `specification/schema/manifest.v1.json`.
 5. Streaming (FR-12) in scope for first public release, or after M4?

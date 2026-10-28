@@ -34,6 +34,7 @@ class CompiledManifest:
 
     model_id: str
     target_arch: str
+    tensor_format: str
     model: ModelConfig
     tokenizer: dict[str, Any]
     layers: list[LayerMap] = field(default_factory=list)
@@ -46,6 +47,7 @@ class CompiledManifest:
             "manifest_version": "V1",
             "model_id": self.model_id,
             "target_arch": self.target_arch,
+            "tensor_format": self.tensor_format,
             "model": self.model.to_json_dict(),
             "tokenizer": self.tokenizer,
             "layers": [

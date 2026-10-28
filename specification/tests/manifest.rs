@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use hyperion_specification::v1::{LayerMapping, Manifest as ManifestV1, ModelConfig, TensorMetadata, TokenizerConfig};
+use hyperion_specification::v1::{
+    AttentionKind, LayerMapping, Manifest as ManifestV1, ModelConfig, TensorFormat, TensorMetadata, TokenizerConfig,
+};
 use hyperion_specification::Manifest;
 use serde_json::{json, Value};
 
@@ -22,7 +24,9 @@ fn sample() -> Manifest {
     Manifest::V1(ManifestV1 {
         model_id: "llama3".into(),
         target_arch: "sm_120".into(),
+        tensor_format: TensorFormat::Fp4,
         model: ModelConfig {
+            attention: AttentionKind::Gqa,
             num_layers: 32,
             num_attention_heads: 32,
             num_kv_heads: 8,

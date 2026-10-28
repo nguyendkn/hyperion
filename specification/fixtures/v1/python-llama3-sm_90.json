@@ -2,8 +2,10 @@
   "manifest_version": "V1",
   "model_id": "llama3",
   "target_arch": "sm_90",
+  "tensor_format": "fp8",
   "model": {
     "num_layers": 32,
+    "attention": "gqa",
     "num_attention_heads": 32,
     "num_kv_heads": 8,
     "head_dim": 128,

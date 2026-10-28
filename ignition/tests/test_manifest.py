@@ -53,7 +53,8 @@ def test_golden_fixtures_shared_with_rust():
     with_layer = CompiledManifest(
         model_id="llama3",
         target_arch="sm_120",
-        model=ModelConfig(32, 32, 8, 128, 128256, 8192),
+        tensor_format="fp4",
+        model=ModelConfig(32, "gqa", 32, 8, 128, 128256, 8192),
         tokenizer={"family": "bpe", "asset_path": "tokenizer.json"},
         layers=[LayerMap(0, "attention.q_proj", 0, 33554432, "bf16", (4096, 4096))],
         hardware_recipe={"fp4": "enabled"},
@@ -81,6 +82,9 @@ def test_tag_is_the_string_v1():
         lambda m: m.pop("model"),
         lambda m: m["model"].pop("vocab_size"),
         lambda m: m["model"].update(num_layers=-1),
+        lambda m: m.update(tensor_format="int3"),
+        lambda m: m.pop("tensor_format"),
+        lambda m: m["model"].update(attention="mla"),
     ],
 )
 def test_schema_rejects_invalid_manifests(mutate):
@@ -90,9 +94,40 @@ def test_schema_rejects_invalid_manifests(mutate):
         validate_manifest(document)
 
 
-def test_model_config_derived_from_hf_config():
-    cfg = model_config_from_hf(FIXTURES / "llama3-hf")
-    assert cfg == ModelConfig(32, 32, 8, 128, 128256, 8192)
+def test_model_config_derived_from_real_hf_configs():
+    # Values from the published config.json files (Meta-Llama-3-8B, Qwen2-7B).
+    assert model_config_from_hf(FIXTURES / "llama3-hf") == ModelConfig(32, "gqa", 32, 8, 128, 128256, 8192)
+    assert model_config_from_hf(FIXTURES / "qwen2-hf") == ModelConfig(28, "gqa", 28, 4, 128, 152064, 131072)
+
+
+def test_tensor_format_comes_from_the_recipe():
+    assert compile_manifest("llama3", "sm_90", "llama3-hf")["tensor_format"] == "fp8"
+    assert compile_manifest("llama3", "sm_120", "llama3-hf")["tensor_format"] == "fp4"
+
+
+def hf_config(tmp_path, **overrides):
+    cfg = {"hidden_size": 64, "num_hidden_layers": 2, "num_attention_heads": 4,
+           "vocab_size": 10, "max_position_embeddings": 16, **overrides}
+    (tmp_path / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+    return tmp_path
+
+
+def test_explicit_head_dim_wins_over_hidden_size_division(tmp_path):
+    assert model_config_from_hf(hf_config(tmp_path, head_dim=32)).head_dim == 32
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"rope_scaling": {"type": "linear", "factor": 4.0}},
+        {"use_sliding_window": True},
+        {"num_key_value_heads": 3},  # does not divide 4 heads
+        {"num_key_value_heads": 8},  # more kv heads than heads
+    ],
+)
+def test_unsupported_hf_configs_are_refused(tmp_path, overrides):
+    with pytest.raises(ValueError):
+        model_config_from_hf(hf_config(tmp_path, **overrides))
 
 
 def test_model_config_defaults_and_errors(tmp_path):
@@ -102,7 +137,7 @@ def test_model_config_defaults_and_errors(tmp_path):
         encoding="utf-8",
     )
     cfg = model_config_from_hf(tmp_path)
-    assert (cfg.num_kv_heads, cfg.head_dim) == (4, 16)  # MHA default, hidden // heads
+    assert (cfg.attention, cfg.num_kv_heads, cfg.head_dim) == ("mha", 4, 16)  # hidden // heads
 
     (tmp_path / "config.json").write_text(json.dumps({"num_attention_heads": 4}), encoding="utf-8")
     with pytest.raises(ValueError):

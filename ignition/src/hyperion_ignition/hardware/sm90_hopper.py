@@ -8,6 +8,7 @@ from .registry import register
 
 class Sm90HopperRecipe:
     target_arch = "sm_90"
+    tensor_format = "fp8"  # Hopper has no FP4
 
     def constraints(self) -> dict[str, str]:
         return {

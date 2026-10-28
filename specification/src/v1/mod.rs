@@ -30,6 +30,10 @@ pub struct Manifest {
     /// runtime accepts the package only on hardware that reports exactly this.
     pub target_arch: String,
 
+    /// Weight packing format of the package. Together with `target_arch` this
+    /// is what the runtime checks before loading (e.g. fp4 needs Blackwell).
+    pub tensor_format: TensorFormat,
+
     /// Model dimensions the runtime needs to size caches and buffers. Backends
     /// read these instead of hard-coding them.
     pub model: ModelConfig,
@@ -52,6 +56,30 @@ pub struct Manifest {
     pub signature: Option<Vec<u8>>,
 }
 
+/// Weight packing format of a package. Per-tensor dtypes live in
+/// [`TensorMetadata`]; this is the package-level format the recipe selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum TensorFormat {
+    Bf16,
+    Fp8,
+    Fp4,
+}
+
+/// How the attention layers lay out their KV cache. Decides the geometry that
+/// `num_kv_heads` and `head_dim` describe; a variant with a different cache
+/// shape (e.g. latent attention) is added here, never guessed from the dims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum AttentionKind {
+    /// Multi-head: `num_kv_heads == num_attention_heads`.
+    Mha,
+    /// Grouped-query: `num_kv_heads < num_attention_heads`, divides it evenly.
+    Gqa,
+}
+
 /// Architecture dimensions of the compiled model. All fields are required: a
 /// manifest that cannot say how big its KV cache and vocabulary are is not
 /// loadable.
@@ -61,6 +89,9 @@ pub struct Manifest {
 pub struct ModelConfig {
     /// Number of transformer layers.
     pub num_layers: u32,
+
+    /// KV cache layout; see [`AttentionKind`].
+    pub attention: AttentionKind,
 
     /// Number of attention (query) heads.
     pub num_attention_heads: u32,

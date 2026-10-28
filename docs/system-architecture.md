@@ -130,7 +130,7 @@ Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or 
 `specification/src/lib.rs`, `v1/mod.rs`. Rust structs are the schema source.
 
 - `enum Manifest { V1(v1::Manifest) }`, `#[serde(tag = "manifest_version")]` (wire tag `"V1"`), `LATEST = 1`.
-- v1 fields: `model_id`, `target_arch`, `model{num_layers, num_attention_heads, num_kv_heads, head_dim, vocab_size, max_seq_len}`, `tokenizer{family, asset_path}`, `layers[{index, name, byte_offset, byte_length, tensor{dtype, shape}}]`, `hardware_recipe` (k/v), `signature?` (bytes). All structs use `deny_unknown_fields`.
+- v1 fields: `model_id`, `target_arch`, `tensor_format` (`bf16|fp8|fp4`), `model{num_layers, attention (`mha|gqa`), num_attention_heads, num_kv_heads, head_dim, vocab_size, max_seq_len}`, `tokenizer{family, asset_path}`, `layers[{index, name, byte_offset, byte_length, tensor{dtype, shape}}]`, `hardware_recipe` (k/v), `signature?` (bytes). All structs use `deny_unknown_fields`.
 - [done] Tag mismatch fixed (P0b): both sides use `"V1"`; JSON Schema and shared fixtures guard it.
 - [partial] `ModelConfig` is in v1; sm120 still hard-codes dims until it reads the manifest.
 - [done] JSON Schema generated from the Rust structs (`schemars`, feature `schema`), committed at `specification/schema/manifest.v1.json`; Ignition validates with `jsonschema`; fixtures in `specification/fixtures/v1/` are parsed by both sides.

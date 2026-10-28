@@ -21,6 +21,7 @@ class LlamaCompiler:
         return CompiledManifest(
             model_id=self.model_id,
             target_arch=recipe.target_arch,
+            tensor_format=recipe.tensor_format,
             model=model_config_from_hf(source),
             tokenizer={"family": "bpe", "asset_path": "tokenizer.json"},
             layers=[],
