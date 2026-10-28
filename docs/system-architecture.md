@@ -158,7 +158,7 @@ flowchart LR
 ## 10. Build matrix
 
 - `cargo build --workspace` (stub): builds and tests pass (1 warning in `api.rs`).
-- `helios-hal --features sm120`: typecheck only on this host; link needs CUDA. `sm90`: compiles, most methods Err.
+- `helios-hal --features sm120` and `--features sm90`: type-check on this host; link + run verified on an H100 pod (CUDA toolkit needed to link).
 - `helios-cli --features sm90/sm120`: fails, helios-cli declares no features (Taskfile `build:sm90`/`build:sm120` broken).
 
 ## 11. Decided vs implemented (CLAUDE.md)

@@ -9,7 +9,7 @@ Sources: helios-core, helios-cli, helios-hal, specification and ignition read di
 ```
 specification/           shared manifest schema (Rust = source of truth)
 helios/crates/helios-core/   device-agnostic runtime: api, scheduler, state, tokenizer, cache
-helios/crates/helios-hal/    ComputeBackend trait, factory, triage, backends (stub, hopper_sm90, blackwell_sm120)
+helios/crates/helios-hal/    ComputeBackend trait, factory, triage, `cuda/` (shared CUDA Driver-API core), `weights_plan`, backends (stub, hopper_sm90, blackwell_sm120)
 helios/crates/helios-cli/    binary: manifest -> HAL probe -> triage -> engine state -> serve
 ignition/                    Python build-time compiler (package hyperion_ignition)
 ```
@@ -41,13 +41,13 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 | `src/backend_factory.rs` | `create_backend(target)`; `BackendKind` (cfg-gated); `instantiate()` per kind |
 | `src/backends/mod.rs` | cfg-gated module list |
 | `src/backends/stub.rs` | `StubBackend`: reports `sm_0`, returns placeholder Ok values |
-| `src/backends/hopper_sm90/` | `HopperBackend`: reports `sm_90` (hardcoded); all runtime methods return "not wired" errors |
+| `src/backends/hopper_sm90/` | `HopperBackend` on the shared `cuda/` core: real probe, real weight upload from `model.safetensors` beside the package; KV cache, kernels and forward pass return "not wired" errors |
 | `src/backends/blackwell_sm120/device.rs` | `CudaDevice`: `probe`, `alloc`, `free`, `teardown_ref` via cuda-driver-sys |
 | `.../blackwell_sm120/graph.rs` | `StaticCudaGraph`: begin/end capture, instantiate, launch, destroy |
 | `.../blackwell_sm120/kernels.rs` | `prefill_launch` (empty-graph capture + logits alloc), `decode_replay` (argmax over raw u16 lanes), `VOCAB_SIZE = 128_256` |
 | `.../blackwell_sm120/ffi.rs` | `eval_cuda`: `CUresult` -> `anyhow::Result` |
 | `.../blackwell_sm120/backend.rs` | `BlackwellBackend` (Mutex-guarded device + graph); `load_model_weights` returns error |
-| `build.rs` | sm90 link/bindgen block commented out; sm120 only `rerun-if-env` (CUDA_PATH, CUDA_LIB_DIR) |
+| `build.rs` | only `rerun-if-env-changed` for CUDA_PATH / CUDA_LIB_DIR under the `cuda` feature; no bindgen/cc, no TensorRT-LLM shim (ADR 0001) |
 
 ### helios-cli (Rust)
 | File | Purpose |
@@ -79,7 +79,7 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 |---|---|---|
 | helios-hal | `default` = `stub` | stub backend only |
 | helios-hal | `stub` | nothing extra |
-| helios-hal | `sm90` | `dep:bindgen`, `dep:cc` (build.rs wiring still commented out) |
+| helios-hal | `cuda` / `sm90` / `sm120` | `cuda` = `dep:cuda-driver-sys` (shared core); `sm90` and `sm120` both enable it |
 | helios-hal | `sm120` | `dep:cuda-driver-sys`; `BlackwellSm120` candidate |
 | helios-hal | `multi` | `sm90` + `sm120` |
 | helios-core | none | |
@@ -124,7 +124,7 @@ Status: **implemented** (works as designed, reachable) / **partial** (some paths
 | hal/triage | implemented | Exact-match triage with 14 matrix tests + 2 table tests [v] |
 | hal/backend_factory | partial | First candidate only; no sm120 -> sm90 -> stub fallthrough [v] |
 | hal/stub | implemented as fake | Reports `sm_0`, placeholder tensors. Conflicts with "no fakes on main" rule (see Q4) [v] |
-| hal/hopper_sm90 | skeleton | `initialize_device` hardcodes `sm_90`, no probe; other methods error; build.rs linkage commented out [v] |
+| hal/hopper_sm90 | partial | Real probe + weight upload verified on an H100 (byte-identical, 290 tensors); no KV cache, kernels or forward pass [v] |
 | hal/blackwell device + ffi | smoke | Real cuda-driver-sys calls; compiled only under sm120; never run (no CUDA host) [x] |
 | hal/blackwell graph | smoke | Real capture/instantiate/launch calls; never run [x] |
 | hal/blackwell kernels | smoke | Prefill captures empty graph; decode argmax compares raw bf16 bits [v] |
