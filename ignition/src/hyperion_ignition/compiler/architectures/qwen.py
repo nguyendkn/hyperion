@@ -11,13 +11,14 @@ from ..registry import register
 
 class QwenCompiler:
     model_id = "qwen2"
+    architectures = ("Qwen2ForCausalLM",)
 
     def compile(self, *, source: Path, recipe: HardwareRecipe) -> CompiledManifest:
         return CompiledManifest(
             model_id=self.model_id,
             target_arch=recipe.target_arch,
             tensor_format=packaged_format(recipe),
-            model=model_config_from_hf(source),
+            model=model_config_from_hf(source, self.architectures),
             tokenizer={"family": "bpe", "asset_path": "tokenizer.json"},
             layers=[],
             hardware_recipe=recipe.constraints(),

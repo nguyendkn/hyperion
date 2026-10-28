@@ -47,12 +47,25 @@ def _positive_int(cfg: dict[str, Any], key: str) -> int:
     return value
 
 
-def model_config_from_hf(source: Path) -> ModelConfig:
-    """Read `<source>/config.json` (Hugging Face format) into a `ModelConfig`."""
+def model_config_from_hf(source: Path, accepted_architectures: tuple[str, ...] | None = None) -> ModelConfig:
+    """Read `<source>/config.json` (Hugging Face format) into a `ModelConfig`.
+
+    When `accepted_architectures` is given, the config's `architectures` list must
+    contain one of them: a compiler must not emit a manifest for a model family
+    it does not implement (e.g. Qwen3's QK-norm under the Qwen2 compiler).
+    """
     path = source / "config.json"
     if not path.is_file():
         raise FileNotFoundError(f"no config.json in model source directory: {source}")
     cfg = json.loads(path.read_text(encoding="utf-8"))
+
+    if accepted_architectures is not None:
+        found = cfg.get("architectures")
+        if not isinstance(found, list) or not set(found) & set(accepted_architectures):
+            raise ValueError(
+                f"config.json: architectures {found!r} not supported by this compiler; "
+                f"supported: {', '.join(accepted_architectures)}"
+            )
 
     heads = _positive_int(cfg, "num_attention_heads")
     if "head_dim" in cfg:

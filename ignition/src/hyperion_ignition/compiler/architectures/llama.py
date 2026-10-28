@@ -13,6 +13,7 @@ from ..registry import register
 
 class LlamaCompiler:
     model_id = "llama3"
+    architectures = ("LlamaForCausalLM",)
 
     def compile(self, *, source: Path, recipe: HardwareRecipe) -> CompiledManifest:  # noqa: D401
         # TODO: load the HF checkpoint, remap tensors to the Helios layer scheme,
@@ -22,7 +23,7 @@ class LlamaCompiler:
             model_id=self.model_id,
             target_arch=recipe.target_arch,
             tensor_format=packaged_format(recipe),
-            model=model_config_from_hf(source),
+            model=model_config_from_hf(source, self.architectures),
             tokenizer={"family": "bpe", "asset_path": "tokenizer.json"},
             layers=[],
             hardware_recipe=recipe.constraints(),
