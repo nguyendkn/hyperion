@@ -11,9 +11,17 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::cuda::{Cublas, CudaDevice, DeviceWeights};
+use std::ffi::c_void;
+
+use crate::cuda::{Cublas, CudaDevice, DeviceWeights, KernelModule};
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData};
 use crate::weights_plan;
+
+/// PTX generated from `kernels/rmsnorm.cu` (rebuild with `scripts/build-ptx.sh`).
+const RMSNORM_PTX: &str = include_str!("../../../kernels/rmsnorm.ptx");
+
+/// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
+const ROW_BLOCK: u32 = 256;
 
 /// Name of the checkpoint file next to the package, as written by Ignition's
 /// source model (the manifest's layer offsets index its data section).
@@ -23,6 +31,7 @@ const WEIGHTS_FILE: &str = "model.safetensors";
 /// device (which releases the context they all live in).
 pub struct HopperBackend {
     cublas: Mutex<Option<Cublas>>,
+    modules: Mutex<Vec<KernelModule>>,
     weights: Mutex<Option<DeviceWeights>>,
     device: Mutex<CudaDevice>,
 }
@@ -31,7 +40,7 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { cublas: Mutex::new(None), weights: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self { cublas: Mutex::new(None), modules: Mutex::new(Vec::new()), weights: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
     }
 
     /// Copy one uploaded tensor back to the host. A verification aid for hardware
@@ -89,6 +98,63 @@ impl HopperBackend {
             let mut raw = vec![0u8; y_len];
             dev.dtoh(&mut raw, y_ptr)?;
             Ok(raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+        })();
+        let _ = dev.free(x_ptr);
+        let _ = dev.free(y_ptr);
+        result
+    }
+
+    /// RMSNorm of `x` (`[tokens, hidden]`, bf16 bits) with the loaded bf16 `weight`, run by
+    /// the custom kernel in `kernels/rmsnorm.cu`; returns bf16 bits.
+    pub fn rmsnorm_bf16(&self, weight: &str, x: &[u16], tokens: usize, hidden: usize, eps: f32) -> Result<Vec<u16>> {
+        if x.len() != tokens * hidden {
+            return Err(anyhow!("input has {} elements, expected tokens*hidden = {}", x.len(), tokens * hidden));
+        }
+        let mut dev = self.device.lock().expect("device mutex poisoned");
+        let (w_ptr, w_len) = self
+            .weights
+            .lock()
+            .expect("weights mutex poisoned")
+            .as_ref()
+            .and_then(|w| w.pointer(weight))
+            .ok_or_else(|| anyhow!("weight {weight} is not loaded"))?;
+        if w_len != hidden * 2 {
+            return Err(anyhow!("weight {weight} holds {w_len} bytes, bf16 [{hidden}] needs {}", hidden * 2));
+        }
+        let kernel = {
+            let mut modules = self.modules.lock().expect("modules mutex poisoned");
+            if modules.is_empty() {
+                modules.push(KernelModule::load(&dev, RMSNORM_PTX)?);
+            }
+            modules[0].function("rmsnorm_bf16")?
+        };
+
+        let bytes: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let x_ptr = dev.alloc(bytes.len().max(1))?;
+        let y_ptr = match dev.alloc(bytes.len().max(1)) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = dev.free(x_ptr);
+                return Err(e);
+            }
+        };
+        let result = (|| -> Result<Vec<u16>> {
+            dev.htod(x_ptr, &bytes)?;
+            let (mut a, mut b, mut c) = (x_ptr, w_ptr, y_ptr);
+            let (mut hidden_arg, mut eps_arg) = (i32::try_from(hidden)?, eps);
+            let mut params: [*mut c_void; 5] = [
+                &mut a as *mut u64 as *mut c_void,
+                &mut b as *mut u64 as *mut c_void,
+                &mut c as *mut u64 as *mut c_void,
+                &mut hidden_arg as *mut i32 as *mut c_void,
+                &mut eps_arg as *mut f32 as *mut c_void,
+            ];
+            // Safety: the parameters match `rmsnorm_bf16(x, w, y, hidden, eps)`.
+            unsafe { kernel.launch(&dev, (u32::try_from(tokens)?, 1, 1), (ROW_BLOCK, 1, 1), ROW_BLOCK * 4, &mut params)? };
+            dev.synchronize()?;
+            let mut raw = vec![0u8; bytes.len()];
+            dev.dtoh(&mut raw, y_ptr)?;
+            Ok(raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect())
         })();
         let _ = dev.free(x_ptr);
         let _ = dev.free(y_ptr);
@@ -155,6 +221,7 @@ impl ComputeBackend for HopperBackend {
     fn shutdown(&self) -> Result<()> {
         // cuBLAS handle and weights first, then the context they live in.
         self.cublas.lock().expect("cublas mutex poisoned").take();
+        self.modules.lock().expect("modules mutex poisoned").clear();
         let mut dev = self.device.lock().expect("device mutex poisoned");
         if let Some(mut weights) = self.weights.lock().expect("weights mutex poisoned").take() {
             weights.free(&mut dev)?;

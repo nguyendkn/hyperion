@@ -7,9 +7,11 @@
 pub mod cublas;
 pub mod device;
 mod ffi;
+pub mod module;
 pub mod weights;
 
 pub use cublas::Cublas;
 pub use device::CudaDevice;
+pub use module::{Kernel, KernelModule};
 pub use ffi::eval_cuda;
 pub use weights::DeviceWeights;

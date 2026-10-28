@@ -40,6 +40,24 @@ pub fn linear(w: &[u16], x: &[u16], tokens: usize, out_features: usize, in_featu
     y
 }
 
+/// RMSNorm as Hugging Face's Qwen2 does it: normalise in f32, round to bf16, then
+/// multiply by the bf16 weight and round to bf16 again. `x` is `[tokens, hidden]`.
+pub fn rmsnorm(x: &[u16], weight: &[u16], tokens: usize, hidden: usize, eps: f32) -> Vec<u16> {
+    assert_eq!(weight.len(), hidden, "weight must have `hidden` elements");
+    assert_eq!(x.len(), tokens * hidden, "input must be [tokens, hidden]");
+    let mut y = Vec::with_capacity(x.len());
+    for t in 0..tokens {
+        let row = &x[t * hidden..(t + 1) * hidden];
+        let mean: f64 = row.iter().map(|&b| f64::from(bf16_to_f32(b)).powi(2)).sum::<f64>() / hidden as f64;
+        let inv = (1.0 / (mean + f64::from(eps)).sqrt()) as f32;
+        for (i, &b) in row.iter().enumerate() {
+            let normalised = bf16_to_f32(f32_to_bf16(bf16_to_f32(b) * inv));
+            y.push(f32_to_bf16(bf16_to_f32(weight[i]) * normalised));
+        }
+    }
+    y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +98,29 @@ mod tests {
     #[should_panic(expected = "weight must be")]
     fn linear_rejects_a_mis_shaped_weight() {
         linear(&bf(&[1.0, 2.0, 3.0]), &bf(&[1.0, 1.0]), 1, 2, 2);
+    }
+
+    #[test]
+    fn rmsnorm_of_constant_rows_scales_by_the_weight() {
+        // x = 2 everywhere: mean(x^2) = 4, rms = 2, normalised = 1, so y == weight.
+        let y = rmsnorm(&bf(&[2.0; 4]), &bf(&[0.5, 1.0, 1.5, 2.0]), 1, 4, 0.0);
+        assert_eq!(y, bf(&[0.5, 1.0, 1.5, 2.0]));
+    }
+
+    #[test]
+    fn rmsnorm_normalises_each_row_independently() {
+        // Row 0 is scaled by 1/rms = 1/5 * sqrt(2); row 1 is 100x bigger and must give the same result.
+        let a = rmsnorm(&bf(&[3.0, 4.0]), &bf(&[1.0, 1.0]), 1, 2, 0.0);
+        let both = rmsnorm(&bf(&[3.0, 4.0, 300.0, 400.0]), &bf(&[1.0, 1.0]), 2, 2, 0.0);
+        assert_eq!(&both[..2], &a[..]);
+        assert_eq!(&both[2..], &a[..]);
+        let v = bf16_to_f32(a[0]);
+        assert!((v - 3.0 / (12.5f32).sqrt()).abs() < 0.01, "{v}");
+    }
+
+    #[test]
+    fn rmsnorm_eps_keeps_an_all_zero_row_finite() {
+        let y = rmsnorm(&bf(&[0.0; 4]), &bf(&[1.0; 4]), 1, 4, 1e-6);
+        assert!(y.iter().all(|&b| bf16_to_f32(b) == 0.0));
     }
 }

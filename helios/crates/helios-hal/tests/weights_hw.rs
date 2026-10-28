@@ -115,3 +115,63 @@ fn linear_on_a_real_weight_matches_the_cpu_reference() {
     assert!(err.to_string().contains("bf16 needs"), "{err}");
     backend.shutdown().unwrap();
 }
+
+/// First custom kernel: RMSNorm (`kernels/rmsnorm.cu`, loaded as PTX through the Driver API)
+/// on the real `input_layernorm` weight of layer 0, compared with the CPU reference. The two
+/// reductions add in different orders, so a result may differ by one bf16 step; anything
+/// further apart is a bug.
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn rmsnorm_kernel_matches_the_cpu_reference() {
+    use helios_hal::reference::{bf16_to_f32, f32_to_bf16, rmsnorm};
+
+    const NAME: &str = "layers.0.input_layernorm.weight";
+    const EPS: f32 = 1e-6; // rms_norm_eps in the Qwen2.5-0.5B config
+    let package = package();
+    let Manifest::V1(manifest) =
+        serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+    let layer = manifest.layers.iter().find(|l| l.name == NAME).expect("input_layernorm of layer 0");
+    let hidden = layer.tensor.shape[0];
+
+    let file = package.with_file_name("model.safetensors");
+    let mut source = std::fs::File::open(&file).unwrap();
+    let data_start = weights_plan::data_start(&mut source).unwrap();
+    let mut raw = vec![0u8; layer.byte_length as usize];
+    source.seek(SeekFrom::Start(data_start + layer.byte_offset)).unwrap();
+    source.read_exact(&mut raw).unwrap();
+    let w: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+
+    // Three rows at very different scales: the normalisation must make them comparable.
+    let tokens = 3;
+    let scales = [1.0f32, 50.0, 0.02];
+    let x: Vec<u16> = (0..tokens * hidden)
+        .map(|i| f32_to_bf16(((i * 37 % 101) as f32 - 50.0) / 8.0 * scales[i / hidden]))
+        .collect();
+
+    let backend = HopperBackend::new().expect("an H100 must be present");
+    backend.load_model_weights(&package, &manifest).expect("upload");
+    let got = backend.rmsnorm_bf16(NAME, &x, tokens, hidden, EPS).expect("rmsnorm kernel");
+    let want = rmsnorm(&x, &w, tokens, hidden, EPS);
+
+    assert_eq!(got.len(), want.len());
+    let mut exact = 0;
+    let mut worst = 0.0f32;
+    for (g, r) in got.iter().zip(&want) {
+        let (g, r) = (bf16_to_f32(*g), bf16_to_f32(*r));
+        if g == r {
+            exact += 1;
+        }
+        // One bf16 step is 2^-7 of the value (plus a tiny absolute floor for values near zero).
+        let allowed = r.abs() / 128.0 + 1e-6;
+        worst = worst.max((g - r).abs() / allowed);
+        assert!((g - r).abs() <= 2.0 * allowed, "kernel {g} vs reference {r}");
+    }
+    let fraction = exact as f64 / got.len() as f64;
+    println!("rmsnorm [{tokens}x{hidden}]: {:.2}% bit-identical to the CPU reference, worst error {worst:.2}x one bf16 step", fraction * 100.0);
+    assert!(fraction > 0.97, "only {fraction} of elements are bit-identical");
+
+    // Wrong size is a clean error.
+    let err = backend.rmsnorm_bf16(NAME, &x, tokens, hidden + 1, EPS).unwrap_err();
+    assert!(err.to_string().contains("expected tokens*hidden"), "{err}");
+    backend.shutdown().unwrap();
+}
