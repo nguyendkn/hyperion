@@ -34,3 +34,11 @@ Thumbs.db
 
 # Generated
 repomix-output.xml
+plans/
+
+# Coverage output
+coverage*.xml
+.coverage
+
+# Real third-party model files used by tests (fetched by scripts/fetch-model-fixtures.py)
+testdata/models/
