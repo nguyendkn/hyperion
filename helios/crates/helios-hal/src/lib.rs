@@ -17,6 +17,7 @@
 pub mod traits;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+pub mod reference;
 pub mod weights_plan;
 pub mod triage;
 pub mod backend_factory;
