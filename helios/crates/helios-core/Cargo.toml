@@ -16,6 +16,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+tracing = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -28,6 +29,10 @@ serde_json = { workspace = true }
 # current Qwen3 tokenizer.json, hence the bump. We need only BPE encode ->
 # Vec<u32>: no progress bar, no http/hf-hub.
 tokenizers = { workspace = true, features = ["onig"] }
+
+[dev-dependencies]
+# Tests build manifests to ask the HAL factory for a real (stub) backend.
+hyperion-specification = { workspace = true }
 
 [lib]
 name = "helios_core"

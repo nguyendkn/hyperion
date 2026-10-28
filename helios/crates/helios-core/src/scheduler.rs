@@ -170,18 +170,21 @@ impl Scheduler {
     /// supervisor (observing the `JoinHandle`) to shut the engine down
     /// rather than relying on a post-`run()` line that a panic skips.
     pub async fn run(mut self, cancel: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
-        // Placeholder: real loop blocks on the ready queue and the device.
-        // We `select!` on cancellation so the no-op also exits promptly when
-        // the CLI requests shutdown — the real loop will check cancellation
-        // at safe points between batch iterations.
+        // One request at a time: each is handed to the backend's `generate`, which runs on a
+        // blocking thread (a device call must not stall the async runtime) and streams tokens
+        // back as they are chosen. Cancellation is checked between requests, never mid-call,
+        // so a CUDA operation already in flight finishes before the task exits. Batching more
+        // than one sequence per step is the later scheduling work; this loop makes the single
+        // request path real.
         loop {
             tokio::select! {
                 biased; // cancellation takes precedence over more ingress.
                 _ = cancel.cancelled() => break,
-                // Drain anything the API enqueues so it fails fast, not by
-                // mob-growing an un-read queue. The real loop will actually
-                // process these instead of discarding them.
-                _ = self.ingress.recv() => {/* dropped: no-op scheduler */}
+                request = self.ingress.recv() => match request {
+                    Some(request) => self.serve(request).await,
+                    // Every sender is gone: nothing can arrive any more.
+                    None => break,
+                },
             }
         }
         // Close explicitly to make the fail-fast contract obvious to
@@ -190,5 +193,40 @@ impl Scheduler {
         // `SendError` immediately (rather than blocking until full drop).
         self.ingress.close();
         Ok(())
+    }
+
+    /// Run one request on the backend and stream its events: `Tokens` as they are chosen,
+    /// then exactly one terminal `Done` or `Error`. A failed or panicking backend call becomes
+    /// an `Error` event; it never takes the scheduler down.
+    async fn serve(&self, request: InferenceRequest) {
+        let InferenceRequest { request_id, token_ids, sampling_params, response_tx } = request;
+        let max_new = sampling_params.max_tokens as usize;
+        let backend = self.backend.clone();
+        let sink = response_tx.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut generated = 0u32;
+            let stop = backend.generate(&token_ids, max_new, &mut |token| {
+                generated += 1;
+                // The receiver may be gone (client disconnected); finishing the generation
+                // is harmless, so a failed send is ignored.
+                let _ = sink.send(StreamEvent::Tokens(vec![token]));
+            })?;
+            Ok::<_, anyhow::Error>((stop, generated))
+        })
+        .await;
+
+        let terminal = match outcome {
+            Ok(Ok((stop, generated))) => StreamEvent::Done {
+                finish_reason: match stop {
+                    helios_hal::StopReason::EndOfSequence => FinishReason::Stop,
+                    helios_hal::StopReason::MaxTokens => FinishReason::Length,
+                },
+                generated_tokens: generated,
+            },
+            Ok(Err(error)) => StreamEvent::Error(format!("{error:#}")),
+            Err(join_error) => StreamEvent::Error(format!("generation task failed: {join_error}")),
+        };
+        tracing::debug!(request_id, "request finished");
+        let _ = response_tx.send(terminal);
     }
 }
