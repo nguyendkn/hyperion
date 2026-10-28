@@ -115,3 +115,16 @@ extern "C" __global__ void attention_bf16(const bf16* __restrict__ q, const bf16
         out[(size_t)blockIdx.x * head_dim + d] = __float2bfloat16(acc / total);
     }
 }
+
+// out[i] = bf16(y[i] + bias[i % width]) where y is the f32 output of a matrix multiply. A null
+// `bias` means no bias. This is torch's bf16 `Linear`: f32 accumulation, bias added in f32, one
+// rounding to bf16.
+extern "C" __global__ void bias_cast_bf16(const float* __restrict__ y, const bf16* __restrict__ bias,
+                                          bf16* __restrict__ out, int n, int width) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float v = y[i];
+        if (bias != nullptr) v += rd(bias[i % width]);
+        out[i] = __float2bfloat16(v);
+    }
+}

@@ -436,3 +436,66 @@ fn greedy_generation_matches_hf_generate() {
     assert!(prefix >= 8, "the first 8 generated tokens must equal HF's, only {prefix} do");
     backend.shutdown().unwrap();
 }
+
+/// The device-resident pipeline must compute exactly what the host-sliced reference path
+/// (verified against Hugging Face) computes: same kernels, same rounding, so the prefill logits
+/// are bit-identical, and so is a short greedy continuation.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn device_pipeline_is_bit_identical_to_the_host_path() {
+    use helios_hal::{Qwen2Dims, SamplingConfig};
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
+    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
+    let heads = int("num_attention_heads");
+    let dims = Qwen2Dims {
+        layers: int("num_hidden_layers"),
+        hidden: int("hidden_size"),
+        intermediate: int("intermediate_size"),
+        heads,
+        kv_heads: int("num_key_value_heads"),
+        head_dim: int("hidden_size") / heads,
+        vocab: int("vocab_size"),
+        rope_theta: config["rope_theta"].as_f64().unwrap(),
+        rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
+    };
+    let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let want: Vec<u32> = oracle["generated_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+
+    let (_, _, backend) = loaded_backend();
+    let host = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
+    let device = backend.forward_prefill_logits_device(&dims, &prompt).expect("device path");
+    assert_eq!(host.len(), device.len());
+    let differing = host.iter().zip(&device).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+    println!("prefill logits: {differing} of {} differ between the host and the device pipeline", host.len());
+    assert_eq!(differing, 0, "device pipeline must be bit-identical to the host path");
+
+    // Speed and generation equality, device vs host vs Hugging Face.
+    let started = std::time::Instant::now();
+    let mut device_tokens = Vec::new();
+    backend
+        .generate_streaming(&dims, &prompt, want.len(), None, &SamplingConfig::greedy(), &mut |t| device_tokens.push(t))
+        .expect("device generation");
+    let device_time = started.elapsed();
+    let started = std::time::Instant::now();
+    let host_tokens = backend.generate_greedy_host(&dims, &prompt, want.len(), None).expect("host generation");
+    let host_time = started.elapsed();
+    println!(
+        "{} tokens: device {:.2?} ({:.1} ms/token incl. prefill) vs host path {:.2?} ({:.1} ms/token); equal to HF: device {}, host {}",
+        want.len(),
+        device_time,
+        device_time.as_secs_f64() * 1000.0 / want.len() as f64,
+        host_time,
+        host_time.as_secs_f64() * 1000.0 / want.len() as f64,
+        device_tokens == want,
+        host_tokens == want,
+    );
+    assert_eq!(device_tokens, host_tokens, "device and host paths must generate the same tokens");
+    assert_eq!(device_tokens, want, "must equal Hugging Face's greedy continuation");
+    backend.shutdown().unwrap();
+}
+

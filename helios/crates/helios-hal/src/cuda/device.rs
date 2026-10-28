@@ -12,7 +12,7 @@
 use anyhow::Result;
 use cuda_driver_sys::{
     cuCtxSetCurrent, cuDeviceGet, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRetain,
-    cuCtxSynchronize, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
+    cuCtxSynchronize, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoDAsync_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
     cuStreamCreate, cuStreamDestroy_v2,
     CUcontext, CUdevice, CUdeviceptr, CUstream, CUdevice_attribute,
 };
@@ -159,6 +159,16 @@ impl CudaDevice {
         self.set_current()?;
         unsafe {
             eval_cuda("cuMemcpyHtoD", cuMemcpyHtoD_v2(dst, src.as_ptr() as *const c_void, src.len()))?;
+        }
+        Ok(())
+    }
+
+    /// Copy `bytes` between device allocations on this device's stream, so it is ordered with the
+    /// kernels and cuBLAS calls queued on the same stream (the plain copy is not).
+    pub fn dtod_async(&self, dst: u64, src: u64, bytes: usize) -> Result<()> {
+        self.set_current()?;
+        unsafe {
+            eval_cuda("cuMemcpyDtoDAsync", cuMemcpyDtoDAsync_v2(dst, src, bytes, self.stream))?;
         }
         Ok(())
     }

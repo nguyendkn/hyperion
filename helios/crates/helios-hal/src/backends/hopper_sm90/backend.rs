@@ -21,10 +21,10 @@ use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, Ten
 use crate::weights_plan;
 
 /// PTX generated from `kernels/rmsnorm.cu` (rebuild with `scripts/build-ptx.sh`).
-const RMSNORM_PTX: &str = include_str!("../../../kernels/rmsnorm.ptx");
+pub(super) const RMSNORM_PTX: &str = include_str!("../../../kernels/rmsnorm.ptx");
 
 /// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
-const ROW_BLOCK: u32 = 256;
+pub(super) const ROW_BLOCK: u32 = 256;
 
 /// Name of the checkpoint file next to the package, as written by Ignition's
 /// source model (the manifest's layer offsets index its data section).

@@ -14,6 +14,7 @@
 
 mod backend;
 mod forward;
+mod forward_device;
 mod ops;
 
 pub use backend::HopperBackend;

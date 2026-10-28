@@ -177,15 +177,24 @@ impl HopperBackend {
     }
 
     /// Greedy generation: prefill the prompt, then append the highest-logit token one decode step
-    /// at a time, for at most `max_new` tokens or until `eos`. Returns only the new tokens.
+    /// at a time, for at most `max_new` tokens or until `eos`. Returns only the new tokens. Runs
+    /// the device-resident pipeline.
     pub fn generate_greedy(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, eos: Option<u32>) -> Result<Vec<u32>> {
         let mut out = Vec::new();
         self.generate_streaming(d, prompt, max_new, eos, &SamplingConfig::greedy(), &mut |t| out.push(t))?;
         Ok(out)
     }
 
-    /// Generation with the given sampling, calling `on_token` for each token as soon as it is chosen.
-    pub fn generate_streaming(
+    /// [`Self::generate_greedy`] through the host-sliced reference path.
+    pub fn generate_greedy_host(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, eos: Option<u32>) -> Result<Vec<u32>> {
+        let mut out = Vec::new();
+        self.generate_streaming_host(d, prompt, max_new, eos, &SamplingConfig::greedy(), &mut |t| out.push(t))?;
+        Ok(out)
+    }
+
+    /// Generation with host-sliced activations, the reference the device pipeline is checked
+    /// against (see `forward_device.rs`). Calls `on_token` for each token as soon as it is chosen.
+    pub fn generate_streaming_host(
         &self,
         d: &Qwen2Dims,
         prompt: &[u32],
