@@ -22,12 +22,10 @@ impl HopperBackend {
 
 impl ComputeBackend for HopperBackend {
     fn initialize_device(&self) -> Result<HardwareInfo> {
-        // TODO: cudaGetDeviceProperties() via FFI.
-        Ok(HardwareInfo {
-            compute_capability: "sm_90".into(),
-            total_vram_bytes: 0,
-            max_cuda_streams: 1,
-        })
+        // No probe is wired yet. Reporting a hard-coded "sm_90" would claim an
+        // arch nobody measured, so refuse until a real device query exists
+        // (the factory skips this backend and reports why).
+        Err(anyhow!("sm90 backend cannot probe a device: CUDA/TensorRT-LLM FFI not wired"))
     }
 
     fn load_model_weights(

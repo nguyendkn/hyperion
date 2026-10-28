@@ -8,9 +8,9 @@
 //! - `helios-core` depends on this crate's *trait* only, never on a concrete
 //!   backend. Backends are compiled behind feature flags and instantiated by
 //!   the factory, so the core stays device-agnostic.
-//! - Forward compatibility is the rule: a package compiled for `sm_90` may run
-//!   on `sm_120` (downgrade kernels), but a package compiled for `sm_120` is
-//!   rejected on `sm_90` no matter what — see [`Triage`].
+//! - Exact match is the rule: a package runs only on the arch it was compiled
+//!   for, on the backend written for that arch, in a tensor format that
+//!   backend supports. No cross-generation fallback — see [`triage`].
 //! - No GPU code lives in this crate. Backend modules (`backends/*`) hold the
 //!   FFI/kernel calls; here we only mediate.
 
@@ -19,6 +19,9 @@ pub mod triage;
 pub mod backend_factory;
 mod backends;
 
-pub use backend_factory::{create_backend, BackendKind};
+pub use backend_factory::{create_backend, BackendKind, CreatedBackend};
 pub use traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData, DynBackend};
-pub use triage::{Triage, TriageOutcome};
+pub use triage::{
+    format_name, format_table, supported_formats, triage, ProbedBackend, Triage, TriageError,
+    TriageOutcome,
+};

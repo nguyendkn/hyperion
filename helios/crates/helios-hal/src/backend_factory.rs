@@ -11,8 +11,10 @@
 use anyhow::{anyhow, Result};
 use tracing::info;
 
-use crate::triage::Triage;
-use crate::traits::{ComputeBackend, DynBackend};
+use hyperion_specification::v1::Manifest;
+
+use crate::traits::{ComputeBackend, DynBackend, HardwareInfo};
+use crate::triage::{triage, ProbedBackend, Triage};
 
 /// The set of backends compiled into this build. Exactly one is `true` when
 /// built per-host; several may be `true` under the `multi` feature.
@@ -43,17 +45,25 @@ impl BackendKind {
     }
 }
 
-/// Probe the device and return a boxed backend ready for `helios-core` to
-/// drive. The probe order is feature-gated so a per-host build doesn't link
-/// probe code for backends it can't compile.
+/// A backend that probed a real device and passed triage.
+pub struct CreatedBackend {
+    pub backend: DynBackend,
+    /// The capability the device reported when probed (e.g. `sm_90`).
+    pub device_arch: String,
+    pub triage: Triage,
+    /// Probe result (total VRAM, stream limit) for capacity checks.
+    pub hardware: HardwareInfo,
+}
+
+/// Probe each compiled-in backend in precedence order (sm120, sm90, stub) and
+/// return the first one that both probes a real device and passes triage for
+/// this manifest. A backend that fails to probe, or whose triage refuses, is
+/// skipped and its reason is kept; if none qualifies the error lists every
+/// refusal, so "why did nothing run" is answerable from one message.
 ///
-/// `package_target` is the `target_arch` from the manifest; triage is run here
-/// rather than in `core` so the factory can refuse before handing out a
-/// backend the package can never run on.
-pub fn create_backend(package_target: &str) -> Result<(DynBackend, String, Triage)> {
-    // Try each compiled-in backend in order. The first that probes a real
-    // device wins; this is the natural precedence (newer arch first under
-    // `multi`) and keeps the per-host single-feature path a straight line.
+/// Triage runs here rather than in `core` so the factory can refuse before
+/// handing out a backend the package can never run on.
+pub fn create_backend(manifest: &Manifest) -> Result<CreatedBackend> {
     let candidates: &[BackendKind] = &[
         #[cfg(feature = "sm120")]
         BackendKind::BlackwellSm120,
@@ -62,37 +72,62 @@ pub fn create_backend(package_target: &str) -> Result<(DynBackend, String, Triag
         BackendKind::Stub,
     ];
 
+    let mut refusals: Vec<String> = Vec::new();
     for &kind in candidates {
-        let (backend, actual_cap) = instantiate(kind)?;
-        let triage = Triage::evaluate(package_target, &actual_cap)?;
-        info!(backend = ?kind, actual = %actual_cap, target = %package_target, outcome = ?triage.outcome, "triaged");
-        return Ok((backend, actual_cap, triage));
+        let (backend, hardware) = match instantiate(kind) {
+            Ok(found) => found,
+            Err(e) => {
+                info!(backend = ?kind, error = %e, "backend could not probe a device; skipping");
+                refusals.push(format!("{kind:?}: no device ({e})"));
+                continue;
+            }
+        };
+        let device_arch = hardware.compute_capability.clone();
+        let probed = ProbedBackend { backend_arch: kind.target_arch(), device_arch: device_arch.clone() };
+        match triage(manifest, &probed) {
+            Ok(decision) => {
+                info!(backend = ?kind, actual = %device_arch, target = %manifest.target_arch, outcome = ?decision.outcome, "triaged");
+                return Ok(CreatedBackend { backend, device_arch, triage: decision, hardware });
+            }
+            Err(e) => {
+                info!(backend = ?kind, actual = %device_arch, error = %e, "triage refused backend");
+                refusals.push(format!("{kind:?}: {e}"));
+            }
+        }
     }
 
-    Err(anyhow!("no backend compiled in or probeable for this build"))
+    Err(anyhow!(
+        "no compiled-in backend can run this package (target_arch {}, tensor_format {}):
+  {}",
+        manifest.target_arch,
+        crate::triage::format_name(manifest.tensor_format),
+        refusals.join("
+  ")
+    ))
 }
 
 /// Construct one backend and probe its hardware. Kept small per-kind so each
 /// backend module owns its own probe + init sequence. The `Stub` path always
-/// succeeds and reports `sm_0` so triage (sm_0 vs sm_0) is `Exact`.
-fn instantiate(kind: BackendKind) -> Result<(DynBackend, String)> {
+/// succeeds and reports `sm_0`, so a real package (sm_90 / sm_120) is refused
+/// by triage instead of silently pretending to work.
+fn instantiate(kind: BackendKind) -> Result<(DynBackend, HardwareInfo)> {
     match kind {
         BackendKind::Stub => {
             let b = crate::backends::stub::StubBackend::new();
             let info = b.initialize_device()?;
-            Ok((Box::new(b), info.compute_capability))
+            Ok((Box::new(b), info))
         }
         #[cfg(feature = "sm90")]
         BackendKind::HopperSm90 => {
             let b = crate::backends::hopper_sm90::HopperBackend::new()?;
             let info = b.initialize_device()?;
-            Ok((Box::new(b), info.compute_capability))
+            Ok((Box::new(b), info))
         }
         #[cfg(feature = "sm120")]
         BackendKind::BlackwellSm120 => {
             let b = crate::backends::blackwell_sm120::BlackwellBackend::new()?;
             let info = b.initialize_device()?;
-            Ok((Box::new(b), info.compute_capability))
+            Ok((Box::new(b), info))
         }
     }
 }

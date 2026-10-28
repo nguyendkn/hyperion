@@ -1,7 +1,7 @@
 //! Stub backend — implements [`ComputeBackend`] without touching a GPU.
 //! Lets the workspace typecheck and run core unit tests on hosts without CUDA.
 //! Reports `sm_0` so triage against a real package's `target_arch` fails
-//! loudly (`UpgradeRequired`) rather than silently pretending to work.
+//! loudly (`ArchMismatch`) rather than silently pretending to work.
 
 use std::path::Path;
 
