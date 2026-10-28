@@ -15,7 +15,8 @@ use anyhow::{anyhow, Context, Result};
 use std::ffi::c_void;
 
 use crate::cuda::{Cublas, CudaDevice, DeviceWeights, KernelModule};
-use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData};
+use super::forward::Qwen2Dims;
+use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, TensorData};
 use crate::weights_plan;
 
 /// PTX generated from `kernels/rmsnorm.cu` (rebuild with `scripts/build-ptx.sh`).
@@ -34,6 +35,8 @@ pub struct HopperBackend {
     pub(super) cublas: Mutex<Option<Cublas>>,
     pub(super) modules: Mutex<HashMap<&'static str, KernelModule>>,
     pub(super) weights: Mutex<Option<DeviceWeights>>,
+    /// Model dimensions and end-of-sequence token, read from `config.json` at load time.
+    runtime: Mutex<Option<(Qwen2Dims, Option<u32>)>>,
     pub(super) device: Mutex<CudaDevice>,
 }
 
@@ -41,7 +44,7 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self { cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
     }
 
     /// Copy one uploaded tensor back to the host. A verification aid for hardware
@@ -184,13 +187,34 @@ impl ComputeBackend for HopperBackend {
         let data_start = weights_plan::data_start(&mut handle)?;
         let plans = weights_plan::plan(manifest, data_start, file_len)?;
 
+        // The manifest does not carry hidden size, MLP width, RoPE theta or the EOS token yet,
+        // so read them from the model's own config.json beside the package (like the weights)
+        // and refuse a config that disagrees with the manifest.
+        let config_path = model_path.with_file_name("config.json");
+        let config: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&config_path).with_context(|| format!("read {}", config_path.display()))?,
+        )
+        .with_context(|| format!("parse {}", config_path.display()))?;
+        let runtime = Qwen2Dims::from_config_json(&config, &manifest.model)?;
+
         let mut dev = self.device.lock().expect("device mutex poisoned");
         let uploaded = DeviceWeights::upload(&mut dev, &file, &plans)?;
+        *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
         let mut slot = self.weights.lock().expect("weights mutex poisoned");
         if let Some(mut old) = slot.replace(uploaded) {
             let _ = old.free(&mut dev);
         }
         Ok(())
+    }
+
+    fn generate(&self, prompt: &[u32], max_new: usize, on_token: &mut dyn FnMut(u32)) -> Result<StopReason> {
+        let (dims, eos) = self
+            .runtime
+            .lock()
+            .expect("runtime mutex poisoned")
+            .clone()
+            .ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+        self.generate_greedy_streaming(&dims, prompt, max_new, eos, on_token)
     }
 
     fn allocate_kv_cache(

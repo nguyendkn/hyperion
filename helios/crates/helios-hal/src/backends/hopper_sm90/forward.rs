@@ -7,10 +7,12 @@
 //! greedy only. Speed work (device-resident activations and cache, fused kernels, graph capture)
 //! comes after the output matches the reference model.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use hyperion_specification::v1::ModelConfig;
 
 use super::backend::HopperBackend;
 use crate::reference::{bf16_to_f32, f32_to_bf16, rope_tables};
+use crate::traits::StopReason;
 
 /// Dimensions of a Qwen2-style model that the forward pass needs. `ModelConfig` in the manifest
 /// does not carry `hidden`, `intermediate`, `rope_theta` or `rms_eps` yet, so the caller supplies
@@ -47,6 +49,54 @@ impl KvCache {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+impl Qwen2Dims {
+    /// Read the dimensions from a Hugging Face `config.json` and refuse anything the forward
+    /// pass does not implement (another architecture, untied output head, sliding-window or
+    /// scaled RoPE) or that disagrees with the manifest. Returns the end-of-sequence token
+    /// too: it ends a generation, and the manifest does not carry it yet.
+    pub fn from_config_json(config: &serde_json::Value, manifest: &ModelConfig) -> Result<(Self, Option<u32>)> {
+        let int = |key: &str| -> Result<usize> {
+            config[key].as_u64().map(|v| v as usize).with_context(|| format!("config.json: `{key}` missing or not an integer"))
+        };
+        let architectures = config["architectures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
+        if !architectures.is_some_and(|a| a.contains(&"Qwen2ForCausalLM")) {
+            return Err(anyhow!("config.json: the sm90 forward pass implements Qwen2ForCausalLM, found {:?}", config["architectures"]));
+        }
+        if config["tie_word_embeddings"] != true {
+            return Err(anyhow!("config.json: the forward pass assumes tie_word_embeddings = true"));
+        }
+        if config["use_sliding_window"] == true || !config["rope_scaling"].is_null() {
+            return Err(anyhow!("config.json: sliding-window attention and RoPE scaling are not implemented"));
+        }
+        let heads = int("num_attention_heads")?;
+        let dims = Qwen2Dims {
+            layers: int("num_hidden_layers")?,
+            hidden: int("hidden_size")?,
+            intermediate: int("intermediate_size")?,
+            heads,
+            kv_heads: int("num_key_value_heads")?,
+            head_dim: config["head_dim"].as_u64().map_or_else(|| int("hidden_size").map(|h| h / heads), |v| Ok(v as usize))?,
+            vocab: int("vocab_size")?,
+            rope_theta: config["rope_theta"].as_f64().context("config.json: `rope_theta`")?,
+            rms_eps: config["rms_norm_eps"].as_f64().context("config.json: `rms_norm_eps`")? as f32,
+        };
+        let agree = [
+            ("num_layers", dims.layers, manifest.num_layers),
+            ("num_attention_heads", dims.heads, manifest.num_attention_heads),
+            ("num_kv_heads", dims.kv_heads, manifest.num_kv_heads),
+            ("head_dim", dims.head_dim, manifest.head_dim),
+            ("vocab_size", dims.vocab, manifest.vocab_size),
+        ];
+        for (name, from_config, from_manifest) in agree {
+            if from_config != from_manifest as usize {
+                return Err(anyhow!("config.json {name} = {from_config} but the manifest says {from_manifest}"));
+            }
+        }
+        let eos = config["eos_token_id"].as_u64().map(|v| v as u32);
+        Ok((dims, eos))
     }
 }
 
@@ -128,18 +178,33 @@ impl HopperBackend {
     /// Greedy generation: prefill the prompt, then append the highest-logit token one decode step
     /// at a time, for at most `max_new` tokens or until `eos`. Returns only the new tokens.
     pub fn generate_greedy(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, eos: Option<u32>) -> Result<Vec<u32>> {
+        let mut out = Vec::new();
+        self.generate_greedy_streaming(d, prompt, max_new, eos, &mut |t| out.push(t))?;
+        Ok(out)
+    }
+
+    /// [`Self::generate_greedy`], calling `on_token` for each token as soon as it is chosen.
+    pub fn generate_greedy_streaming(
+        &self,
+        d: &Qwen2Dims,
+        prompt: &[u32],
+        max_new: usize,
+        eos: Option<u32>,
+        on_token: &mut dyn FnMut(u32),
+    ) -> Result<StopReason> {
         let mut cache = KvCache::new(d.layers);
         let mut logits = self.forward_tokens(d, &mut cache, prompt)?;
-        let mut out = Vec::new();
-        while out.len() < max_new {
+        for produced in 0..max_new {
             let next = argmax(&logits) as u32;
-            out.push(next);
+            on_token(next);
             if Some(next) == eos {
-                break;
+                return Ok(StopReason::EndOfSequence);
             }
-            logits = self.forward_tokens(d, &mut cache, &[next])?;
+            if produced + 1 < max_new {
+                logits = self.forward_tokens(d, &mut cache, &[next])?;
+            }
         }
-        Ok(out)
+        Ok(StopReason::MaxTokens)
     }
 }
 

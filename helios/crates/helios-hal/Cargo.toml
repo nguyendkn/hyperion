@@ -37,14 +37,12 @@ hyperion-specification = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+serde_json = { workspace = true }
 
 # CUDA Driver FFI. Only pulled in under the `cuda` feature (`sm90`, `sm120`, `multi`). Driver-only: the
 # graph-capture API the backend relies on lives in the CUDA Driver, not the
 # runtime, so we bind the driver directly.
 cuda-driver-sys = { workspace = true, optional = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
 
 [lib]
 name = "helios_hal"
