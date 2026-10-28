@@ -1,0 +1,15 @@
+# Normalize line endings to LF in the repo and in checkouts. The schema drift
+# test and fixtures compare bytes/JSON, so they must not depend on autocrlf.
+* text=auto eol=lf
+
+# Binary: never normalized or diffed as text.
+*.safetensors binary
+*.bin binary
+*.gguf binary
+*.hyperion binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
