@@ -111,7 +111,7 @@ Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or 
 
 1. `tokenizer.asset_path` is package-relative; absolute and `..` rejected.
 2. Empty path -> boot without tokenizer; every request gets 501. Missing file -> boot fails.
-3. `PromptTokenizer` loads lazily (`OnceCell`). Truncation = manifest `max_seq_len`, default 4096.
+3. `PromptTokenizer` loads lazily (`OnceCell`). Truncation = manifest `model.max_seq_len`.
 4. Prompt is a placeholder `role:content` join, not a chat template. Real template waits on the codec.
 5. Encode uses special tokens; decode skips them.
 6. Dependency: `tokenizers` 0.19 with `onig` (workaround; re-check on upgrade).
@@ -129,11 +129,11 @@ Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or 
 
 `specification/src/lib.rs`, `v1/mod.rs`. Rust structs are the schema source.
 
-- `enum Manifest { V1(v1::Manifest) }`, `#[serde(tag = "manifest_version")]`, `LATEST = 1`.
-- v1 fields: `model_id`, `target_arch`, `tokenizer{family, asset_path, max_seq_len?}`, `layers[{index, name, byte_offset, byte_length, tensor{dtype, shape}}]`, `hardware_recipe` (k/v), `signature?` (bytes).
-- [gap] Tag mismatch, verified with a scratch deserialize: Ignition writes `"manifest_version": 1` (integer), which fails ("expected variant identifier"); Rust needs `"V1"`. v1 is not frozen until first release, so either side can change.
-- [pending] `ModelConfig` (num_layers, num_kv_heads, head_dim, vocab_size, max_seq_len) not in v1. Hence sm120 hard-codes dims.
-- [pending] Rust-sourced JSON Schema (`schemars`) and Rust/Python round-trip test: no such dependency or test exists.
+- `enum Manifest { V1(v1::Manifest) }`, `#[serde(tag = "manifest_version")]` (wire tag `"V1"`), `LATEST = 1`.
+- v1 fields: `model_id`, `target_arch`, `model{num_layers, num_attention_heads, num_kv_heads, head_dim, vocab_size, max_seq_len}`, `tokenizer{family, asset_path}`, `layers[{index, name, byte_offset, byte_length, tensor{dtype, shape}}]`, `hardware_recipe` (k/v), `signature?` (bytes). All structs use `deny_unknown_fields`.
+- [done] Tag mismatch fixed (P0b): both sides use `"V1"`; JSON Schema and shared fixtures guard it.
+- [partial] `ModelConfig` is in v1; sm120 still hard-codes dims until it reads the manifest.
+- [done] JSON Schema generated from the Rust structs (`schemars`, feature `schema`), committed at `specification/schema/manifest.v1.json`; Ignition validates with `jsonschema`; fixtures in `specification/fixtures/v1/` are parsed by both sides.
 - [pending] Signature: field exists, nothing verifies it; Python always writes `null`.
 
 ## 9. SM120 CUDA Graph path
@@ -171,7 +171,7 @@ flowchart LR
 | 503 reserved for Uninitialized/Stopped | [gap] used more broadly |
 | Exact `target_arch` triage | [pending], code has Downgrade |
 | Backend order sm120 -> sm90 -> stub | [partial], no device-kind check |
-| `ModelConfig`, Rust-sourced JSON Schema, `helios-pkg`, `/v1` nesting | [pending] / [gap] |
+| `helios-pkg`, `/v1` nesting, backend use of `ModelConfig` | [pending] / [gap] |
 
 ## Known gaps
 
@@ -179,7 +179,7 @@ Re-verified in current source.
 
 1. Factory returns first compiled candidate without comparing probed device to kind (`backend_factory.rs:65-70`).
 2. sm90 hard-codes `sm_90` (`hopper_sm90/backend.rs:27`); doc mentions a `kernels.rs` that does not exist.
-3. Manifest tag: Python integer `1` vs Rust `"V1"` (verified).
+3. ~~Manifest tag mismatch~~ resolved in P0b.
 4. `/v1` not nested.
 5. `Loaded`/`Serving` unused; concurrency not modeled. (Earlier candidate "Loaded marked without weights" is false; the reverse holds.)
 6. `Ready -> Draining` illegal; shutdown warns misleadingly.
@@ -192,8 +192,8 @@ Re-verified in current source.
 
 ## Unresolved questions
 
-- Which manifest form wins: integer `1` or `"V1"`?
+- ~~Which manifest tag form wins~~ resolved: `"V1"`.
 - Downgrade triage (code) or exact match only (CLAUDE.md)?
-- Move `ModelConfig` into v1 before first release? Apply `/v1` via `nest` in CLI or in `api::router()`?
+- Apply `/v1` via `nest` in CLI or in `api::router()`?
 - 503 vs 429 split: CLAUDE.md or current code? Zero-node graph capture valid on target driver? Needs CUDA host.
 - Should `main.rs` cancel the scheduler token on shutdown instead of aborting the supervisor?

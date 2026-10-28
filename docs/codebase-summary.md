@@ -19,7 +19,7 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 ### specification (Rust)
 | File | Purpose |
 |---|---|
-| `src/lib.rs` | `Manifest` enum, `#[serde(tag="manifest_version")]`, variant `V1`; `ManifestError`; `LATEST = 1` |
+| `src/lib.rs` | `Manifest` enum, `#[serde(tag="manifest_version")]` (wire tag `"V1"`); `ManifestError`; `LATEST = 1`; with feature `schema`: `schema.rs` + `bin/gen-schema.rs` generate `schema/manifest.v1.json` |
 | `src/v1/mod.rs` | v1 structs: `Manifest` (model_id, target_arch, tokenizer, layers, hardware_recipe, signature), `TokenizerConfig`, `LayerMapping`, `TensorMetadata` |
 
 ### helios-core (Rust)
@@ -57,7 +57,7 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 ### ignition (Python)
 | File | Purpose |
 |---|---|
-| `cli.py` | click `hyperion-compile --model --hw --out --source`; writes `<out>.manifest.json` only |
+| `cli.py` | click `hyperion-compile --model --hw --out --source`; validates the manifest against the schema, then writes `<out>.manifest.json` only |
 | `compiler/base.py` | `CompiledManifest` (+ `to_json_dict`), `LayerMap`, `ModelCompiler` Protocol |
 | `compiler/registry.py` | `register`, `build_compiler`; imports `architectures` at bottom |
 | `compiler/architectures/{llama,qwen,deepseek}.py` | One compiler class each, ids `llama3`, `qwen2`, `deepseek`; `layers=[]` |
@@ -98,7 +98,7 @@ Backend selection (backend_factory.rs): candidate list built from enabled featur
 | `task test` = `cargo test --workspace` | Taskfile.yml | [x] |
 | `cargo check -p helios-hal --features sm120` | CLAUDE.md | type-check only, no CUDA on host |
 | `python -m compileall ignition/src` | CLAUDE.md | [x] |
-| `pip install -e ignition` / `hyperion-compile ...` | Taskfile.yml | [x] not run |
+| `pip install -e ignition` / `hyperion-compile ...` | Taskfile.yml | [v] run; 21 pytest pass |
 
 Release profile: fat LTO, `codegen-units=1`, `panic="abort"` [v].
 
@@ -106,7 +106,7 @@ Release profile: fat LTO, `codegen-units=1`, `panic="abort"` [v].
 
 - helios-core unit (`src/tokenizer.rs`): 2 (`flatten_single_message`, `flatten_multiple_messages_join_with_newline`).
 - helios-core integration (`tests/encode_path_smoke.rs`): 7 `#[tokio::test]` over `tests/fixtures/dummy_tokenizer.json` (WordLevel fixture, not a real model).
-- Total 9. No tests in helios-hal, state, cache, scheduler, api, cli, specification or ignition. `cargo test --workspace` passes (9 tests, stub backend).
+- Rust (`cargo test --workspace`, stub backend): helios-core 5 unit (2 tokenizer, 3 state) + 7 encode smoke; specification 6 (7 with `--features schema`, adds the schema drift check). Python: 21 pytest in `ignition/tests`. No tests yet for helios-hal, cache, scheduler, api, cli.
 
 ## Module status
 
@@ -114,7 +114,7 @@ Status: **implemented** (works as designed, reachable) / **partial** (some paths
 
 | Module | Status | Evidence |
 |---|---|---|
-| specification v1 | implemented | Structs + tagged enum. Python writes `"manifest_version": 1`; serde default tag for `V1` is `"V1"` -> mismatch [i] |
+| specification v1 | implemented | Structs + tagged enum, `deny_unknown_fields`, `ModelConfig`, committed JSON Schema, fixtures shared with Ignition; 7 Rust tests [v] |
 | core/api | partial | Handler complete. Route is `/chat/completions`: `main.rs` calls `router().with_state()` with no `/v1` nest, although api.rs docs say `/v1` [v]. End-to-end never returns 200 today (see scheduler) [v] |
 | core/scheduler | skeleton | `run()` closes ingress and returns Ok; no batching, no backend calls [v] |
 | core/state | implemented, partial wiring | CAS table works. `begin_serving`, `end_serving`, `mark_loaded` have no callers; CLI stays `Ready` [v] |
@@ -131,11 +131,11 @@ Status: **implemented** (works as designed, reachable) / **partial** (some paths
 | hal/blackwell backend | partial | `load_model_weights` returns error, so `Loaded` never reached [v] |
 | helios-cli | partial | Boot path complete for tokenizer/engine; no features; sm90/sm120 tasks broken [v] |
 | ignition cli | skeleton | Writes sidecar only; weight blob and signature are TODO [v] |
-| ignition registries | implemented | Import-side-effect registration; circular-import fix not verified by `pip install` [v read / x run] |
+| ignition registries | implemented | Import-side-effect registration; circular import fixed, verified by `pip install -e ignition` + pytest [v] |
 | ignition architectures | skeleton | `layers=[]`, hardcoded tokenizer dict per arch [v] |
 | ignition hardware recipes | implemented (declarative) | Emitted into `hardware_recipe`; no helios code reads it [v] |
 
-Hard-coded model dims: `HEAD_DIM = 128`, `NUM_HEADS = 32` (blackwell backend.rs), `VOCAB_SIZE` (kernels.rs). CLAUDE.md says these must come from manifest `ModelConfig`; no `ModelConfig` exists in spec v1 [v].
+Hard-coded model dims: `HEAD_DIM = 128`, `NUM_HEADS = 32` (blackwell backend.rs), `VOCAB_SIZE` (kernels.rs). Manifest v1 now carries `ModelConfig`, but the backend does not read it yet [v].
 
 ## Unresolved questions
 
@@ -143,8 +143,8 @@ Hard-coded model dims: `HEAD_DIM = 128`, `NUM_HEADS = 32` (blackwell backend.rs)
 2. `/v1` prefix: nest the router in `main.rs`, or change api.rs docs and clients?
 3. Factory: implement sm120 -> sm90 -> stub fallthrough, or document first-match-only?
 4. `StubBackend` is a fake. Allowed in default builds, or move behind a test-only feature?
-5. Manifest tag: Python writes integer `1`, Rust expects `"V1"`. Add serde rename before v1 freezes?
-6. Add `ModelConfig` to spec v1 before first release (CLAUDE.md decision) and drop hard-coded dims?
+5. ~~Manifest tag~~ Resolved (P0b): both sides use `"V1"`; schema + shared fixtures guard it.
+6. `ModelConfig` is in spec v1. Remaining: make the SM120 backend read it instead of hard-coded dims.
 7. `panic = "abort"` in release makes main.rs supervisor panic path (JoinError) dev-only. Intended?
-8. Ignition registry circular-import fix: run `pip install -e ignition` and import each entry point.
+8. ~~Ignition registry circular import~~ Resolved: verified by `pip install -e ignition` and pytest.
 9. Regenerate `repomix-output.xml` before next docs wave (helios-core stale).

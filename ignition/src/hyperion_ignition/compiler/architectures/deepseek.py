@@ -1,4 +1,10 @@
-"""DeepSeek-family compiler. Skeleton symmetric to LlamaCompiler."""
+"""DeepSeek-family compiler. Not implemented.
+
+DeepSeek V2/V3 use multi-head latent attention (MLA): the KV cache holds a
+compressed latent, not `num_kv_heads x head_dim` tensors. Manifest v1's
+`ModelConfig` cannot describe that, and guessing head dimensions would size the
+KV cache wrongly. Supporting it needs a schema decision first.
+"""
 
 from __future__ import annotations
 
@@ -12,12 +18,8 @@ class DeepSeekCompiler:
     model_id = "deepseek"
 
     def compile(self, *, source: Path, recipe: HardwareRecipe) -> CompiledManifest:
-        return CompiledManifest(
-            model_id=self.model_id,
-            target_arch=recipe.target_arch,
-            tokenizer={"family": "bpe", "asset_path": "tokenizer.json", "max_seq_len": 65536},
-            layers=[],
-            hardware_recipe=recipe.constraints(),
+        raise NotImplementedError(
+            "deepseek: MLA KV geometry is not representable by manifest v1 ModelConfig"
         )
 
 

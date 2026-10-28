@@ -1,8 +1,13 @@
 //! Manifest version 1 — the original `.hyperion` package format.
 //!
-//! Stability contract: once `v1` ships, these structs are frozen. New fields
-//! are added in a new major version, not here. Optional fields use `Option<T>`
-//! and `#[serde(default)]` so older packages still load after minor additions.
+//! Stability contract: v1 stays editable until the first package is released.
+//! From then on these structs are frozen — new fields go in a new major
+//! version, not here. Unknown fields are rejected (`deny_unknown_fields`) so a
+//! typo or a field from a newer writer fails loudly instead of being dropped.
+//! Optional fields use `Option<T>` and `#[serde(default)]`.
+//!
+//! These structs are the schema source of truth: with the `schema` feature,
+//! `specification/schema/manifest.v1.json` is generated from them.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,17 +20,22 @@ use serde::{Deserialize, Serialize};
 /// `target_arch` field is what drives HAL backend selection — see
 /// `helios-hal::backend_factory`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Manifest {
-    /// Semantic version of the model itself, e.g. "llama3-8b-v1".
+    /// Identifier of the compiled model, e.g. "llama3".
     pub model_id: String,
 
-    /// Minimum compute capability the package was compiled for, e.g. "sm_90".
-    /// Runtime may run on a *higher* capability (forward-compat) but never lower.
+    /// Compute capability the package was compiled for, e.g. "sm_90". The
+    /// runtime accepts the package only on hardware that reports exactly this.
     pub target_arch: String,
 
-    /// Tokenizer configuration serialized alongside the weights. Required — a
-    /// package without a tokenizer is broken; we reject it at parse time here
-    /// rather than surfacing a 501 per-request at runtime.
+    /// Model dimensions the runtime needs to size caches and buffers. Backends
+    /// read these instead of hard-coding them.
+    pub model: ModelConfig,
+
+    /// Tokenizer configuration serialized alongside the weights.
+    #[serde(default)]
     pub tokenizer: TokenizerConfig,
 
     /// Per-layer weight metadata + byte offsets into the package blob.
@@ -42,25 +52,52 @@ pub struct Manifest {
     pub signature: Option<Vec<u8>>,
 }
 
+/// Architecture dimensions of the compiled model. All fields are required: a
+/// manifest that cannot say how big its KV cache and vocabulary are is not
+/// loadable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ModelConfig {
+    /// Number of transformer layers.
+    pub num_layers: u32,
+
+    /// Number of attention (query) heads.
+    pub num_attention_heads: u32,
+
+    /// Number of key/value heads (equals `num_attention_heads` without GQA).
+    pub num_kv_heads: u32,
+
+    /// Dimension of one attention head.
+    pub head_dim: u32,
+
+    /// Vocabulary size (logits width).
+    pub vocab_size: u32,
+
+    /// Maximum sequence length the model was compiled with. Requests beyond
+    /// this are rejected to avoid KV cache overrun.
+    pub max_seq_len: u32,
+}
+
 /// Tokenizer metadata. Kept intentionally thin — the actual vocab/merges are
 /// in a separate asset in the package, referenced by `asset_path`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TokenizerConfig {
     /// Family: "bpe", "spm", "rune", … drives the decoder impl in runtime.
     pub family: String,
 
-    /// Path inside the package to the tokenizer asset (vocab + merges).
+    /// Path inside the package to the tokenizer asset (vocab + merges). Empty
+    /// means the package ships without a tokenizer.
     pub asset_path: PathBuf,
-
-    /// Maximum sequence length the model was compiled with. Decode beyond this
-    /// is rejected to avoid KV cache overrun.
-    #[serde(default)]
-    pub max_seq_len: Option<u32>,
 }
 
 /// Maps one transformer layer to its weight tensor(s) inside the package blob.
 /// Byte offsets let the loader mmap the blob and slice without copying.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LayerMapping {
     /// 0-based layer index in the model graph.
     pub index: u32,
@@ -81,6 +118,8 @@ pub struct LayerMapping {
 /// Shape + dtype of a single tensor. Mirrors `helios_hal::TensorData` but
 /// stays decoupled from device pointers — this is on-package metadata only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TensorMetadata {
     /// "bf16" | "fp8" | "fp4" | "fp6" — matches kernel dtype flags.
     pub dtype: String,

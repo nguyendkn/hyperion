@@ -1,0 +1,25 @@
+{
+  "manifest_version": "V1",
+  "model_id": "llama3",
+  "target_arch": "sm_90",
+  "model": {
+    "num_layers": 32,
+    "num_attention_heads": 32,
+    "num_kv_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 128256,
+    "max_seq_len": 8192
+  },
+  "tokenizer": {
+    "family": "bpe",
+    "asset_path": "tokenizer.json"
+  },
+  "layers": [],
+  "hardware_recipe": {
+    "fp4": "disabled",
+    "fp8": "enabled",
+    "bf16": "enabled",
+    "cuda_graphs": "disabled"
+  },
+  "signature": null
+}

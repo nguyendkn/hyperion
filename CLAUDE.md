@@ -20,7 +20,7 @@ Two-stage architecture:
 hyperion/
 ├── Cargo.toml              # Rust workspace, dependency inheritance, release: fat LTO
 ├── Taskfile.yml
-├── specification/          # Shared schemas. Rust is the schema source of truth; v1 freezes at first released package (Manifest enum tagged by manifest_version)
+├── specification/          # Shared schemas (schema/, fixtures/v1/ shared with Ignition tests). Rust is the schema source of truth; v1 freezes at first released package (Manifest enum tagged by manifest_version)
 ├── ignition/               # Python (pyproject.toml, src/hyperion_ignition/): cli.py, compiler/ (registry + architectures/), hardware/ (recipes)
 └── helios/crates/
     ├── helios-core/        # api.rs, cache.rs (RadixCache), scheduler.rs, state.rs, tokenizer.rs
@@ -35,6 +35,9 @@ cargo check --workspace                          # default: stub
 cargo build --workspace --features stub
 cargo check -p helios-hal --features sm120       # type-check only when CUDA is absent
 python -m compileall ignition/src                # syntax check for Ignition
+pytest ignition/tests                            # Ignition tests (pip install -e "ignition[test]")
+cargo test -p hyperion-specification --features schema   # manifest contract + schema drift (task schema:check)
+cargo run -p hyperion-specification --features schema --bin gen-schema   # regenerate schema (task schema:gen)
 ```
 
 ## Architecture rules (mandatory)
@@ -56,7 +59,7 @@ python -m compileall ignition/src                # syntax check for Ignition
 - **HTTP status:** 501 when no tokenizer is loaded (capability not wired); 503 is reserved for engine states `Uninitialized`/`Stopped`.
 - **Triage:** exact `target_arch` match only. Ignition compiles per target. A PTX fallback, if ever needed, is an explicit manifest field, never inferred from the arch number.
 - **Model parameters:** `ModelConfig` (num_layers, num_kv_heads, head_dim, vocab_size, max_seq_len, ...) lives in the manifest. Backends read it; no hard-coded model dimensions.
-- **Schema source of truth:** Rust structs. Generate JSON Schema (e.g. `schemars`); Ignition validates against it, with a Rust/Python round-trip test.
+- **Schema source of truth:** Rust structs in `specification`, manifest is JSON. `schemars` behind a `schema` feature (not pulled into `helios-cli`) generates `specification/schema/manifest.v1.json`, committed; CI regenerates and runs `git diff --exit-code`. `#[serde(deny_unknown_fields)]` on manifest types. `manifest_version` is the string `"V1"`. Ignition validates with `jsonschema` (a real runtime dependency) before writing/signing; Rust/Python round-trip tests both ways. Signatures cover the manifest's stored bytes, never a re-serialization. **Not Protobuf**: manifest is off the hot path and read once; revisit only for a runtime IPC protocol (e.g. KV sidecar, multi-node), as a separate decision.
 - **`.hyperion` package codec:** will be a dedicated crate, `helios-pkg`. A `.manifest.json` placeholder is used for now.
 
 ## Working rules

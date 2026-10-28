@@ -43,7 +43,7 @@ Status key: **Done** = implemented in code. **Partial** = some code, not end-to-
 | FR-1 | Compile a model + hardware recipe to `.hyperion` package and `.manifest.json` sidecar | Partial: CLI and manifest JSON write work; `layers` always empty; weight blob not written |
 | FR-2 | Sign weight blob (ed25519), verify at load; release loader rejects unsigned | Planned: `signature` field exists; no signing, no verification |
 | FR-3 | Package codec (`helios-pkg` crate) reads `.hyperion` | Planned: CLI loads `<model>.manifest.json` sidecar as placeholder |
-| FR-4 | Read manifest, parse `target_arch`, reject unknown `manifest_version` | Partial: enum tag parse exists; see §9 for Ignition mismatch |
+| FR-4 | Read manifest, parse `target_arch`, reject unknown `manifest_version` | Done for v1 [v]: string tag `"V1"`; unknown versions and fields rejected |
 | FR-5 | Probe real device compute capability via HAL factory | Partial: SM120 probe is real FFI, not run here; SM90 hardcodes `sm_90`; stub reports `sm_0` |
 | FR-6 | Triage package target vs device (exact match) | Partial: code allows downgrade (see §6) |
 | FR-7 | Load weights to device, capture decode graph | Stub: SM120 `load_model_weights` returns error; SM90 not wired |
@@ -54,7 +54,7 @@ Status key: **Done** = implemented in code. **Partial** = some code, not end-to-
 | FR-12 | Streaming (SSE) responses | Planned: non-streaming only |
 | FR-13 | Engine lifecycle state machine with safe transitions | Done (unit-level logic): 6 states, CAS transitions, exhaustive table |
 | FR-14 | Map engine state to HTTP status (501 no tokenizer; 503 engine down; 504 first-event timeout) | Done in code; see §6 for the 503 rule |
-| FR-15 | Model parameters (layers, KV heads, head_dim, vocab, max_seq_len) read from manifest | Planned: `ModelConfig` not in manifest; SM120 hard-codes dims |
+| FR-15 | Model parameters (layers, KV heads, head_dim, vocab, max_seq_len) read from manifest | Partial: `ModelConfig` is in the manifest (P0b); SM120 backend still hard-codes dims |
 | FR-16 | Hardware recipes per target (`sm_90` FP8/BF16, `sm_120` FP4/FP6/FP8/BF16 + graphs) | Done as data (Python dict); not yet consumed by runtime |
 
 ## 5. Non-functional requirements
@@ -80,8 +80,8 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 |---|---|
 | Triage: exact `target_arch` match only. Ignition compiles per target. PTX fallback, if ever, is an explicit manifest field | **Decided, code pending.** `triage.rs` still allows `Downgrade` when `target < actual`. Also `lib.rs` docs still describe forward-compat |
 | Manifest records `target_arch` and `tensor_format` | `target_arch` yes. `tensor_format` absent from `v1::Manifest` |
-| `ModelConfig` (num_layers, num_kv_heads, head_dim, vocab_size, max_seq_len) in manifest; backends read it | **Decided, code pending.** SM120 hard-codes dims |
-| Rust structs are schema source of truth; JSON Schema via `schemars`; Ignition validates; Rust/Python round-trip test | **Decided, code pending.** No schema generated, no round-trip test |
+| `ModelConfig` (num_layers, num_kv_heads, head_dim, vocab_size, max_seq_len) in manifest; backends read it | **Manifest done (P0b).** Backends still hard-code dims |
+| Rust structs are schema source of truth; JSON Schema via `schemars`; Ignition validates; Rust/Python round-trip test | **Done (P0b).** Schema generated and committed, drift test, `jsonschema` validation, shared fixtures. `tensor_format` still absent |
 | `specification/v1` immutable at first released package | Pre-release: still mutable |
 | `.hyperion` codec is a dedicated crate `helios-pkg` | Not created. `.manifest.json` sidecar placeholder in use |
 | HTTP: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` engine states | Handler also returns 503 for `Draining`, queue-closed, queue-full, and no-scheduler. Decision text and code disagree on `Draining` and scheduler errors |
@@ -124,15 +124,15 @@ Each is a code-reading finding. None was reproduced by running the code.
 
 1. **Default build cannot serve a real package.** Stub reports `sm_0`. A package with `target_arch` `sm_90`/`sm_120` fails triage (`UpgradeRequired`), so `create_backend` returns an error. Inference from code.
 2. **Scheduler exits at once.** `Scheduler::run()` closes ingress and returns `Ok`. After that, `/v1/chat/completions` returns 503 "queue closed" for any request that gets past tokenization. No generation path exists.
-3. **Manifest tag mismatch.** Ignition writes `"manifest_version": 1` (integer). `specification/src/lib.rs` uses `#[serde(tag = "manifest_version")]` with variant `V1`, which serde expects as the string `"V1"`. Inference from serde semantics; likely fails to parse Ignition output. No round-trip test exists.
-4. **Signature type drift.** Python `signature: list[int]`. Rust `Option<Vec<u8>>`. Matches JSON shape, but no test verifies it.
+3. **Manifest tag mismatch: resolved (P0b).** Both sides use the string `"V1"`; schema and shared fixtures guard it.
+4. **Signature type drift: covered.** A shared fixture carries a signature and round-trips through Rust.
 5. **SM120 placeholder kernels.** `prefill_launch` captures an empty graph. `decode_replay` reads an uninitialised logits buffer. Result is not a real token. Do not treat SM120 decode as working.
 6. **SM120 vocab and dims hard-coded** (`VOCAB_SIZE = 128_256`, HEAD_DIM 128, 32 heads). Conflicts with the `ModelConfig` decision.
 7. **Doc drift in code comments.** `helios-hal/src/lib.rs` and `triage.rs` describe forward-compat downgrade as a design invariant. Conflicts with the decided exact-match rule.
 8. **SM90 `build.rs` linkage is commented out.** `sm90` feature compiles, but every method returns "not wired". `Taskfile.yml` says "requires TensorRT-LLM + CUDA".
 9. **SM121 unresolved.** Exact-match triage treats `sm_121` and `sm_120` as different. Whether a SM120 package may run on SM121 is not decided.
 10. **Ignition writes no weights and no signature.** `cli.py` has TODOs. `layers` is always `[]`.
-11. **`ModelConfig` and `tensor_format` absent** from manifest (see §6).
+11. **`tensor_format` absent** from manifest (`ModelConfig` was added in P0b; see §6).
 12. **Taskfile `build:sm120` comment** mentions NVRTC. No NVRTC code exists.
 
 ## 10. Requirement change history
@@ -145,8 +145,8 @@ Each is a code-reading finding. None was reproduced by running the code.
 
 1. Does SM120 package run on SM121 device under exact match, or does SM121 need its own build? (CLAUDE.md lists both; no rule.)
 2. Is `tensor_format` a new manifest field in `v1` (pre-release, allowed) or does it wait for `v2`?
-3. Which Ignition/Rust manifest tag format wins (integer `1` vs string `"V1"`)? Fix on Python side or Rust side?
-4. Schema generation: `schemars` on Rust structs at build time, or a separate export step? Who owns the generated JSON Schema file?
+3. ~~Manifest tag format~~ Resolved: string `"V1"`.
+4. ~~Schema generation~~ Resolved: `schemars` behind feature `schema`; file committed at `specification/schema/manifest.v1.json`.
 5. Streaming (FR-12) in scope for first public release, or after M4?
 6. Performance targets (NFR-9, SC-8): none set. Need a number and a reference model.
 7. Chat template source: package asset (Jinja) or Ignition-generated? Current code uses `role:content` join.

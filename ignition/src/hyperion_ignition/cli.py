@@ -14,6 +14,7 @@ import click
 
 from .compiler.registry import build_compiler
 from .hardware.registry import build_recipe
+from .manifest_schema import validate_manifest
 
 
 @click.command()
@@ -23,15 +24,20 @@ from .hardware.registry import build_recipe
 @click.option("--source", "source_path", type=click.Path(path_type=Path), required=True)
 def main(model_id: str, target_arch: str, out_path: Path, source_path: Path) -> None:
     """Compile a model into a `.hyperion` package for the given hardware."""
-    compiler = build_compiler(model_id)
-    recipe = build_recipe(target_arch)
-
-    click.echo(f"compiling {model_id} for {target_arch} via {compiler.__class__.__name__}")
-    manifest = compiler.compile(source=source_path, recipe=recipe)
+    try:
+        compiler = build_compiler(model_id)
+        recipe = build_recipe(target_arch)
+        click.echo(f"compiling {model_id} for {target_arch} via {compiler.__class__.__name__}")
+        manifest = compiler.compile(source=source_path, recipe=recipe)
+        document = manifest.to_json_dict()
+        validate_manifest(document)  # nothing is written unless it satisfies the schema
+    except (KeyError, ValueError, OSError, NotImplementedError) as exc:
+        message = exc.args[0] if isinstance(exc, KeyError) else str(exc)
+        raise click.ClickException(message) from exc
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path = out_path.with_suffix(".manifest.json")
-    manifest_path.write_text(json.dumps(manifest.to_json_dict(), indent=2), encoding="utf-8")
+    manifest_path.write_text(json.dumps(document, indent=2), encoding="utf-8")
     click.echo(f"wrote manifest -> {manifest_path}")
 
     # TODO: write the encrypted weight blob to out_path using the manifest's

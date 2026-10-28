@@ -1,0 +1,36 @@
+{
+  "hardware_recipe": {
+    "fp4": "enabled"
+  },
+  "layers": [
+    {
+      "byte_length": 33554432,
+      "byte_offset": 0,
+      "index": 0,
+      "name": "attention.q_proj",
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          4096,
+          4096
+        ]
+      }
+    }
+  ],
+  "manifest_version": "V1",
+  "model": {
+    "head_dim": 128,
+    "max_seq_len": 8192,
+    "num_attention_heads": 32,
+    "num_kv_heads": 8,
+    "num_layers": 32,
+    "vocab_size": 128256
+  },
+  "model_id": "llama3",
+  "signature": null,
+  "target_arch": "sm_120",
+  "tokenizer": {
+    "asset_path": "tokenizer.json",
+    "family": "bpe"
+  }
+}

@@ -63,12 +63,20 @@ Blackwell SM120 type-check only. Linking needs the CUDA toolkit, so this does no
 cargo check -p helios-hal --features sm120
 ```
 
-Ignition (not verified yet):
+Ignition (verified: installs and runs, 21 pytest pass; writes the manifest only, no weights):
 
 ```sh
-pip install -e ignition                     # not run yet
+pip install -e "ignition[test]"
 hyperion-compile --model llama3 --hw sm_120 --source <hf-dir> --out out/model.hyperion
-                                            # not run yet; writes out/model.manifest.json only
+                                            # <hf-dir> must hold a Hugging Face config.json
+pytest ignition/tests
+```
+
+The manifest schema is generated from the Rust structs and committed:
+
+```sh
+task schema:gen     # rewrite specification/schema/manifest.v1.json
+task schema:check   # fail if it is stale
 ```
 
 The `Taskfile.yml` wraps the Cargo commands as `task build`, `task check`, `task test`. `task build:sm90` and `task build:sm120` are broken: `helios-cli` declares no Cargo features, so the `--features` flag fails.

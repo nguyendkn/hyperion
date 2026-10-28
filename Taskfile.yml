@@ -37,10 +37,25 @@ tasks:
     cmds:
       - "{{.CARGO}} test --workspace"
 
-  ignition:install:
-    desc: Install the Python Ignition compiler in dev mode
+  schema:gen:
+    desc: Regenerate specification/schema/manifest.v1.json from the Rust structs
     cmds:
-      - "pip install -e ignition"
+      - "{{.CARGO}} run -p hyperion-specification --features schema --bin gen-schema"
+
+  schema:check:
+    desc: Fail if the committed manifest schema is stale (also runs the manifest contract tests)
+    cmds:
+      - "{{.CARGO}} test -p hyperion-specification --features schema"
+
+  ignition:install:
+    desc: Install the Python Ignition compiler in dev mode (with test extras)
+    cmds:
+      - "pip install -e \"ignition[test]\""
+
+  ignition:test:
+    desc: Run the Ignition tests (manifest schema, compilers, CLI)
+    cmds:
+      - "pytest ignition/tests"
 
   ignition:compile:
     desc: Compile a model package (usage: task ignition:compile -- --model <id> --hw <sm>)

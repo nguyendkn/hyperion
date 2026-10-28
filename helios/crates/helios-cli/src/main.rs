@@ -34,6 +34,12 @@ const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// last resort, not the default path.
 const SCHED_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// After aborting the scheduler task, how long to wait for confirmation that
+/// it actually stopped. A task blocked in a synchronous device call only
+/// stops once that call returns; without confirmation we must not tear the
+/// backend down underneath it.
+const ABORT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Launch the Helios runtime against a single `.hyperion` package.
 #[derive(Parser, Debug)]
 #[command(name = "helios-cli", version, about = "Run a local inference engine from a .hyperion package")]
@@ -94,9 +100,11 @@ async fn main() -> Result<()> {
     //    (below, step 9) after the server stops serving, then waits
     //    `SCHED_EXIT_TIMEOUT` for `run()` to exit at a safe point (it checks
     //    `is_cancelled()` between batch iterations — never mid-call). Only if
-    //    that timeout elapses do we fall back to `abort()` on the supervisor's
-    //    `JoinHandle`, which can cut a device call mid-flight; that is a last
-    //    resort, never the default path.
+    //    that timeout elapses do we `abort()` the scheduler task itself (via
+    //    its `AbortHandle`; aborting the supervisor would only detach it) and
+    //    wait to confirm it stopped. Abort can cut a device call mid-flight,
+    //    so it is a last resort, and an unconfirmed stop skips backend
+    //    teardown.
     let (ingress_tx, ingress_rx) = helios_core::scheduler::ingress_channel();
     let sched_cancel = CancellationToken::new();
     let sched_cancel_for_task = sched_cancel.clone();
@@ -105,6 +113,7 @@ async fn main() -> Result<()> {
     let sched_handle = tokio::spawn(async move {
         scheduler.run(sched_cancel_for_task).await
     });
+    let sched_abort = sched_handle.abort_handle();
 
     let sm_for_sup = sm.clone();
     let mut sup_handle = tokio::spawn(async move {
@@ -141,7 +150,7 @@ async fn main() -> Result<()> {
         tracing::info!(tok = %tok_path.display(), "tokenizer asset located");
         Some(helios_core::tokenizer::PromptTokenizer::new(
             tok_path.to_string_lossy().into_owned(),
-            manifest.tokenizer.max_seq_len.map(|n| n as usize),
+            Some(manifest.model.max_seq_len as usize),
         ))
     };
 
@@ -157,61 +166,86 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!("bind :{port} failed: {e}", port = cli.port))?;
     tracing::info!(addr = %listener.local_addr()?, "helios API up");
 
-    // 9. Serve until shutdown. The graceful-shutdown sequence:
-    //    a. `shutdown_signal()` fires (Ctrl-C / SIGTERM).
-    //    b. We ask the engine to drain. `drain_for_shutdown` is a tolerant
-    //       no-op if the engine is already past the states where draining
-    //       is legal (`Uninitialized`/`Ready` — nothing loaded, `Draining`,
-    //       `Stopped`), so a racing supervisor that already moved to
-    //       `Stopped` does not surface a spurious `IllegalTransition` here.
-    //    c. `axum::serve` stops accepting and drains in-flight HTTP. Wrap it
-    //       in `tokio::time::timeout(HTTP_DRAIN_TIMEOUT, …)` so a hung client
-    //       cannot block shutdown forever; on timeout we drop the serve
-    //       future, which closes the listener and abandons in-flight work.
-    //    d. After `serve` returns: trip `sched_cancel` and wait up to
-    //       `SCHED_EXIT_TIMEOUT` for the scheduler to exit at a safe point.
-    //       Only on timeout do we fall back to `abort()`, which can cut a
-    //       device call mid-flight; that is the last resort.
-    //    e. Then `backend.shutdown()` frees device memory, and `sm.shutdown()`
-    //       marks the engine `Stopped`. Idempotent vs a racing supervisor.
-    if let Err(e) = sm.drain_for_shutdown() {
-        tracing::warn!(error = %e, "engine drain_for_shutdown errored; continuing shutdown");
-    }
-    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
-    match tokio::time::timeout(HTTP_DRAIN_TIMEOUT, serve).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => tracing::error!(error = %e, "axum serve returned an error"),
-        Err(_) => tracing::warn!(
-            timeout = ?HTTP_DRAIN_TIMEOUT,
-            "axum graceful drain timed out; forcing shutdown"
-        ),
+    // 9. Serve until a shutdown signal, a scheduler exit or a server failure.
+    //    Sequence once one of those fires:
+    //    a. engine -> `Draining` (API rejects new work),
+    //    b. axum stops accepting and drains in-flight HTTP, bounded by
+    //       `HTTP_DRAIN_TIMEOUT` counted from this point, not from startup,
+    //    c. trip `sched_cancel`, wait up to `SCHED_EXIT_TIMEOUT`; on timeout
+    //       abort the scheduler task and confirm it stopped,
+    //    d. `backend.shutdown()` only if the scheduler is confirmed stopped;
+    //       otherwise skip it and let process exit reclaim device memory,
+    //    e. engine -> `Stopped`. A scheduler or server failure exits non-zero.
+    let stop = CancellationToken::new();
+    let stop_for_serve = stop.clone();
+    let mut serve_task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { stop_for_serve.cancelled().await })
+            .await
+    });
+
+    let mut failed = false;
+    let mut serve_done = false;
+    let mut sup_done = false;
+    tokio::select! {
+        _ = shutdown_signal() => tracing::info!("shutdown signal received"),
+        _ = &mut sup_handle => {
+            sup_done = true;
+            failed = true;
+            tracing::error!("scheduler exited before shutdown was requested; shutting down");
+        }
+        res = &mut serve_task => {
+            serve_done = true;
+            failed = true;
+            tracing::error!(result = ?res, "http server stopped before shutdown was requested");
+        }
     }
 
-    // Trip the scheduler's cooperative cancellation and give it a bounded
-    // window to exit at a safe point. The supervisor's task observes the
-    // scheduler `JoinHandle` resolving and then flips the engine to
-    // `Stopped`; awaiting the supervisor itself is the cleanest signal that
-    // the scheduler has exited. Fall back to `abort()` only if that window
-    // elapses — `abort()` can cut a device call mid-flight, so it is a last
-    // resort, not the default path.
-    sched_cancel.cancel();
-    let sup_timed_out = tokio::time::timeout(SCHED_EXIT_TIMEOUT, &mut sup_handle)
-        .await
-        .is_err();
-    if sup_timed_out {
-        tracing::warn!(
-            timeout = ?SCHED_EXIT_TIMEOUT,
-            "scheduler did not exit in time; falling back to abort"
-        );
-        sup_handle.abort();
+    match sm.drain_for_shutdown() {
+        Ok(()) => tracing::info!(status = ?sm.status(), "engine draining"),
+        Err(e) => tracing::warn!(error = %e, "engine drain failed; continuing shutdown"),
     }
-    // else: supervisor resolved within the window — its body already moved
-    // the engine to `Stopped` (or races our `sm.shutdown()` below, which is
-    // idempotent). Detaching via drop is implicit on scope end.
-    if let Err(e) = backend.shutdown() {
-        tracing::error!(error = %e, "backend shutdown failed");
+    stop.cancel();
+    if !serve_done {
+        match tokio::time::timeout(HTTP_DRAIN_TIMEOUT, &mut serve_task).await {
+            Ok(Ok(Ok(()))) => tracing::info!("http server drained"),
+            Ok(Ok(Err(e))) => tracing::error!(error = %e, "axum serve returned an error"),
+            Ok(Err(je)) => tracing::error!(error = %je, "http server task panicked"),
+            Err(_) => {
+                tracing::warn!(timeout = ?HTTP_DRAIN_TIMEOUT, "http drain timed out; aborting server");
+                serve_task.abort();
+            }
+        }
+    }
+
+    sched_cancel.cancel();
+    let mut scheduler_stopped = sup_done;
+    if !sup_done {
+        if tokio::time::timeout(SCHED_EXIT_TIMEOUT, &mut sup_handle).await.is_ok() {
+            scheduler_stopped = true;
+        } else {
+            tracing::warn!(timeout = ?SCHED_EXIT_TIMEOUT, "scheduler did not exit in time; aborting it");
+            sched_abort.abort();
+            scheduler_stopped =
+                tokio::time::timeout(ABORT_CONFIRM_TIMEOUT, &mut sup_handle).await.is_ok();
+        }
+    }
+
+    if scheduler_stopped {
+        tracing::info!("scheduler stopped");
+        match backend.shutdown() {
+            Ok(()) => tracing::info!("backend shut down"),
+            Err(e) => tracing::error!(error = %e, "backend shutdown failed"),
+        }
+    } else {
+        failed = true;
+        tracing::error!("scheduler stop not confirmed; skipping backend shutdown");
     }
     let _ = sm.shutdown();
+    tracing::info!(status = ?sm.status(), "engine stopped");
+    if failed {
+        return Err(anyhow!("helios stopped abnormally (see log)"));
+    }
     Ok(())
 }
 

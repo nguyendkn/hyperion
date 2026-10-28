@@ -66,7 +66,7 @@ fn can_transition(from: EngineStatus, to: EngineStatus) -> bool {
             | (Ready, Loaded)
             | (Loaded, Serving)
             | (Serving, Loaded)
-            | (Loaded | Serving, Draining)
+            | (Loaded | Serving | Ready, Draining)
             | (Draining, Stopped)
             | (Loaded | Ready, Stopped)
             | (Stopped, Stopped)
@@ -173,41 +173,18 @@ impl StateMachine {
         self.state.transition(EngineStatus::Draining).map(|_| ())
     }
 
-    /// Shutdown-friendly drain: move to `Draining` only if the engine is
-    /// currently in a state where that transition is legal (`Loaded` or
-    /// `Serving`). For `Uninitialized`/`Ready` (nothing loaded/in flight),
-    /// `Draining` (already), or `Stopped` (terminal) this is a no-op and
-    /// returns `Ok`. This makes the graceful-shutdown sequence tolerant of
-    /// racing state changes — e.g. the supervisor already moved the engine
-    /// to `Stopped` — without surfacing `IllegalTransition` to the caller.
+    /// Shutdown-friendly drain: move to `Draining` from `Ready`, `Loaded` or
+    /// `Serving`. Already being shut down (`Draining`, or `Stopped`, which is
+    /// terminal) counts as success so a racing supervisor is harmless. Any
+    /// other failure, notably `Uninitialized`, is returned to the caller.
     pub fn drain_for_shutdown(&self) -> Result<()> {
-        match self.status() {
-            EngineStatus::Loaded | EngineStatus::Serving => {
-                // A concurrent mover may have advanced past `Loaded`/`Serving`
-                // between our read and the CAS inside `transition`. If that
-                // race lands us on `Draining`/`Stopped` (already shutting
-                // down) we treat it as success; only a genuine error bubbles up.
-                match self.drain() {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        // Tolerate the race where a concurrent mover advanced
-                        // the engine past `Loaded`/`Serving` (→ `Draining` or
-                        // `Stopped`) or to `Ready`/`Uninitialized`: those are
-                        // all "already shut down / nothing to drain" outcomes.
-                        // Any other error is genuine and bubbles up.
-                        let illegal = matches!(
-                            e.downcast_ref::<StateError>(),
-                            Some(StateError::IllegalTransition { from, .. }) if matches!(
-                                from,
-                                EngineStatus::Draining | EngineStatus::Stopped
-                                    | EngineStatus::Ready | EngineStatus::Uninitialized
-                            )
-                        );
-                        if illegal { Ok(()) } else { Err(e) }
-                    }
-                }
-            }
-            _ => Ok(()),
+        match self.drain() {
+            Ok(()) => Ok(()),
+            Err(e) => match e.downcast_ref::<StateError>() {
+                Some(StateError::IllegalTransition { from: EngineStatus::Draining, .. })
+                | Some(StateError::Terminal(_)) => Ok(()),
+                _ => Err(e),
+            },
         }
     }
 
@@ -219,5 +196,68 @@ impl StateMachine {
 impl Default for StateMachine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use EngineStatus::*;
+
+    const ALL: [EngineStatus; 6] = [Uninitialized, Ready, Loaded, Serving, Draining, Stopped];
+
+    fn at(status: EngineStatus) -> EngineState {
+        EngineState { status: AtomicU8::new(status as u8) }
+    }
+
+    #[test]
+    fn transition_table_is_exactly_the_documented_set() {
+        let allowed = [
+            (Uninitialized, Ready),
+            (Ready, Loaded),
+            (Loaded, Serving),
+            (Serving, Loaded),
+            (Loaded, Draining),
+            (Serving, Draining),
+            (Ready, Draining),
+            (Draining, Stopped),
+            (Loaded, Stopped),
+            (Ready, Stopped),
+            (Stopped, Stopped),
+        ];
+        for from in ALL {
+            for to in ALL {
+                assert_eq!(
+                    can_transition(from, to),
+                    allowed.contains(&(from, to)),
+                    "{from:?} -> {to:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drain_for_shutdown_from_every_state() {
+        for (from, ok, after) in [
+            (Uninitialized, false, Uninitialized),
+            (Ready, true, Draining),
+            (Loaded, true, Draining),
+            (Serving, true, Draining),
+            (Draining, true, Draining),
+            (Stopped, true, Stopped),
+        ] {
+            let sm = StateMachine { state: Arc::new(at(from)) };
+            assert_eq!(sm.drain_for_shutdown().is_ok(), ok, "from {from:?}");
+            assert_eq!(sm.status(), after, "from {from:?}");
+        }
+    }
+
+    #[test]
+    fn stopped_is_terminal_except_idempotent_stop() {
+        let st = at(Stopped);
+        assert!(st.transition(Stopped).is_ok());
+        for to in [Ready, Loaded, Serving, Draining] {
+            assert!(st.transition(to).is_err(), "Stopped -> {to:?}");
+        }
     }
 }

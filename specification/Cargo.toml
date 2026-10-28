@@ -7,12 +7,23 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Generate JSON Schema from the manifest structs (see `gen-schema`). Off by default
+# so the runtime does not link schemars.
+schema = ["dep:schemars"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 bincode = { workspace = true }
 thiserror = { workspace = true }
+schemars = { workspace = true, optional = true }
 
 [lib]
 name = "hyperion_specification"
 path = "src/lib.rs"
+
+[[bin]]
+name = "gen-schema"
+path = "src/bin/gen-schema.rs"
+required-features = ["schema"]

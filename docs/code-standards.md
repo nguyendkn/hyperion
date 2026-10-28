@@ -24,8 +24,8 @@ Status tags: **[enforced]** code matches · **[pending]** decided, code not ther
 | Tokenizer: HF `tokenizers` 0.19 with `onig` feature (workaround; re-check on upgrade) | [enforced] `helios-core/Cargo.toml` |
 | HTTP status: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` | [drift] `api.rs` also returns 503 for queue-full/send-failure; `scheduler.rs` docs mention 429 |
 | Triage: exact `target_arch` match only; PTX fallback only as explicit manifest field | [drift] `triage.rs` implements `Downgrade`; `lib.rs` docs say forward-compat |
-| Model parameters (`ModelConfig`: layers, kv heads, head_dim, vocab, max_seq_len) in manifest; no hard-coded dims | [pending] `blackwell_sm120/backend.rs` hard-codes `HEAD_DIM`, `NUM_HEADS`; `kernels.rs` hard-codes `VOCAB_SIZE` |
-| Schema source of truth = Rust structs; JSON Schema via `schemars`; Rust/Python round-trip test | [pending] no `schemars` in workspace deps |
+| Model parameters (`ModelConfig`: layers, kv heads, head_dim, vocab, max_seq_len) in manifest; no hard-coded dims | [partial] `ModelConfig` is in the manifest (P0b); `blackwell_sm120/backend.rs` still hard-codes `HEAD_DIM`, `NUM_HEADS`; `kernels.rs` hard-codes `VOCAB_SIZE` |
+| Schema source of truth = Rust structs; JSON Schema via `schemars`; Rust/Python round-trip test | [done] `schemars` behind feature `schema`; `specification/schema/manifest.v1.json` committed, a test fails on drift; Ignition validates with `jsonschema`; shared fixtures in `specification/fixtures/v1/` |
 | `.hyperion` codec = dedicated crate `helios-pkg`; `.manifest.json` sidecar until then | [pending] `helios-cli/src/main.rs` reads JSON sidecar |
 | Ed25519 signature over weight blob, verified at load | [pending] field exists; `cli.py` has TODO; `ed25519-dalek` in workspace |
 
@@ -139,7 +139,7 @@ Before reporting work as done:
    ```
 2. Add `from . import <family>  # noqa: F401` to `compiler/architectures/__init__.py`.
 3. Do **not** edit existing architecture files or `compiler/base.py`.
-4. Do not put model dimensions in Rust code; they belong in the manifest (`ModelConfig`, pending).
+4. Do not put model dimensions in Rust code; they belong in the manifest (`ModelConfig`; Rust backends are not wired to it yet).
 5. Verify: `python -m compileall ignition/src`; `hyperion-compile --model <id> --hw sm_90 --source <dir> --out <file>`.
 
 ## 11. Commands

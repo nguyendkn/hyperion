@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "description": "Discriminated top-level wrapper so loaders can branch on version before\ncommitting to a concrete struct. New versions add a variant here — never\nmutate an existing one. On the wire the tag is the variant name, e.g.\n`\"manifest_version\": \"V1\"`.",
+  "oneOf": [
+    {
+      "description": "Top-level descriptor embedded in every `.hyperion` package.\n\nWritten by Ignition at compile time, read by Helios at load time. The\n`target_arch` field is what drives HAL backend selection — see\n`helios-hal::backend_factory`.",
+      "type": "object",
+      "properties": {
+        "hardware_recipe": {
+          "description": "Hardware recipe applied at compile time (FP8/FP4/BF16, CUDA Graph capture).\nStored as free-form k=v so recipes evolve without a schema change.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "layers": {
+          "description": "Per-layer weight metadata + byte offsets into the package blob.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LayerMapping"
+          }
+        },
+        "manifest_version": {
+          "type": "string",
+          "const": "V1"
+        },
+        "model": {
+          "description": "Model dimensions the runtime needs to size caches and buffers. Backends\nread these instead of hard-coding them.",
+          "$ref": "#/$defs/ModelConfig"
+        },
+        "model_id": {
+          "description": "Identifier of the compiled model, e.g. \"llama3\".",
+          "type": "string"
+        },
+        "signature": {
+          "description": "Ed25519 signature over the weight blob, verified at load. Absent =\nunsigned package (allowed in dev builds, rejected by release loader).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          }
+        },
+        "target_arch": {
+          "description": "Compute capability the package was compiled for, e.g. \"sm_90\". The\nruntime accepts the package only on hardware that reports exactly this.",
+          "type": "string"
+        },
+        "tokenizer": {
+          "description": "Tokenizer configuration serialized alongside the weights.",
+          "$ref": "#/$defs/TokenizerConfig",
+          "default": {
+            "asset_path": "",
+            "family": ""
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "manifest_version",
+        "model_id",
+        "target_arch",
+        "model",
+        "layers"
+      ]
+    }
+  ],
+  "$defs": {
+    "LayerMapping": {
+      "description": "Maps one transformer layer to its weight tensor(s) inside the package blob.\nByte offsets let the loader mmap the blob and slice without copying.",
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "description": "Length in bytes of the weight blob for this tensor.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "byte_offset": {
+          "description": "On-package byte range where this tensor's weights begin.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "index": {
+          "description": "0-based layer index in the model graph.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "name": {
+          "description": "Logical name, e.g. \"attention.q_proj\" — matches the kernel registry.",
+          "type": "string"
+        },
+        "tensor": {
+          "description": "Tensor metadata describing dtype/shape — see [`TensorMetadata`].",
+          "$ref": "#/$defs/TensorMetadata"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "name",
+        "byte_offset",
+        "byte_length",
+        "tensor"
+      ]
+    },
+    "ModelConfig": {
+      "description": "Architecture dimensions of the compiled model. All fields are required: a\nmanifest that cannot say how big its KV cache and vocabulary are is not\nloadable.",
+      "type": "object",
+      "properties": {
+        "head_dim": {
+          "description": "Dimension of one attention head.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_seq_len": {
+          "description": "Maximum sequence length the model was compiled with. Requests beyond\nthis are rejected to avoid KV cache overrun.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_attention_heads": {
+          "description": "Number of attention (query) heads.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_kv_heads": {
+          "description": "Number of key/value heads (equals `num_attention_heads` without GQA).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_layers": {
+          "description": "Number of transformer layers.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "vocab_size": {
+          "description": "Vocabulary size (logits width).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "num_layers",
+        "num_attention_heads",
+        "num_kv_heads",
+        "head_dim",
+        "vocab_size",
+        "max_seq_len"
+      ]
+    },
+    "TensorMetadata": {
+      "description": "Shape + dtype of a single tensor. Mirrors `helios_hal::TensorData` but\nstays decoupled from device pointers — this is on-package metadata only.",
+      "type": "object",
+      "properties": {
+        "dtype": {
+          "description": "\"bf16\" | \"fp8\" | \"fp4\" | \"fp6\" — matches kernel dtype flags.",
+          "type": "string"
+        },
+        "shape": {
+          "description": "Logical shape in row-major order, e.g. [4096, 4096].",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dtype",
+        "shape"
+      ]
+    },
+    "TokenizerConfig": {
+      "description": "Tokenizer metadata. Kept intentionally thin — the actual vocab/merges are\nin a separate asset in the package, referenced by `asset_path`.",
+      "type": "object",
+      "properties": {
+        "asset_path": {
+          "description": "Path inside the package to the tokenizer asset (vocab + merges). Empty\nmeans the package ships without a tokenizer.",
+          "type": "string"
+        },
+        "family": {
+          "description": "Family: \"bpe\", \"spm\", \"rune\", … drives the decoder impl in runtime.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "asset_path"
+      ]
+    }
+  }
+}

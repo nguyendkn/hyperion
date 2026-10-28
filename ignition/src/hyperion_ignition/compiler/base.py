@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..hardware.base import HardwareRecipe
+from .model_config import ModelConfig
 
 
 @dataclass
@@ -33,6 +34,7 @@ class CompiledManifest:
 
     model_id: str
     target_arch: str
+    model: ModelConfig
     tokenizer: dict[str, Any]
     layers: list[LayerMap] = field(default_factory=list)
     hardware_recipe: dict[str, str] = field(default_factory=dict)
@@ -41,9 +43,10 @@ class CompiledManifest:
     def to_json_dict(self) -> dict[str, Any]:
         """Serialize to the on-disk JSON form the runtime deserializes."""
         return {
-            "manifest_version": 1,
+            "manifest_version": "V1",
             "model_id": self.model_id,
             "target_arch": self.target_arch,
+            "model": self.model.to_json_dict(),
             "tokenizer": self.tokenizer,
             "layers": [
                 {
