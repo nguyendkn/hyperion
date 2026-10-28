@@ -108,6 +108,53 @@ pub fn rope(x: &[u16], positions: &[u32], heads: usize, head_dim: usize, cos: &[
     out
 }
 
+/// Causal grouped-query attention, flash-style numerics: scores, softmax and the weighted sum
+/// of values are accumulated in f64 and the output is rounded to bf16 once.
+///
+/// `q` is `[tokens, heads, head_dim]`; `k` and `v` are the cache `[seq, kv_heads, head_dim]`.
+/// Query `t` sits at absolute position `q_start + t` and attends to keys `0..=q_start + t`.
+/// `heads` must be a multiple of `kv_heads`; query head `h` uses KV head `h / (heads / kv_heads)`.
+#[allow(clippy::too_many_arguments)]
+pub fn attention(
+    q: &[u16],
+    k: &[u16],
+    v: &[u16],
+    tokens: usize,
+    seq: usize,
+    heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+    q_start: usize,
+) -> Vec<u16> {
+    assert_eq!(heads % kv_heads, 0, "heads must be a multiple of kv_heads");
+    assert_eq!(q.len(), tokens * heads * head_dim);
+    assert_eq!(k.len(), seq * kv_heads * head_dim);
+    assert_eq!(v.len(), k.len());
+    assert!(q_start + tokens <= seq, "queries must lie inside the cache");
+    let group = heads / kv_heads;
+    let scale = 1.0 / (head_dim as f64).sqrt();
+    let at = |x: &[u16], pos: usize, head: usize, d: usize| f64::from(bf16_to_f32(x[(pos * kv_heads + head) * head_dim + d]));
+    let mut out = vec![0u16; q.len()];
+    for t in 0..tokens {
+        let last = q_start + t; // inclusive
+        for h in 0..heads {
+            let kv = h / group;
+            let qrow = &q[(t * heads + h) * head_dim..(t * heads + h + 1) * head_dim];
+            let scores: Vec<f64> = (0..=last)
+                .map(|j| (0..head_dim).map(|d| f64::from(bf16_to_f32(qrow[d])) * at(k, j, kv, d)).sum::<f64>() * scale)
+                .collect();
+            let max = scores.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let weights: Vec<f64> = scores.iter().map(|s| (s - max).exp()).collect();
+            let sum: f64 = weights.iter().sum();
+            for d in 0..head_dim {
+                let acc: f64 = weights.iter().enumerate().map(|(j, w)| w * at(v, j, kv, d)).sum();
+                out[(t * heads + h) * head_dim + d] = f32_to_bf16((acc / sum) as f32);
+            }
+        }
+    }
+    out
+}
+
 /// RMSNorm as Hugging Face's Qwen2 does it: normalise in f32, round to bf16, then
 /// multiply by the bf16 weight and round to bf16 again. `x` is `[tokens, hidden]`.
 pub fn rmsnorm(x: &[u16], weight: &[u16], tokens: usize, hidden: usize, eps: f32) -> Vec<u16> {
@@ -229,5 +276,49 @@ mod tests {
         let (cos, sin) = rope_tables(2, 2, 10000.0);
         let y = rope(&bf(&[1.0, 0.0]), &[1], 1, 2, &cos, &sin);
         assert!((bf16_to_f32(y[0]) - 1f32.cos()).abs() < 0.01 && (bf16_to_f32(y[1]) - 1f32.sin()).abs() < 0.01);
+    }
+
+    fn attn(q: &[f32], k: &[f32], v: &[f32], tokens: usize, seq: usize, heads: usize, kv_heads: usize, d: usize, q_start: usize) -> Vec<f32> {
+        attention(&bf(q), &bf(k), &bf(v), tokens, seq, heads, kv_heads, d, q_start)
+            .iter()
+            .map(|&b| bf16_to_f32(b))
+            .collect()
+    }
+
+    #[test]
+    fn attention_over_one_key_returns_that_value() {
+        // A single key: softmax weight is 1, so the output is exactly v.
+        let out = attn(&[1.0, 0.0], &[3.0, 4.0], &[5.0, 6.0], 1, 1, 1, 1, 2, 0);
+        assert_eq!(out, vec![5.0, 6.0]);
+    }
+
+    #[test]
+    fn attention_is_causal() {
+        // Two keys with very different values. Query 0 (position 0) may only see key 0.
+        let (q, k, v) = ([0.0f32, 0.0, 0.0, 0.0], [0.0f32, 0.0, 0.0, 0.0], [1.0f32, 1.0, 9.0, 9.0]);
+        let out = attn(&q, &k, &v, 2, 2, 1, 1, 2, 0);
+        assert_eq!(&out[..2], &[1.0, 1.0], "position 0 must ignore the later key");
+        // Query 1 sees both keys with equal scores: the mean of the values.
+        assert_eq!(&out[2..], &[5.0, 5.0]);
+    }
+
+    #[test]
+    fn attention_decode_equals_the_matching_prefill_row() {
+        let (heads, kv, d, seq) = (4, 2, 4, 5);
+        let mk = |n: usize, m: u64| -> Vec<f32> { (0..n).map(|i| (((i as u64 * m + 7) % 13) as f32 - 6.0) / 4.0).collect() };
+        let (q, k, v) = (mk(seq * heads * d, 5), mk(seq * kv * d, 3), mk(seq * kv * d, 11));
+        let full = attn(&q, &k, &v, seq, seq, heads, kv, d, 0);
+        // Decode of the last token: only its own query row, q_start = seq - 1.
+        let last_q = &q[(seq - 1) * heads * d..];
+        let one = attn(last_q, &k, &v, 1, seq, heads, kv, d, seq - 1);
+        assert_eq!(&full[(seq - 1) * heads * d..], &one[..]);
+    }
+
+    #[test]
+    fn attention_groups_query_heads_onto_kv_heads() {
+        // 2 query heads share 1 kv head: identical queries give identical outputs.
+        let q = [1.0f32, 2.0, 1.0, 2.0]; // 1 token, 2 heads, d = 2
+        let out = attn(&q, &[0.5, 0.5, 1.0, -1.0], &[1.0, 2.0, 3.0, 4.0], 1, 2, 2, 1, 2, 1);
+        assert_eq!(&out[..2], &out[2..]);
     }
 }

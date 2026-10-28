@@ -54,3 +54,64 @@ extern "C" __global__ void rope_bf16(const bf16* __restrict__ x, const bf16* __r
         y[base + i + half] = __float2bfloat16(rnd(x2 * c) + rnd(x1 * s));
     }
 }
+
+// Causal grouped-query attention for one (query token, head) per block. q is
+// [tokens, heads, head_dim]; k and v are the cache [seq, kv_heads, head_dim]. Query t sits at
+// absolute position q_start + t and attends to keys 0..=q_start + t, so the same kernel serves
+// prefill (q_start = 0) and decode (one token at q_start = seq - 1). Scores, softmax and the
+// weighted sum are accumulated in f32 and the output is rounded to bf16 once.
+// Dynamic shared memory: (seq + blockDim.x) floats. Not yet tiled: seq is limited by it.
+extern "C" __global__ void attention_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k,
+                                          const bf16* __restrict__ v, bf16* __restrict__ out,
+                                          int seq, int heads, int kv_heads, int head_dim, int q_start) {
+    extern __shared__ float shared[];
+    float* scores = shared;     // [seq]
+    float* red = shared + seq;  // [blockDim.x]
+    const int t = blockIdx.x / heads;
+    const int h = blockIdx.x % heads;
+    const int kvh = h / (heads / kv_heads);
+    const int last = q_start + t;  // inclusive
+    const bf16* qrow = q + (size_t)blockIdx.x * head_dim;
+    const float scale = 1.f / sqrtf((float)head_dim);
+
+    float local_max = -INFINITY;
+    for (int j = threadIdx.x; j <= last; j += blockDim.x) {
+        const bf16* krow = k + ((size_t)j * kv_heads + kvh) * head_dim;
+        float dot = 0.f;
+        for (int d = 0; d < head_dim; ++d) dot += rd(qrow[d]) * rd(krow[d]);
+        const float s = dot * scale;
+        scores[j] = s;
+        local_max = fmaxf(local_max, s);
+    }
+    red[threadIdx.x] = local_max;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) red[threadIdx.x] = fmaxf(red[threadIdx.x], red[threadIdx.x + stride]);
+        __syncthreads();
+    }
+    const float max_score = red[0];
+    __syncthreads();
+
+    float local_sum = 0.f;
+    for (int j = threadIdx.x; j <= last; j += blockDim.x) {
+        const float e = expf(scores[j] - max_score);
+        scores[j] = e;
+        local_sum += e;
+    }
+    red[threadIdx.x] = local_sum;
+    __syncthreads();
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) red[threadIdx.x] += red[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const float total = red[0];
+    __syncthreads();
+
+    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) {
+        float acc = 0.f;
+        for (int j = 0; j <= last; ++j) {
+            acc += scores[j] * rd(v[((size_t)j * kv_heads + kvh) * head_dim + d]);
+        }
+        out[(size_t)blockIdx.x * head_dim + d] = __float2bfloat16(acc / total);
+    }
+}

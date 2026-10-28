@@ -279,3 +279,49 @@ fn rope_matches_the_cpu_reference() {
     assert!(err.to_string().contains("outside the table"), "{err}");
     backend.shutdown().unwrap();
 }
+
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn attention_matches_the_cpu_reference_for_prefill_and_decode() {
+    use helios_hal::reference::{attention, f32_to_bf16};
+    let (_, _, backend) = loaded_backend();
+    // Qwen2.5-0.5B: 14 query heads share 2 KV heads of 64 dims.
+    let (heads, kv_heads, d) = (14usize, 2usize, 64usize);
+    let data = |n: usize, mul: usize, range: f32| -> Vec<u16> {
+        (0..n).map(|i| f32_to_bf16(((i * mul % 101) as f32 - 50.0) / 50.0 * range)).collect()
+    };
+    let check = |name: &str, tokens: usize, seq: usize, q_start: usize| {
+        let q = data(tokens * heads * d, 37, 2.0);
+        let k = data(seq * kv_heads * d, 53, 2.0);
+        let v = data(seq * kv_heads * d, 29, 3.0);
+        let got = backend.attention_bf16(&q, &k, &v, tokens, seq, heads, kv_heads, d, q_start).expect(name);
+        let want = attention(&q, &k, &v, tokens, seq, heads, kv_heads, d, q_start);
+        let (exact, worst) = compare(&got, &want);
+        println!(
+            "attention {name} [tokens {tokens}, seq {seq}, q_start {q_start}]: {:.2}% bit-identical, worst {worst:.2} bf16 steps",
+            exact * 100.0
+        );
+        assert!(exact > 0.97 && worst <= 2.0, "{name}: {exact} identical, worst {worst}");
+    };
+
+    check("prefill", 5, 5, 0);
+    check("decode", 1, 6, 5);
+    check("long", 3, 300, 297);
+
+    // Decode of the last token must equal the last row of the prefill of the same cache.
+    let (tokens, seq) = (6, 6);
+    let q = data(tokens * heads * d, 37, 2.0);
+    let k = data(seq * kv_heads * d, 53, 2.0);
+    let v = data(seq * kv_heads * d, 29, 3.0);
+    let full = backend.attention_bf16(&q, &k, &v, tokens, seq, heads, kv_heads, d, 0).unwrap();
+    let last_q = &q[(tokens - 1) * heads * d..];
+    let one = backend.attention_bf16(last_q, &k, &v, 1, seq, heads, kv_heads, d, seq - 1).unwrap();
+    assert!(full[(tokens - 1) * heads * d..] == one[..], "decode row differs from the prefill row");
+
+    let err = backend.attention_bf16(&q, &k, &v, tokens, seq, heads, kv_heads, d, 1).unwrap_err();
+    assert!(err.to_string().contains("outside the cache"), "{err}");
+    let (big_k, big_v) = (data(9000 * kv_heads * d, 53, 2.0), data(9000 * kv_heads * d, 29, 3.0));
+    let err = backend.attention_bf16(&q[..heads * d], &big_k, &big_v, 1, 9000, heads, kv_heads, d, 8999).unwrap_err();
+    assert!(err.to_string().contains("limit"), "{err}");
+    backend.shutdown().unwrap();
+}

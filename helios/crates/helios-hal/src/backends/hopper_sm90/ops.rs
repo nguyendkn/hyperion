@@ -15,6 +15,11 @@ pub(super) const ELEMENTWISE_PTX: &str = include_str!("../../../kernels/elementw
 
 const BLOCK: u32 = 256;
 
+/// Threads per attention block, and the longest sequence its dynamic shared memory (scores +
+/// reduction scratch, under the 48 KiB default limit) allows until the kernel is tiled.
+const ATTENTION_BLOCK: u32 = 128;
+const MAX_ATTENTION_SEQ: usize = 8192;
+
 /// One kernel argument, in the order of the kernel's signature.
 pub(super) enum Arg<'a> {
     /// Host bytes, uploaded to a fresh device buffer.
@@ -222,6 +227,58 @@ impl HopperBackend {
             u32::try_from(positions.len() * heads)?,
             64,
             0,
+        )?;
+        Ok(bf16_from(&raw))
+    }
+
+    /// Causal grouped-query attention. `q` is `[tokens, heads, head_dim]`, `k` and `v` are the
+    /// cache `[seq, kv_heads, head_dim]`; query `t` is at absolute position `q_start + t`.
+    /// Prefill is `q_start = 0, tokens = seq`; decode is one token at `q_start = seq - 1`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attention_bf16(
+        &self,
+        q: &[u16],
+        k: &[u16],
+        v: &[u16],
+        tokens: usize,
+        seq: usize,
+        heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+        q_start: usize,
+    ) -> Result<Vec<u16>> {
+        if kv_heads == 0 || heads % kv_heads != 0 {
+            return Err(anyhow!("heads ({heads}) must be a multiple of kv_heads ({kv_heads})"));
+        }
+        if q.len() != tokens * heads * head_dim || k.len() != seq * kv_heads * head_dim || v.len() != k.len() {
+            return Err(anyhow!("q must be [tokens, heads, head_dim] and k, v [seq, kv_heads, head_dim]"));
+        }
+        if q_start + tokens > seq {
+            return Err(anyhow!("queries at positions {q_start}..{} lie outside the cache of {seq}", q_start + tokens));
+        }
+        if seq > MAX_ATTENTION_SEQ {
+            return Err(anyhow!("sequence of {seq} exceeds the untiled attention kernel's limit of {MAX_ATTENTION_SEQ}"));
+        }
+        let (qb, kb, vb) = (bytes_of(q), bytes_of(k), bytes_of(v));
+        let raw = self.run_kernel(
+            "elementwise",
+            ELEMENTWISE_PTX,
+            "attention_bf16",
+            &[
+                Arg::Host(&qb),
+                Arg::Host(&kb),
+                Arg::Host(&vb),
+                Arg::Out,
+                Arg::I32(i32::try_from(seq)?),
+                Arg::I32(i32::try_from(heads)?),
+                Arg::I32(i32::try_from(kv_heads)?),
+                Arg::I32(i32::try_from(head_dim)?),
+                Arg::I32(i32::try_from(q_start)?),
+            ],
+            q.len() * 2,
+            u32::try_from(tokens * heads)?,
+            ATTENTION_BLOCK,
+            u32::try_from((seq + ATTENTION_BLOCK as usize) * 4)?,
         )?;
         Ok(bf16_from(&raw))
     }
