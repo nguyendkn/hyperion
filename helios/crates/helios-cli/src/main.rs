@@ -197,10 +197,26 @@ async fn main() -> Result<()> {
             ));
         }
         tracing::info!(tok = %tok_path.display(), "tokenizer asset located");
-        Some(helios_core::tokenizer::PromptTokenizer::new(
+        let mut prompt_tokenizer = helios_core::tokenizer::PromptTokenizer::new(
             tok_path.to_string_lossy().into_owned(),
             Some(max_seq_len as usize),
-        ))
+        );
+        // The model's own chat template, if it ships one beside the tokenizer
+        // (`tokenizer_config.json`, the Hugging Face convention). A template that is present
+        // but does not compile is a broken package: refuse to boot instead of serving prompts
+        // in the wrong format.
+        let config_path = tok_path.with_file_name("tokenizer_config.json");
+        if config_path.is_file() {
+            let text = std::fs::read_to_string(&config_path)
+                .map_err(|e| anyhow!("read {}: {e}", config_path.display()))?;
+            if let Some(template) = helios_core::chat_template::ChatTemplate::from_tokenizer_config(&text)
+                .map_err(|e| anyhow!("{}: {e:#}", config_path.display()))?
+            {
+                tracing::info!("chat template loaded from tokenizer_config.json");
+                prompt_tokenizer = prompt_tokenizer.with_chat_template(template);
+            }
+        }
+        Some(prompt_tokenizer)
     };
 
     // 8. Assemble AppState and serve.

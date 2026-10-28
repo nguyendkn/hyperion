@@ -19,7 +19,8 @@
         "model.safetensors.header": {
           "sha256": "a1ad4b586dee7de313404262f716dee70a0a3c75cdcef6bd7860fd955b117e14",
           "header_of": "model.safetensors"
-        }
+        },
+        "tokenizer_config.json": "c91efca15ceff6e9ee9424db58a6f59cd41294e550a86cbd07e3c1fb500b34f9"
       },
       "compiler": "qwen2"
     }

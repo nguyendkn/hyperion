@@ -16,6 +16,8 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+
+use crate::chat_template::ChatTemplate;
 use tokenizers::Tokenizer;
 use tokio::sync::OnceCell;
 
@@ -44,6 +46,9 @@ pub struct PromptTokenizer {
     /// Path to `tokenizer.json`, stashed here so the lazy `OnceCell`
     /// initializer (which is a `FnOnce` borrowing nothing) can read it.
     path: String,
+    /// The model's own chat template. Without one, messages fall back to a plain
+    /// `role:content` join.
+    chat_template: Option<Arc<ChatTemplate>>,
 }
 
 impl PromptTokenizer {
@@ -57,7 +62,14 @@ impl PromptTokenizer {
             max_length: max_length.unwrap_or(DEFAULT_MAX_LENGTH),
             // The path is stashed inside the cell's getter closure below.
             path: tokenizer_path.into(),
+            chat_template: None,
         }
+    }
+
+    /// Format prompts with the model's chat template instead of the plain join.
+    pub fn with_chat_template(mut self, template: ChatTemplate) -> Self {
+        self.chat_template = Some(Arc::new(template));
+        self
     }
 
     /// Load the tokenizer file lazily. Idempotent after the first call.
@@ -86,10 +98,16 @@ impl PromptTokenizer {
     /// truncated. `add_special_tokens=true` lets the tokenizer emit BOS/EOS per its
     /// config, which the HAL assumes.
     pub async fn encode_messages(&self, messages: &[ChatMessageForEncode<'_>]) -> Result<Vec<u32>> {
-        let prompt = flatten_messages(messages);
+        // With a chat template the rendered text already contains every special token, so it is
+        // tokenised without adding more (what `apply_chat_template` + `tokenizer(...,
+        // add_special_tokens=False)` does in Hugging Face).
+        let (prompt, add_special_tokens) = match &self.chat_template {
+            Some(template) => (template.render(messages, true)?, false),
+            None => (flatten_messages(messages), true),
+        };
         let tok = self.get().await?;
         let enc = tok
-            .encode(prompt.as_str(), true)
+            .encode(prompt.as_str(), add_special_tokens)
             .map_err(|e| anyhow!("tokenizer encode failed: {e}"))
             .context("prompt encode")?;
         let ids = enc.get_ids().to_vec();

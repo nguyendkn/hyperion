@@ -15,6 +15,7 @@ pub mod api;
 pub mod cache;
 pub mod scheduler;
 pub mod state;
+pub mod chat_template;
 pub mod tokenizer;
 
 pub use state::{EngineState, EngineStatus, StateMachine};
