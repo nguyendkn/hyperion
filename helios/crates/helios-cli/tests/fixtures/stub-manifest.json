@@ -1,0 +1,19 @@
+{
+  "manifest_version": "V1",
+  "model_id": "stub",
+  "target_arch": "sm_0",
+  "tensor_format": "bf16",
+  "model": {
+    "num_layers": 2,
+    "attention": "mha",
+    "num_attention_heads": 4,
+    "num_kv_heads": 4,
+    "head_dim": 16,
+    "vocab_size": 10,
+    "max_seq_len": 64
+  },
+  "tokenizer": { "family": "bpe", "asset_path": "" },
+  "layers": [],
+  "hardware_recipe": {},
+  "signature": null
+}

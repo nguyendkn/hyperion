@@ -11,6 +11,14 @@ repository.workspace = true
 name = "helios-cli"
 path = "src/main.rs"
 
+# Backend selection is a build-time choice; the factory then probes the real
+# device. Per-host builds enable exactly one; `stub` (default) needs no CUDA.
+[features]
+default = ["stub"]
+stub = []
+sm90 = ["helios-hal/sm90"]
+sm120 = ["helios-hal/sm120"]
+
 [dependencies]
 helios-core = { workspace = true }
 helios-hal = { workspace = true }

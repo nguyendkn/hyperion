@@ -9,24 +9,21 @@ repository.workspace = true
 
 [dependencies]
 helios-hal = { workspace = true }
-hyperion-specification = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # HuggingFace tokenizers (Rust core, Apache-2.0) — runtime prompt encode.
-# Only `onig` is forced because tokenizers 0.19 guards its regex module with
-# `cfg(not(feature = "unstable_wasm"))`, not `cfg(feature = "onig")` — so
-# `default-features = false` leaves the module compiled against an unlinked
-# `onig` crate (unresolved import). Enabling `onig` links the real Oniguruma
-# C lib (bundled via `cc`); the alternative `unstable_wasm` path uses
-# `fancy-regex` (pure Rust) but the feature name is misleading and the path
-# is the wasm escape hatch, not the documented native one. We need only
-# BPE encode → Vec<u32>; no progress bar, no http/hf-hub.
+# 0.22 fails to compile unless one regex backend is chosen (`onig` or
+# `fancy-regex`). `onig` (Oniguruma via `cc`) is the upstream default, so token
+# ids match the reference implementation; `fancy-regex` (pure Rust) was not
+# evaluated for identical output on real tokenizers. (The 0.19 `cfg` quirk that
+# the old comment described no longer applies.) 0.19.1 also could not parse the
+# current Qwen3 tokenizer.json, hence the bump. We need only BPE encode ->
+# Vec<u32>: no progress bar, no http/hf-hub.
 tokenizers = { workspace = true, features = ["onig"] }
 
 [lib]

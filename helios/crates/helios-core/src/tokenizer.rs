@@ -19,11 +19,20 @@ use anyhow::{anyhow, Context, Result};
 use tokenizers::Tokenizer;
 use tokio::sync::OnceCell;
 
-/// Context length cap applied at encode time. The real value comes from the
-/// manifest's tokenizer config; this is the conservative default used when no
-/// explicit cap is wired through yet. Tokens beyond this are truncated
-/// rightward (preserves the prompt's opening, matches HF default).
+/// Longest prompt (in tokens) accepted when no explicit limit is wired through.
+/// The CLI passes the serving limit (`--max-seq-len`, at most the model's
+/// `max_seq_len`). A longer prompt is rejected, never truncated: silently
+/// dropping the end of a prompt changes the answer without telling the client.
 const DEFAULT_MAX_LENGTH: usize = 4096;
+
+/// The prompt has more tokens than the serving limit. The API maps this to
+/// HTTP 400 so the client can shorten the prompt.
+#[derive(Debug, thiserror::Error)]
+#[error("prompt has {tokens} tokens but the limit is {max}: shorten the prompt or raise --max-seq-len")]
+pub struct PromptTooLong {
+    pub tokens: usize,
+    pub max: usize,
+}
 
 /// Thread-safe, load-once tokenizer handle. `Tokenizer` is itself `Send +
 /// Sync` once built, so the `OnceCell` just defers the file read off the hot
@@ -58,22 +67,11 @@ impl PromptTokenizer {
     /// then borrows `self` (long-lived) instead of a dropped local `Arc`.
     async fn get(&self) -> Result<&Tokenizer> {
         let path = self.path.clone();
-        let max_length = self.max_length;
         self.inner
             .as_ref()
             .get_or_try_init(move || async move {
-                let mut tok = Tokenizer::from_file(&path)
+                let tok = Tokenizer::from_file(&path)
                     .map_err(|e| anyhow!("load tokenizer {p}: {e}", p = path))?;
-                // Apply a right-truncation so encode() can never overrun the
-                // model's context window. `with_truncation` mutates in place
-                // and returns `&mut Self` (does not consume); we ignore the
-                // `&mut` return and keep `tok` as the owned, configured cell.
-                let trunc = tokenizers::TruncationParams {
-                    max_length,
-                    ..Default::default()
-                };
-                tok.with_truncation(Some(trunc))
-                    .map_err(|e| anyhow!("set truncation: {e}"))?;
                 Ok::<_, anyhow::Error>(tok)
             })
             .await
@@ -84,8 +82,8 @@ impl PromptTokenizer {
     /// (Jinja) lands once `helios-pkg` carries it — for now this is enough
     /// for the runtime to hand a deterministic token slice to the HAL.
     ///
-    /// Returns the token ids and the (post-truncation) length actually sent.
-    /// `add_special_tokens=true` lets the tokenizer emit BOS/EOS per its
+    /// Fails with [`PromptTooLong`] when the prompt exceeds the limit; nothing is
+    /// truncated. `add_special_tokens=true` lets the tokenizer emit BOS/EOS per its
     /// config, which the HAL assumes.
     pub async fn encode_messages(&self, messages: &[ChatMessageForEncode<'_>]) -> Result<Vec<u32>> {
         let prompt = flatten_messages(messages);
@@ -94,7 +92,11 @@ impl PromptTokenizer {
             .encode(prompt.as_str(), true)
             .map_err(|e| anyhow!("tokenizer encode failed: {e}"))
             .context("prompt encode")?;
-        Ok(enc.get_ids().to_vec())
+        let ids = enc.get_ids().to_vec();
+        if ids.len() > self.max_length {
+            return Err(PromptTooLong { tokens: ids.len(), max: self.max_length }.into());
+        }
+        Ok(ids)
     }
 
     /// Decode a token id stream back to text (for streaming responses). Not

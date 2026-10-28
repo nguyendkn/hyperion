@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
@@ -55,10 +55,30 @@ impl From<Arc<StateMachine>> for AppState {
     }
 }
 
-/// Top-level router, generic over the app's state handle. Mounted under
-/// `/v1` by the CLI's server bootstrap.
+/// Top-level router, generic over the app's state handle.
+///
+/// - `GET /health` (root): liveness/readiness of the engine state machine.
+/// - `POST /v1/chat/completions`: the OpenAI-compatible endpoint. The `/v1`
+///   prefix is applied here so every caller (CLI, tests) gets the same public
+///   path; `/v1/models` and friends belong to the serving phase.
 pub fn router() -> Router<AppState> {
-    Router::new().route("/chat/completions", post(chat_completions))
+    Router::new()
+        .route("/health", get(health))
+        .nest("/v1", Router::new().route("/chat/completions", post(chat_completions)))
+}
+
+/// `200` while the engine can take work (`Ready`, `Loaded`, `Serving`), `503`
+/// otherwise. The body names the state and nothing else: it must not leak
+/// paths or configuration.
+async fn health(axum::extract::State(app): axum::extract::State<AppState>) -> axum::response::Response {
+    use crate::state::EngineStatus::{Loaded, Ready, Serving};
+    let status = app.state.status();
+    let code = if matches!(status, Ready | Loaded | Serving) {
+        axum::http::StatusCode::OK
+    } else {
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    };
+    (code, axum::Json(serde_json::json!({ "status": format!("{status:?}") }))).into_response()
 }
 
 /// Minimal OpenAI-compatible request body. Only the fields the runtime needs
@@ -145,6 +165,11 @@ async fn chat_completions(
     let ids = match tok.encode_messages(&for_encode).await {
         Ok(ids) => ids,
         Err(e) => {
+            // Too long is the client's to fix (400); anything else is a
+            // tokenizer failure (422).
+            if let Some(too_long) = e.downcast_ref::<crate::tokenizer::PromptTooLong>() {
+                return (axum::http::StatusCode::BAD_REQUEST, too_long.to_string()).into_response();
+            }
             return (
                 axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                 format!("tokenize failed: {e}"),
@@ -153,8 +178,8 @@ async fn chat_completions(
         }
     };
 
-    // Context-length guard. The tokenizer truncates, but we also refuse a
-    // degenerate empty encode (token file/empty prompt mismatch).
+    // Context-length guard. The tokenizer rejects over-long prompts (400
+    // above); here we also refuse a degenerate empty encode (token file/empty prompt mismatch).
     if ids.is_empty() {
         return (
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,

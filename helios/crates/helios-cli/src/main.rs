@@ -4,7 +4,7 @@
 //! 1. read + verify the `.hyperion` package signature,
 //! 2. parse the manifest to learn `target_arch`,
 //! 3. via HAL, probe the real device's compute capability,
-//! 4. triage (forward-compat check), pick the backend,
+//! 4. triage (exact arch + tensor_format match), pick the backend,
 //! 5. (later) load weights, allocate KV — gated on the `helios-pkg` codec,
 //! 6. spawn the scheduler, wire the tokenizer from the manifest, serve Axum.
 //!
@@ -51,12 +51,59 @@ struct Cli {
     /// Port for the OpenAI-compatible HTTP API.
     #[arg(short, long, default_value = "8080")]
     port: u16,
+
+    /// Address to bind. Loopback by default: there is no authentication yet,
+    /// so exposing the API on every interface must be an explicit choice.
+    #[arg(long, default_value = "127.0.0.1")]
+    bind: std::net::IpAddr,
+
+    /// Longest sequence (prompt + generation) the runtime will serve. Defaults
+    /// to the model's `max_seq_len`; a lower value bounds KV-cache memory.
+    /// Values above the model's maximum are rejected.
+    #[arg(long)]
+    max_seq_len: Option<u32>,
+}
+
+/// Bytes of KV cache one sequence of `tokens` needs: K and V, per layer, per
+/// KV head, `head_dim` wide, 2 bytes per element (bf16 cache).
+fn kv_bytes_per_sequence(m: &hyperion_specification::v1::ModelConfig, tokens: u32) -> u64 {
+    2 * u64::from(m.num_layers) * u64::from(m.num_kv_heads) * u64::from(m.head_dim) * 2 * u64::from(tokens)
+}
+
+/// Resolve the serving limit and refuse impossible configurations up front,
+/// with the setting that fixes them, before any socket is opened.
+fn resolve_max_seq_len(
+    requested: Option<u32>,
+    model: &hyperion_specification::v1::ModelConfig,
+    total_vram_bytes: u64,
+) -> Result<u32> {
+    let limit = requested.unwrap_or(model.max_seq_len);
+    if limit == 0 || limit > model.max_seq_len {
+        return Err(anyhow!(
+            "--max-seq-len {limit} is outside 1..={max} (the model's max_seq_len): choose a value in that range",
+            max = model.max_seq_len
+        ));
+    }
+    let need = kv_bytes_per_sequence(model, limit);
+    // A backend that reports no VRAM (stub) cannot be checked; any real
+    // device reports its size. One sequence must at least fit on the device.
+    if total_vram_bytes > 0 && need > total_vram_bytes {
+        let per_token = kv_bytes_per_sequence(model, 1).max(1);
+        return Err(anyhow!(
+            "KV cache for one {limit}-token sequence needs {need} bytes but the device has {total_vram_bytes}:              lower --max-seq-len (at most {fit} tokens could fit even with no weights)",
+            fit = total_vram_bytes / per_token
+        ));
+    }
+    tracing::info!(max_seq_len = limit, kv_bytes_per_sequence = need, "serving limit resolved");
+    Ok(limit)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        // Escape codes only on a terminal: piped logs (tests, files, k8s) stay plain text.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let cli = Cli::parse();
@@ -70,9 +117,10 @@ async fn main() -> Result<()> {
     //    the scheduler drives prefill/decode while it runs, and after the
     //    server stops the CLI calls `shutdown()` to tear down device
     //    allocations. `triage.outcome` is bound for logging only.
-    let (backend, actual_cap, triage) =
-        helios_hal::create_backend(&manifest.target_arch)?;
-    let backend: Arc<helios_hal::DynBackend> = Arc::from(backend);
+    let created = helios_hal::create_backend(&manifest)?;
+    let (actual_cap, triage) = (created.device_arch, created.triage);
+    let max_seq_len = resolve_max_seq_len(cli.max_seq_len, &manifest.model, created.hardware.total_vram_bytes)?;
+    let backend: Arc<helios_hal::DynBackend> = Arc::from(created.backend);
     tracing::info!(actual = %actual_cap, outcome = ?triage.outcome, "triage done");
 
     // 5. Bring up the engine state machine. We move to `Ready` (device
@@ -150,7 +198,7 @@ async fn main() -> Result<()> {
         tracing::info!(tok = %tok_path.display(), "tokenizer asset located");
         Some(helios_core::tokenizer::PromptTokenizer::new(
             tok_path.to_string_lossy().into_owned(),
-            Some(manifest.model.max_seq_len as usize),
+            Some(max_seq_len as usize),
         ))
     };
 
@@ -161,9 +209,9 @@ async fn main() -> Result<()> {
         ingress_tx: Some(ingress_tx),
     };
     let app = helios_core::api::router().with_state(app_state);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cli.port))
+    let listener = tokio::net::TcpListener::bind((cli.bind, cli.port))
         .await
-        .map_err(|e| anyhow!("bind :{port} failed: {e}", port = cli.port))?;
+        .map_err(|e| anyhow!("bind {addr}:{port} failed: {e}", addr = cli.bind, port = cli.port))?;
     tracing::info!(addr = %listener.local_addr()?, "helios API up");
 
     // 9. Serve until a shutdown signal, a scheduler exit or a server failure.
@@ -315,4 +363,63 @@ fn resolve_in_package(package_path: &Path, asset_path: &Path) -> Result<PathBuf>
         .parent()
         .ok_or_else(|| anyhow!("package path {p} has no parent dir", p = package_path.display()))?;
     Ok(package_dir.join(asset_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use hyperion_specification::v1::{AttentionKind, ModelConfig};
+
+    use super::{kv_bytes_per_sequence, resolve_max_seq_len};
+
+    /// Qwen2-7B as published: 28 layers, 4 KV heads, head_dim 128, 131072 ctx.
+    fn qwen2_7b() -> ModelConfig {
+        ModelConfig {
+            num_layers: 28,
+            attention: AttentionKind::Gqa,
+            num_attention_heads: 28,
+            num_kv_heads: 4,
+            head_dim: 128,
+            vocab_size: 152_064,
+            max_seq_len: 131_072,
+        }
+    }
+
+    #[test]
+    fn kv_bytes_per_token_matches_the_hand_calculation() {
+        // 28 layers x 4 kv heads x 128 dim x 2 (K and V) x 2 bytes = 57_344
+        assert_eq!(kv_bytes_per_sequence(&qwen2_7b(), 1), 57_344);
+        assert_eq!(kv_bytes_per_sequence(&qwen2_7b(), 131_072), 57_344 * 131_072);
+    }
+
+    #[test]
+    fn defaults_to_the_model_limit() {
+        assert_eq!(resolve_max_seq_len(None, &qwen2_7b(), 80 << 30).unwrap(), 131_072);
+    }
+
+    #[test]
+    fn a_lower_runtime_limit_is_used() {
+        assert_eq!(resolve_max_seq_len(Some(8192), &qwen2_7b(), 80 << 30).unwrap(), 8192);
+    }
+
+    #[test]
+    fn zero_and_above_model_limit_are_refused() {
+        for bad in [0, 131_073] {
+            let msg = resolve_max_seq_len(Some(bad), &qwen2_7b(), 80 << 30).unwrap_err().to_string();
+            assert!(msg.contains("1..=131072"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn a_sequence_that_cannot_fit_on_the_device_is_refused_with_the_fix() {
+        // 1 GiB of VRAM cannot hold 131072 tokens (~7.5 GB of KV).
+        let msg = resolve_max_seq_len(None, &qwen2_7b(), 1 << 30).unwrap_err().to_string();
+        assert!(msg.contains("lower --max-seq-len") && msg.contains("131072-token"), "{msg}");
+        // ...but a short enough limit is accepted on the same device.
+        assert_eq!(resolve_max_seq_len(Some(4096), &qwen2_7b(), 1 << 30).unwrap(), 4096);
+    }
+
+    #[test]
+    fn a_backend_reporting_no_vram_is_not_capacity_checked() {
+        assert_eq!(resolve_max_seq_len(None, &qwen2_7b(), 0).unwrap(), 131_072);
+    }
 }
