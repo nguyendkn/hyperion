@@ -12,7 +12,7 @@
 use anyhow::Result;
 use cuda_driver_sys::{
     cuCtxSetCurrent, cuDeviceGet, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRetain,
-    cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
+    cuCtxSynchronize, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
     cuStreamCreate, cuStreamDestroy_v2,
     CUcontext, CUdevice, CUdeviceptr, CUstream, CUdevice_attribute,
 };
@@ -143,6 +143,15 @@ impl CudaDevice {
             eval_cuda("cuMemAlloc", cuMemAlloc_v2(&mut ptr, bytes))?;
         }
         Ok(ptr)
+    }
+
+    /// Block until all work queued on the context has finished.
+    pub fn synchronize(&self) -> Result<()> {
+        self.set_current()?;
+        unsafe {
+            eval_cuda("cuCtxSynchronize", cuCtxSynchronize())?;
+        }
+        Ok(())
     }
 
     /// Copy host bytes to a device allocation.

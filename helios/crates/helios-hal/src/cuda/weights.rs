@@ -57,6 +57,11 @@ impl DeviceWeights {
         Ok(out)
     }
 
+    /// Device pointer and byte length of a tensor, if loaded.
+    pub fn pointer(&self, name: &str) -> Option<(u64, usize)> {
+        self.tensors.get(name).copied()
+    }
+
     pub fn len(&self) -> usize {
         self.tensors.len()
     }

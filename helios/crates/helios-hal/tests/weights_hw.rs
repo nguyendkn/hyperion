@@ -68,3 +68,50 @@ fn a_missing_weights_file_is_a_clean_error_not_a_panic() {
     assert!(err.to_string().contains("open weights"), "{err}");
     backend.shutdown().unwrap();
 }
+
+/// First real op: a cuBLAS bf16 matrix multiply on the real `q_proj` weight of layer 0
+/// (`[out, in]` from the manifest), checked against the f64 CPU reference.
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn linear_on_a_real_weight_matches_the_cpu_reference() {
+    use helios_hal::reference::{bf16_to_f32, f32_to_bf16, linear};
+
+    const NAME: &str = "layers.0.self_attn.q_proj.weight";
+    let package = package();
+    let Manifest::V1(manifest) =
+        serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+    let layer = manifest.layers.iter().find(|l| l.name == NAME).expect("q_proj of layer 0 in the manifest");
+    let (out_features, in_features) = (layer.tensor.shape[0], layer.tensor.shape[1]);
+
+    // The weight as the file holds it, converted for the reference.
+    let file = package.with_file_name("model.safetensors");
+    let mut source = std::fs::File::open(&file).unwrap();
+    let data_start = weights_plan::data_start(&mut source).unwrap();
+    let mut raw = vec![0u8; layer.byte_length as usize];
+    source.seek(SeekFrom::Start(data_start + layer.byte_offset)).unwrap();
+    source.read_exact(&mut raw).unwrap();
+    let w: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    assert!(w.iter().any(|&b| bf16_to_f32(b) != 0.0), "weight must not be all zeros");
+
+    // Deterministic inputs that are exact in bf16 (small integers / 64).
+    let tokens = 3;
+    let x: Vec<u16> = (0..tokens * in_features)
+        .map(|i| f32_to_bf16(((i * 37 % 101) as f32 - 50.0) / 64.0))
+        .collect();
+
+    let backend = HopperBackend::new().expect("an H100 must be present");
+    backend.load_model_weights(&package, &manifest).expect("upload");
+    let got = backend.linear_bf16_f32(NAME, &x, tokens, out_features, in_features).expect("gemm");
+    let want = linear(&w, &x, tokens, out_features, in_features);
+
+    assert_eq!(got.len(), want.len());
+    let scale = want.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    let max_err = got.iter().zip(&want).fold(0.0f32, |m, (g, r)| m.max((g - r).abs()));
+    println!("linear [{tokens}x{in_features}] x [{out_features}x{in_features}]^T: max abs err {max_err:e}, output scale {scale:.4}, relative {:e}", max_err / scale);
+    assert!(max_err / scale < 1e-4, "GPU result deviates from the CPU reference: {max_err} vs scale {scale}");
+
+    // A wrongly sized request is a clean error, not a device fault.
+    let err = backend.linear_bf16_f32(NAME, &x, tokens, out_features + 1, in_features).unwrap_err();
+    assert!(err.to_string().contains("bf16 needs"), "{err}");
+    backend.shutdown().unwrap();
+}
