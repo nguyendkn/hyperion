@@ -20,6 +20,7 @@ from click.testing import CliRunner
 from hyperion_ignition.cli import main
 from hyperion_ignition.compiler.registry import _ARCH_MAP, build_compiler
 from hyperion_ignition.hardware.registry import build_recipe
+from hyperion_ignition.manifest_schema import validate_manifest
 
 TESTDATA = Path(__file__).resolve().parents[2] / "testdata"
 REGISTRY = json.loads((TESTDATA / "models.json").read_text(encoding="utf-8"))["models"]
@@ -44,6 +45,11 @@ def test_supported_model_compiles_with_its_compiler(model_id):
     compiler_id = REGISTRY[model_id]["compiler"]
     manifest = build_compiler(compiler_id).compile(source=model_dir(model_id), recipe=build_recipe("sm_90"))
     assert manifest.model_id == compiler_id
+    # With a weights header present the manifest carries the layer map, and it must
+    # satisfy the Rust-generated schema.
+    if (model_dir(model_id) / "model.safetensors.header").is_file():
+        assert manifest.layers, "weights present but no layers mapped"
+        validate_manifest(manifest.to_json_dict())
 
 
 @pytest.mark.parametrize("compiler_id", sorted(_ARCH_MAP))

@@ -15,7 +15,11 @@
       "revision": "060db6499f32faf8b98477b0a26969ef7d8b9987",
       "files": {
         "config.json": "479dcf0c5286339e41ad3992cd08ae88a467c4187587936248e2b7c96283484b",
-        "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539"
+        "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+        "model.safetensors.header": {
+          "sha256": "a1ad4b586dee7de313404262f716dee70a0a3c75cdcef6bd7860fd955b117e14",
+          "header_of": "model.safetensors"
+        }
       },
       "compiler": "qwen2"
     }

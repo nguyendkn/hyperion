@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
+import struct
 import sys
 import urllib.request
 from pathlib import Path
@@ -42,18 +43,34 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def download(url: str, byte_range: tuple[int, int] | None = None) -> bytes:
+    request = urllib.request.Request(url)
+    if byte_range:
+        request.add_header("Range", f"bytes={byte_range[0]}-{byte_range[1]}")
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return response.read()
+
+
 def fetch(model_id: str, spec: dict) -> None:
     target = DEST / model_id
     target.mkdir(parents=True, exist_ok=True)
-    for name, expected in spec["files"].items():
+    for name, entry in spec["files"].items():
+        # A plain string is the sha256 of a whole file; an object may say the file
+        # is only the safetensors header (8-byte length + JSON) of a large file,
+        # which is all the weight-mapping tests need (32 KB instead of ~1 GB).
+        expected = entry if isinstance(entry, str) else entry["sha256"]
+        header_of = None if isinstance(entry, str) else entry.get("header_of")
         path = target / name
         if path.is_file() and sha256(path) == expected:
             print(f"ok       {model_id}/{name}")
             continue
-        url = f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{name}"
         print(f"download {model_id}/{name}")
-        with urllib.request.urlopen(url, timeout=120) as response:
-            path.write_bytes(response.read())
+        url = f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{header_of or name}"
+        if header_of:
+            (length,) = struct.unpack("<Q", download(url, (0, 7)))
+            path.write_bytes(download(url, (0, 8 + length - 1)))
+        else:
+            path.write_bytes(download(url))
         actual = sha256(path)
         if actual != expected:
             path.unlink()
