@@ -37,7 +37,7 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 |---|---|
 | `src/lib.rs` | Re-exports `create_backend`, `ComputeBackend`, `DynBackend`, `Triage` |
 | `src/traits.rs` | `ComputeBackend` trait; `HardwareInfo`, `DevicePointer`, `TensorData`; `DynBackend = Box<dyn ComputeBackend>` |
-| `src/triage.rs` | `Triage::evaluate(target, actual)`: equal -> `Exact`, target < actual -> `Downgrade`, target > actual -> error |
+| `src/triage.rs` | `triage(&Manifest, &ProbedBackend)`: backend arch == device arch, manifest `target_arch` == device arch, `tensor_format` in the arch's format table; `supported_formats(arch)` is the single table (committed dump `tests/data/format-table.json`) |
 | `src/backend_factory.rs` | `create_backend(target)`; `BackendKind` (cfg-gated); `instantiate()` per kind |
 | `src/backends/mod.rs` | cfg-gated module list |
 | `src/backends/stub.rs` | `StubBackend`: reports `sm_0`, returns placeholder Ok values |
@@ -52,7 +52,7 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 ### helios-cli (Rust)
 | File | Purpose |
 |---|---|
-| `src/main.rs` | Boot: read `<model>.manifest.json` sidecar -> `create_backend` -> engine `Ready` -> spawn scheduler + supervisor -> resolve tokenizer (path-safe) -> `axum::serve` on `0.0.0.0:port` -> graceful shutdown |
+| `src/main.rs` | Boot: read `<model>.manifest.json` sidecar -> `create_backend(&manifest)` (probe + triage per compiled-in backend) -> resolve `--max-seq-len` (KV fit check) -> engine `Ready` -> spawn scheduler + supervisor -> resolve tokenizer (path-safe) -> `axum::serve` on `--bind` (default `127.0.0.1`) -> graceful shutdown |
 
 ### ignition (Python)
 | File | Purpose |
@@ -115,13 +115,13 @@ Status: **implemented** (works as designed, reachable) / **partial** (some paths
 | Module | Status | Evidence |
 |---|---|---|
 | specification v1 | implemented | Structs + tagged enum, `deny_unknown_fields`, `ModelConfig`, committed JSON Schema, fixtures shared with Ignition; 7 Rust tests [v] |
-| core/api | partial | Handler complete. Route is `/chat/completions`: `main.rs` calls `router().with_state()` with no `/v1` nest, although api.rs docs say `/v1` [v]. End-to-end never returns 200 today (see scheduler) [v] |
+| core/api | partial | `/v1/chat/completions` + `GET /health` [v]; `router()` applies the `/v1` nest. End-to-end never returns 200 today (see scheduler) [v] |
 | core/scheduler | skeleton | `run()` closes ingress and returns Ok; no batching, no backend calls [v] |
 | core/state | implemented, partial wiring | CAS table works. `begin_serving`, `end_serving`, `mark_loaded` have no callers; CLI stays `Ready` [v] |
 | core/tokenizer | implemented, wired | Built by CLI from manifest; 9 tests above [v] |
 | core/cache | skeleton, not wired | `HashMap` index; no callers, no eviction; not a radix tree despite name/docs [v] |
 | hal/traits | implemented | Contract only; no runtime caller invokes backend methods [v] |
-| hal/triage | implemented | Used by factory; no unit tests [v] |
+| hal/triage | implemented | Exact-match triage with 14 matrix tests + 2 table tests [v] |
 | hal/backend_factory | partial | First candidate only; no sm120 -> sm90 -> stub fallthrough [v] |
 | hal/stub | implemented as fake | Reports `sm_0`, placeholder tensors. Conflicts with "no fakes on main" rule (see Q4) [v] |
 | hal/hopper_sm90 | skeleton | `initialize_device` hardcodes `sm_90`, no probe; other methods error; build.rs linkage commented out [v] |

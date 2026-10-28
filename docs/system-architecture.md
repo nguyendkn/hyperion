@@ -33,7 +33,7 @@ sequenceDiagram
     CLI->>SM: mark_ready()  Uninitialized -> Ready
     CLI->>SCH: spawn run(); supervisor awaits JoinHandle
     CLI->>CLI: tokenizer: empty asset_path -> None; else must exist
-    CLI->>CLI: axum serve 0.0.0.0:port
+    CLI->>CLI: axum serve 127.0.0.1:port (--bind)
 ```
 
 Shutdown: ctrl-c/SIGTERM -> `drain()` -> serve returns -> abort supervisor -> `backend.shutdown()` -> `shutdown()`.
@@ -53,7 +53,7 @@ Trait in `helios-hal/src/traits.rs`. `&self` methods; `Send + Sync`; core holds 
 | `shutdown` | default Ok | destroys stream, releases ctx | default Ok |
 
 - Trait doc says new methods must be default-implemented. [gap] All five required methods lack defaults.
-- **Triage** [pending decision]: code is `Exact` on equal, `Downgrade` when target < actual, `UpgradeRequired` error when target > actual. CLAUDE.md says exact only. Stub reports `sm_0`, so it serves only `sm_0` packages (typecheck target).
+- **Triage** [done]: exact match only (`triage.rs`); also checks that the backend's own arch equals the probed device and that `tensor_format` is in the arch's table. Stub reports `sm_0`, so it serves only `sm_0` packages (typecheck target).
 
 **Backend selection** [gap]: order sm120 -> sm90 -> stub over compiled-in candidates. The loop returns the first candidate and never checks that the probed device matches its kind. A `multi` build on H100 would pick sm120 (its probe succeeds on any CUDA device and reports `sm_90`).
 
@@ -83,9 +83,9 @@ stateDiagram-v2
 
 ## 5. API layer
 
-`helios-core/src/api.rs`. Axum router, one route: `POST /chat/completions`.
+`helios-core/src/api.rs`. Axum router: `GET /health` and `POST /v1/chat/completions` (nest applied inside `router()`).
 
-- [gap] `api.rs` docs say "mounted under `/v1`". `main.rs` does no `nest`, so the live path is `/chat/completions`. The `/v1` decision in CLAUDE.md is pending.
+- [done] `/v1` nest and `/health` landed in phase 01.
 - Request: `model`, `messages[{role, content}]`, `max_tokens` (default 1024), `temperature`, `top_p`. Unknown fields ignored. Non-streaming only.
 
 Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or empty) -> ingress send, 500 ms timeout, bounded queue cap 32 -> first event, 5 s timeout -> fold `Tokens` until `Done`/`Error` -> decode -> 200.
@@ -114,7 +114,7 @@ Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or 
 3. `PromptTokenizer` loads lazily (`OnceCell`). Truncation = manifest `model.max_seq_len`.
 4. Prompt is a placeholder `role:content` join, not a chat template. Real template waits on the codec.
 5. Encode uses special tokens; decode skips them.
-6. Dependency: `tokenizers` 0.19 with `onig` (workaround; re-check on upgrade).
+6. Dependency: `tokenizers` 0.22 with `onig` (0.22 requires a regex backend).
 7. [gap] `tests/encode_path_smoke.rs` uses a cwd-relative fixture path; CLAUDE.md requires `CARGO_MANIFEST_DIR`.
 
 ## 7. RadixCache (intent vs code)
@@ -169,7 +169,7 @@ flowchart LR
 | 501 without tokenizer | [impl] |
 | RadixCache index, 256-token chunks | [partial] |
 | 503 reserved for Uninitialized/Stopped | [gap] used more broadly |
-| Exact `target_arch` triage | [pending], code has Downgrade |
+| Exact `target_arch` triage | [done] |
 | Backend order sm120 -> sm90 -> stub | [partial], no device-kind check |
 | `helios-pkg`, `/v1` nesting, backend use of `ModelConfig` | [pending] / [gap] |
 
@@ -188,12 +188,12 @@ Re-verified in current source.
 9. sm120 prefill `byte_size` mismatch; leaks on re-capture; argmax on bf16 bits (`kernels.rs`, `graph.rs`).
 10. Response body lacks `object`, `created`, `usage`; 503 overuse vs CLAUDE.md, 429 never emitted.
 11. Tokenizer test fixture path cwd-relative; helios-cli has no feature flags (Taskfile sm90/sm120 fail).
-12. Triage Downgrade contradicts CLAUDE.md exact-match decision.
+12. ~~Triage Downgrade contradicts CLAUDE.md~~ resolved in phase 01.
 
 ## Unresolved questions
 
 - ~~Which manifest tag form wins~~ resolved: `"V1"`.
-- Downgrade triage (code) or exact match only (CLAUDE.md)?
+- ~~Downgrade triage or exact match~~ resolved: exact match.
 - Apply `/v1` via `nest` in CLI or in `api::router()`?
 - 503 vs 429 split: CLAUDE.md or current code? Zero-node graph capture valid on target driver? Needs CUDA host.
 - Should `main.rs` cancel the scheduler token on shutdown instead of aborting the supervisor?

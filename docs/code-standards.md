@@ -21,9 +21,9 @@ Status tags: **[enforced]** code matches · **[pending]** decided, code not ther
 | State machine: `AtomicU8` + CAS loop, 6 states, exhaustive transition table, lock-free read path | [enforced] `helios-core/src/state.rs` |
 | RadixCache: in-process, 256-token chunks, owns index + block IDs only, memory via HAL `allocate_kv_cache` | [enforced] chunk const in `cache.rs`; ownership not audited |
 | CUDA FFI: `cuda-driver-sys` v0.3, Driver API, behind `#[cfg(feature = "sm120")]`, real FFI | [enforced] `helios-hal/src/backends/blackwell_sm120/` |
-| Tokenizer: HF `tokenizers` 0.19 with `onig` feature (workaround; re-check on upgrade) | [enforced] `helios-core/Cargo.toml` |
+| Tokenizer: HF `tokenizers` 0.22 with `onig` (0.22 requires a regex backend; see `helios-core/Cargo.toml`) | [enforced] real Qwen3 tokenizer test in `helios-core/tests/qwen3_tokenizer.rs` |
 | HTTP status: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` | [drift] `api.rs` also returns 503 for queue-full/send-failure; `scheduler.rs` docs mention 429 |
-| Triage: exact `target_arch` match only; PTX fallback only as explicit manifest field | [drift] `triage.rs` implements `Downgrade`; `lib.rs` docs say forward-compat |
+| Triage: exact `target_arch` match only; PTX fallback only as explicit manifest field | [done] `triage.rs` is exact-match + backend arch + format table; 14 matrix tests |
 | Model parameters (`ModelConfig`: layers, kv heads, head_dim, vocab, max_seq_len) in manifest; no hard-coded dims | [partial] `ModelConfig` is in the manifest (P0b); `blackwell_sm120/backend.rs` still hard-codes `HEAD_DIM`, `NUM_HEADS`; `kernels.rs` hard-codes `VOCAB_SIZE` |
 | Schema source of truth = Rust structs; JSON Schema via `schemars`; Rust/Python round-trip test | [done] `schemars` behind feature `schema`; `specification/schema/manifest.v1.json` committed, a test fails on drift; Ignition validates with `jsonschema`; shared fixtures in `specification/fixtures/v1/` |
 | `.hyperion` codec = dedicated crate `helios-pkg`; `.manifest.json` sidecar until then | [pending] `helios-cli/src/main.rs` reads JSON sidecar |
@@ -155,7 +155,7 @@ hyperion-compile --model llama3 --hw sm_90 --source <dir> --out out/model.hyperi
 
 | # | Item | Where |
 |---|---|---|
-| D1 | Triage allows downgrade; decision says exact match | `helios-hal/src/triage.rs`, `lib.rs` docs |
+| D1 | ~~Triage allows downgrade~~ | Resolved in phase 01: exact match only |
 | D2 | 503 used for queue-full; decision reserves 503 for engine states | `helios-core/src/api.rs` |
 | D3 | Hard-coded model dims (`HEAD_DIM`, `NUM_HEADS`, `VOCAB_SIZE`) | `blackwell_sm120/backend.rs`, `kernels.rs` |
 | D4 | Fixture path relative to cwd | `helios-core/tests/encode_path_smoke.rs` |

@@ -12,7 +12,8 @@ Two-stage architecture:
 ## Environment
 
 - Build host: Windows, no CUDA toolkit or GPU. Project directory: `C:\Users\nguyendk\Documents\Projects\hyperion`.
-- Default builds use the `stub` feature. The `sm120` cargo feature can only be type-checked on this host; the link step needs the CUDA toolkit.
+- GPU (verified 2026-10-28 on a staging H100 pod, sm_90): driver 580.126.20 / CUDA 13.0, `nvidia/cuda:12.4.1-devel-ubuntu22.04` image (nvcc 12.4); the `sm120` feature links against it with `CUDA_PATH=/usr/local/cuda` and `LIBRARY_PATH=/usr/local/cuda/lib64/stubs`. Minimum toolkit version is not established; graph-API behaviour at kernel time is unverified.
+- Default builds use the `stub` feature. Model-specific test data: `python scripts/fetch-model-fixtures.py` (see `testdata/README.md`). The `sm120` cargo feature can only be type-checked on this host; the link step needs the CUDA toolkit.
 
 ## Repository layout
 
@@ -54,10 +55,11 @@ cargo run -p hyperion-specification --features schema --bin gen-schema   # regen
 
 - **State machine:** `AtomicU8` + CAS loop, 6 states, exhaustive transition table. The API read path is lock-free.
 - **RadixCache:** in-process, 256-token chunks, owns only the index and block IDs. Device memory is allocated through the HAL `allocate_kv_cache`. An LMCache-style sidecar becomes a separate crate later.
+- **sm90 backend (decided 2026-10-28):** shared CUDA Driver-API core with per-arch kernel sets, cuBLAS first for the initial forward pass; no TensorRT-LLM C++ shim. First verification model is Qwen2.5-0.5B (plan phase 10).
 - **CUDA FFI:** `cuda-driver-sys` v0.3 (Driver API, includes the graph API), wrapped in `#[cfg(feature = "sm120")]` (the only feature linking CUDA so far). Real FFI, no emulation.
-- **Tokenizer:** Hugging Face `tokenizers` crate with the `onig` feature enabled. This is currently a workaround so the crate links with `tokenizers` 0.19; re-check against newer versions.
-- **HTTP status:** 501 when no tokenizer is loaded (capability not wired); 503 is reserved for engine states `Uninitialized`/`Stopped`.
-- **Triage:** exact `target_arch` match only. Ignition compiles per target. A PTX fallback, if ever needed, is an explicit manifest field, never inferred from the arch number.
+- **Tokenizer:** Hugging Face `tokenizers` 0.22 with the `onig` feature (0.22 requires choosing a regex backend; `onig` is the upstream default so token ids match the reference; `fancy-regex` was not evaluated). 0.19 could not parse the current Qwen3 `tokenizer.json`; the real file is a test fixture.
+- **HTTP:** chat is `POST /v1/chat/completions`; `GET /health` (root) is 200 in `Ready`/`Loaded`/`Serving`, 503 otherwise. A prompt longer than the limit is rejected with 400 (never truncated); 501 when no tokenizer is loaded (capability not wired); 503 is reserved for engine states `Uninitialized`/`Draining`/`Stopped`. `helios-cli` binds `127.0.0.1` by default (`--bind`), logs at `info` by default, and takes `--max-seq-len` (<= the model's).
+- **Triage:** exact `target_arch` match only, plus the backend's own arch must equal the probed device and the manifest's `tensor_format` must be in that arch's format table (`helios-hal/src/triage.rs`, one Rust table; Ignition recipes are cross-checked against its committed JSON dump). The factory tries sm120 -> sm90 -> stub and reports every refusal. A PTX fallback, if ever needed, is an explicit manifest field, never inferred from the arch number.
 - **Model parameters:** `ModelConfig` (num_layers, attention kind, num_kv_heads, head_dim, vocab_size, max_seq_len) lives in the manifest. `attention` is an enum (`mha`/`gqa`); a new KV layout such as MLA is a new variant, never inferred from the dims. HF mapping: `head_dim` from config else hidden/heads; `max_seq_len` = `max_position_embeddings`; `rope_scaling` and sliding window are refused. Package-level `tensor_format` (`bf16`/`fp8`/`fp4`) records the format the packager actually wrote (bf16 until a quantizer exists), never what the recipe allows; recipes only list `supported_formats`. Backends read it; no hard-coded model dimensions.
 - **Schema source of truth:** Rust structs in `specification`, manifest is JSON. `schemars` behind a `schema` feature (not pulled into `helios-cli`) generates `specification/schema/manifest.v1.json`, committed; CI regenerates and runs `git diff --exit-code`. `#[serde(deny_unknown_fields)]` on manifest types. `manifest_version` is the string `"V1"`. Ignition validates with `jsonschema` (a real runtime dependency) before writing/signing; Rust/Python round-trip tests both ways. Signatures cover the manifest's stored bytes, never a re-serialization. **Not Protobuf**: manifest is off the hot path and read once; revisit only for a runtime IPC protocol (e.g. KV sidecar, multi-node), as a separate decision.
 - **`.hyperion` package codec:** will be a dedicated crate, `helios-pkg`. A `.manifest.json` placeholder is used for now.
@@ -69,5 +71,6 @@ cargo run -p hyperion-specification --features schema --bin gen-schema   # regen
 - Surface any design decision you make on your own in your report so the user can review it.
 - Ask before changing project direction or scope; do not decide unilaterally.
 - Test fixtures resolve paths via `env!("CARGO_MANIFEST_DIR")`, never the cwd.
+- **No per-model test files in the engine.** Real third-party model files (HF `config.json`, `tokenizer.json`) live in `testdata/models/<id>/`, which is gitignored; `testdata/models.json` (committed) pins repo, revision and sha256, and `python scripts/fetch-model-fixtures.py` downloads them. Tests are generic over that registry and name no model; missing files skip with a visible message, `HYPERION_REQUIRE_MODEL_FIXTURES=1` makes that a failure. (The small `llama3-hf`/`qwen2-hf` configs under `ignition/tests/fixtures` predate this rule and back the committed golden manifests.)
 - Avoid adding new dependencies unless needed, and give the reason when you do.
 - Reply in the language the user writes in; keep code, identifiers and commit messages in English.

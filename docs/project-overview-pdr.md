@@ -78,7 +78,7 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 
 | Decision | Code state |
 |---|---|
-| Triage: exact `target_arch` match only. Ignition compiles per target. PTX fallback, if ever, is an explicit manifest field | **Decided, code pending.** `triage.rs` still allows `Downgrade` when `target < actual`. Also `lib.rs` docs still describe forward-compat |
+| Triage: exact `target_arch` match only. Ignition compiles per target. PTX fallback, if ever, is an explicit manifest field | **Done (phase 01).** `triage.rs` is exact-match; backend arch and `tensor_format` are checked too |
 | Manifest records `target_arch` and `tensor_format` | Both present in `v1::Manifest`. Runtime check of arch vs format (fp4 only on Blackwell) is not implemented yet |
 | `ModelConfig` (num_layers, num_kv_heads, head_dim, vocab_size, max_seq_len) in manifest; backends read it | **Manifest done (P0b).** Backends still hard-code dims |
 | Rust structs are schema source of truth; JSON Schema via `schemars`; Ignition validates; Rust/Python round-trip test | **Done (P0b).** Schema generated and committed, drift test, `jsonschema` validation, shared fixtures. `tensor_format` and `attention` added |
@@ -89,7 +89,7 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 | Hopper (SM90) does not run FP4. sm90 recipe forces FP8/BF16 | Recipes list `supported_formats` (sm_90 has no fp4); a Python test checks it. Not enforced at runtime yet; triage (items 8/9) will compare `tensor_format` with each backend's supported formats |
 | RadixCache: in-process, 256-token chunks, index only; device memory via HAL | Index struct exists (`insert`/`lookup`); no eviction, no tiers, not used by scheduler |
 | CUDA FFI: `cuda-driver-sys` 0.3, only under `sm120` | Matches. `sm90` path uses no CUDA FFI yet (see §8) |
-| Tokenizer: HF `tokenizers` 0.19 with `onig` | Matches. Re-check on upgrade |
+| Tokenizer: HF `tokenizers` 0.22 with `onig` | Updated: 0.19 could not parse the current Qwen3 tokenizer.json |
 
 ## 7. Success criteria
 

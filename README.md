@@ -17,7 +17,7 @@ Ignition (Python, build time)       reads weights, applies hardware recipe,
      |
      v
 Helios (Rust, run time)             read manifest -> probe device via HAL -> triage
-     |                              -> load weights -> serve /chat/completions
+     |                              -> load weights -> serve /v1/chat/completions
      v
 OpenAI-compatible HTTP API
 ```
@@ -83,7 +83,7 @@ The `Taskfile.yml` wraps the Cargo commands as `task build`, `task check`, `task
 
 ## Runtime
 
-`helios-cli --model <path>.hyperion [--port 8080]` is meant to read `<path>.manifest.json`, probe the device, select a backend, and serve `POST /chat/completions`. Today the boot path runs, but generation does not: the scheduler is a no-op that drops each request, so requests that pass tokenization get 503.
+`helios-cli --model <path>.hyperion [--port 8080] [--bind 127.0.0.1] [--max-seq-len N]` reads `<path>.manifest.json`, probes the device, triages (exact arch + tensor_format), selects a backend, and serves `POST /v1/chat/completions` plus `GET /health`. Today the boot path runs, but generation does not: the scheduler is a no-op that drops each request, so requests that pass tokenization get 503.
 
 ## Documentation
 
