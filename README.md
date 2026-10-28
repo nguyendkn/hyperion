@@ -1,6 +1,10 @@
-# Hyperion
+# Hyperion: local LLM inference engine in Rust for NVIDIA Blackwell and Hopper GPUs
 
-Hyperion is a local LLM inference engine. A model is compiled ahead of time into a `.hyperion` package for one target GPU generation, then served by a native Rust runtime through an OpenAI-compatible HTTP API. The runtime has no Python dependency. Targets: Blackwell SM120/SM121 (primary) and Hopper SM90 (H100/H200, planned).
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Rust](https://img.shields.io/badge/runtime-Rust-orange)
+![Status](https://img.shields.io/badge/status-pre--alpha-red)
+
+Hyperion is a local LLM inference engine with an OpenAI-compatible API, built for NVIDIA CUDA GPUs (Blackwell SM120, Hopper SM90). A model is compiled ahead of time into a `.hyperion` package for one target GPU generation, then served by a native Rust runtime through an OpenAI-compatible HTTP API. The runtime has no Python dependency. Targets: Blackwell SM120/SM121 (primary) and Hopper SM90 (H100/H200, planned).
 
 > **Status: pre-alpha skeleton.** The workspace, engine state machine, HAL trait, manifest triage, HTTP route and tokenizer wrapper exist. **No end-to-end generation works yet.** The scheduler does not run, no weights are loaded to a device, and Ignition writes a manifest sidecar only (no weight blob, no signature). The SM120 path is type-checked on a host without CUDA and has never been executed. The SM90 backend is not wired.
 

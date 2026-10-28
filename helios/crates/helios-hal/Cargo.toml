@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # Feature flags select a backend at compile time. At runtime the backend
 # factory probes the actual device and may *downgrade* (run sm_90 kernels on

@@ -12,7 +12,11 @@ edition = "2021"
 version = "0.1.0"
 rust-version = "1.75"
 license = "Apache-2.0"
-repository = "https://github.com/hyperion/hyperion"
+repository = "https://github.com/nguyendkn/hyperion"
+homepage = "https://github.com/nguyendkn/hyperion"
+readme = "README.md"
+keywords = ["llm", "inference", "cuda", "gpu", "openai"]
+categories = ["science", "web-programming::http-server"]
 authors = ["Hyperion Contributors"]
 
 [workspace.dependencies]
