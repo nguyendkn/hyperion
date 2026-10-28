@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+tokio-stream = { workspace = true }
 minijinja = { workspace = true }
 minijinja-contrib = { workspace = true }
 axum = { workspace = true }

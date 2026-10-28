@@ -128,6 +128,50 @@ impl PromptTokenizer {
     }
 }
 
+/// Turns a stream of generated ids into text deltas without ever emitting a half-decoded
+/// character: a byte-level tokenizer may split one character (an emoji, a CJK glyph) over several
+/// tokens, and decoding the prefix then ends in U+FFFD until the rest arrives, so that tail is held
+/// back. The whole id list is decoded on every push (quadratic in the length, fine for the lengths
+/// served today; an offset-based decoder is the later optimisation).
+#[derive(Default)]
+pub struct StreamDecoder {
+    ids: Vec<u32>,
+    /// Bytes of the decoded text already handed out.
+    emitted: usize,
+}
+
+impl StreamDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add one token; returns the new text that is safe to show (possibly empty).
+    pub async fn push(&mut self, tok: &PromptTokenizer, id: u32) -> Result<String> {
+        self.ids.push(id);
+        let text = tok.decode(&self.ids).await?;
+        if text.ends_with('\u{FFFD}') {
+            return Ok(String::new());
+        }
+        Ok(self.take(&text))
+    }
+
+    /// Everything not yet emitted, including a trailing incomplete character (which then shows
+    /// as U+FFFD, exactly as a full decode would).
+    pub async fn finish(&mut self, tok: &PromptTokenizer) -> Result<String> {
+        if self.ids.is_empty() {
+            return Ok(String::new());
+        }
+        let text = tok.decode(&self.ids).await?;
+        Ok(self.take(&text))
+    }
+
+    fn take(&mut self, text: &str) -> String {
+        let delta = text.get(self.emitted..).unwrap_or("").to_string();
+        self.emitted = text.len().max(self.emitted);
+        delta
+    }
+}
+
 /// Flatten `[{role, content}, ...]` into the single string the tokenizer
 /// sees. A real chat template lives in the package; this minimal join keeps
 /// the runtime deterministic and toolchain-free for now.

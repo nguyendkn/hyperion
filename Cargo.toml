@@ -60,6 +60,9 @@ cuda-driver-sys = "0.3"
 # Used by helios-core's API+scheduler path. Apache-2.0, pure Rust, no Python.
 tokenizers = { version = "0.22", default-features = false }
 
+# Adapts a channel receiver to the `Stream` that axum's SSE response needs.
+tokio-stream = "0.1"
+
 # Renders a model's own Jinja chat template (tokenizer_config.json) exactly as Hugging Face does,
 # instead of guessing each model's prompt format in Rust.
 minijinja = { version = "3", features = ["serde", "json"] }

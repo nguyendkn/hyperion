@@ -5,6 +5,9 @@
 
 use std::sync::Arc;
 
+use std::convert::Infallible;
+
+use axum::response::sse::{Event, Sse};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
@@ -12,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::scheduler::{InferenceRequest, IngressSender, SamplingParams, StreamEvent};
 use crate::state::StateMachine;
-use crate::tokenizer::{ChatMessageForEncode, PromptTokenizer};
+use crate::tokenizer::{ChatMessageForEncode, PromptTokenizer, StreamDecoder};
 
 /// How long the handler waits for the scheduler to *accept* a request (the
 /// ingress send) before declaring 503. The ingress channel is bounded
@@ -93,6 +96,9 @@ pub struct ChatCompletionRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f32>,
+    /// `true`: answer as server-sent events, one chunk per piece of text.
+    #[serde(default)]
+    pub stream: bool,
 }
 
 fn default_max_tokens() -> u32 {
@@ -257,6 +263,15 @@ async fn chat_completions(
         }
     };
 
+    // Streaming: a failure before the first token is still a normal HTTP error; once text starts
+    // flowing the status is already 200 and later errors travel inside the stream.
+    if req.stream {
+        if let StreamEvent::Error(msg) = &first {
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("scheduler error: {msg}")).into_response();
+        }
+        return stream_response(tok.clone(), req.model.clone(), first, response_rx).into_response();
+    }
+
     let mut generated: Vec<u32> = Vec::new();
     let mut finish_reason = String::from("stop");
 
@@ -316,6 +331,82 @@ async fn chat_completions(
     };
 
     (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+}
+
+/// One OpenAI `chat.completion.chunk` as the JSON text of an SSE `data:` line.
+pub fn chunk_json(id: &str, model: &str, delta: serde_json::Value, finish_reason: Option<&str>) -> String {
+    serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }],
+    })
+    .to_string()
+}
+
+/// Answer with server-sent events: a role chunk, one content chunk per piece of decoded text, a
+/// final chunk carrying `finish_reason`, then `data: [DONE]`. A task owns the scheduler's event
+/// stream and the incremental detokeniser; if the client disconnects, its sends fail and the task
+/// ends (the generation itself runs to its end, which is harmless but not yet cancelled).
+fn stream_response(
+    tok: PromptTokenizer,
+    model: String,
+    first: StreamEvent,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+) -> impl IntoResponse {
+    let (tx, out) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
+    let id = format!("chatcmpl-{}", chrono_like_id());
+    tokio::spawn(async move {
+        let send = |data: String| tx.send(Ok(Event::default().data(data))).is_ok();
+        if !send(chunk_json(&id, &model, serde_json::json!({ "role": "assistant", "content": "" }), None)) {
+            return;
+        }
+        let mut decoder = StreamDecoder::new();
+        let mut finish = "stop".to_string();
+        let mut current = Some(first);
+        loop {
+            match current.take() {
+                Some(StreamEvent::Tokens(ids)) => {
+                    for token in ids {
+                        match decoder.push(&tok, token).await {
+                            Ok(text) if !text.is_empty() => {
+                                if !send(chunk_json(&id, &model, serde_json::json!({ "content": text }), None)) {
+                                    return;
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                send(serde_json::json!({ "error": { "message": format!("decode failed: {e}") } }).to_string());
+                                return;
+                            }
+                        }
+                    }
+                }
+                Some(StreamEvent::Done { finish_reason, .. }) => {
+                    finish = match finish_reason {
+                        crate::scheduler::FinishReason::Length => "length".into(),
+                        crate::scheduler::FinishReason::Stop => "stop".into(),
+                    };
+                    break;
+                }
+                Some(StreamEvent::Error(message)) => {
+                    send(serde_json::json!({ "error": { "message": message } }).to_string());
+                    send("[DONE]".into());
+                    return;
+                }
+                None => break,
+            }
+            current = events.recv().await;
+        }
+        if let Ok(rest) = decoder.finish(&tok).await {
+            if !rest.is_empty() && !send(chunk_json(&id, &model, serde_json::json!({ "content": rest }), None)) {
+                return;
+            }
+        }
+        send(chunk_json(&id, &model, serde_json::json!({}), Some(&finish)));
+        send("[DONE]".into());
+    });
+    Sse::new(tokio_stream::wrappers::UnboundedReceiverStream::new(out))
 }
 
 /// Cheap monotonic-ish id without pulling `chrono`. Uses a process-static
