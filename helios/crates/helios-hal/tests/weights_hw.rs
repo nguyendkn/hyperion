@@ -175,3 +175,107 @@ fn rmsnorm_kernel_matches_the_cpu_reference() {
     assert!(err.to_string().contains("expected tokens*hidden"), "{err}");
     backend.shutdown().unwrap();
 }
+
+// ---- single ops from kernels/elementwise.cu, each against the CPU reference ----
+
+fn loaded_backend() -> (PathBuf, hyperion_specification::v1::Manifest, HopperBackend) {
+    let package = package();
+    let Manifest::V1(manifest) =
+        serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+    let backend = HopperBackend::new().expect("an H100 must be present");
+    backend.load_model_weights(&package, &manifest).expect("upload");
+    (package, manifest, backend)
+}
+
+/// Deterministic bf16 test data in roughly [-range, range], exact in bf16.
+fn pattern(n: usize, range: f32) -> Vec<u16> {
+    use helios_hal::reference::f32_to_bf16;
+    (0..n).map(|i| f32_to_bf16(((i * 37 % 101) as f32 - 50.0) / 50.0 * range)).collect()
+}
+
+/// Share of identical elements and the worst error in bf16 steps (1.0 = one step).
+fn compare(got: &[u16], want: &[u16]) -> (f64, f32) {
+    use helios_hal::reference::bf16_to_f32;
+    assert_eq!(got.len(), want.len());
+    let mut exact = 0;
+    let mut worst = 0.0f32;
+    for (g, r) in got.iter().zip(want) {
+        let (g, r) = (bf16_to_f32(*g), bf16_to_f32(*r));
+        if g == r {
+            exact += 1;
+        }
+        worst = worst.max((g - r).abs() / (r.abs() / 128.0 + 1e-6));
+    }
+    (exact as f64 / got.len() as f64, worst)
+}
+
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn embedding_gather_equals_the_rows_of_the_file() {
+    const NAME: &str = "embed_tokens.weight";
+    let (package, manifest, backend) = loaded_backend();
+    let layer = manifest.layers.iter().find(|l| l.name == NAME).unwrap();
+    let hidden = layer.tensor.shape[1];
+    // The prompt of the HF oracle ("The capital of France is") plus the first and last ids.
+    let ids: Vec<u32> = vec![785, 6722, 315, 9625, 374, 0, layer.tensor.shape[0] as u32 - 1];
+    let got = backend.embedding_bf16(NAME, &ids, hidden).expect("gather");
+
+    let mut source = std::fs::File::open(package.with_file_name("model.safetensors")).unwrap();
+    let data_start = weights_plan::data_start(&mut source).unwrap();
+    for (t, &id) in ids.iter().enumerate() {
+        let mut row = vec![0u8; hidden * 2];
+        source.seek(SeekFrom::Start(data_start + layer.byte_offset + id as u64 * hidden as u64 * 2)).unwrap();
+        source.read_exact(&mut row).unwrap();
+        let want: Vec<u16> = row.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert!(got[t * hidden..(t + 1) * hidden] == want[..], "row for token {id} differs from the file");
+    }
+    let err = backend.embedding_bf16(NAME, &[layer.tensor.shape[0] as u32], hidden).unwrap_err();
+    assert!(err.to_string().contains("outside the vocabulary"), "{err}");
+    println!("embedding: {} rows bit-identical to the file", ids.len());
+    backend.shutdown().unwrap();
+}
+
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn add_and_swiglu_match_the_cpu_reference() {
+    use helios_hal::reference::{add, swiglu};
+    let (_, _, backend) = loaded_backend();
+    let n = 4864; // intermediate_size of Qwen2.5-0.5B
+    let (a, b) = (pattern(n, 8.0), pattern(n + 0, 3.0).into_iter().rev().collect::<Vec<_>>());
+
+    let (exact, worst) = compare(&backend.add_bf16(&a, &b).unwrap(), &add(&a, &b));
+    println!("add [{n}]: {:.2}% bit-identical, worst {worst:.2} bf16 steps", exact * 100.0);
+    assert!(exact == 1.0, "bf16 addition is exactly rounded; the kernel must match bit for bit");
+
+    // SwiGLU uses expf on the device vs exp on the host: allow rare one-step differences.
+    let (exact, worst) = compare(&backend.swiglu_bf16(&a, &b).unwrap(), &swiglu(&a, &b));
+    println!("swiglu [{n}]: {:.2}% bit-identical, worst {worst:.2} bf16 steps", exact * 100.0);
+    assert!(exact > 0.97 && worst <= 2.0, "swiglu deviates: {exact} identical, worst {worst}");
+
+    assert!(backend.add_bf16(&a, &b[..n - 1]).unwrap_err().to_string().contains("differ in length"));
+    backend.shutdown().unwrap();
+}
+
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn rope_matches_the_cpu_reference() {
+    use helios_hal::reference::{rope, rope_tables};
+    let (_, _, backend) = loaded_backend();
+    // Qwen2.5-0.5B: 14 query heads of 64, rope_theta 1e6.
+    let (heads, head_dim, theta) = (14, 64, 1_000_000.0);
+    let (cos, sin) = rope_tables(128, head_dim, theta);
+    let positions = [0u32, 5, 100];
+    let x = pattern(positions.len() * heads * head_dim, 4.0);
+
+    let got = backend.rope_bf16(&x, &positions, heads, head_dim, &cos, &sin).unwrap();
+    let want = rope(&x, &positions, heads, head_dim, &cos, &sin);
+    let (exact, worst) = compare(&got, &want);
+    println!("rope [{}x{heads}x{head_dim}]: {:.2}% bit-identical, worst {worst:.2} bf16 steps", positions.len(), exact * 100.0);
+    assert!(exact == 1.0, "the kernel uses the same bf16 arithmetic and tables as the reference");
+    // position 0 is the identity
+    assert!(got[..heads * head_dim] == x[..heads * head_dim]);
+
+    let err = backend.rope_bf16(&x, &[0, 5, 128], heads, head_dim, &cos, &sin).unwrap_err();
+    assert!(err.to_string().contains("outside the table"), "{err}");
+    backend.shutdown().unwrap();
+}

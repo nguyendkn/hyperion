@@ -40,6 +40,74 @@ pub fn linear(w: &[u16], x: &[u16], tokens: usize, out_features: usize, in_featu
     y
 }
 
+/// Round an f32 to bf16 and back: what torch does after every bf16 tensor operation.
+fn round_bf16(v: f32) -> f32 {
+    bf16_to_f32(f32_to_bf16(v))
+}
+
+/// `y = a + b` elementwise, rounded to bf16.
+pub fn add(a: &[u16], b: &[u16]) -> Vec<u16> {
+    assert_eq!(a.len(), b.len());
+    a.iter().zip(b).map(|(&x, &y)| f32_to_bf16(bf16_to_f32(x) + bf16_to_f32(y))).collect()
+}
+
+/// SwiGLU gate as in Qwen2's MLP: `bf16(silu(gate)) * up`, with silu computed in f32 and
+/// rounded to bf16 before the product (torch rounds after each bf16 op).
+pub fn swiglu(gate: &[u16], up: &[u16]) -> Vec<u16> {
+    assert_eq!(gate.len(), up.len());
+    gate.iter()
+        .zip(up)
+        .map(|(&g, &u)| {
+            let g = bf16_to_f32(g);
+            let silu = round_bf16(g / (1.0 + (-g).exp()));
+            f32_to_bf16(silu * bf16_to_f32(u))
+        })
+        .collect()
+}
+
+/// Rotary embedding tables `[max_pos, head_dim]` (bf16 bits) in the Hugging Face layout: the
+/// `head_dim / 2` frequencies are repeated for both halves. Computed in f64 then rounded
+/// to bf16, as HF computes in float then casts to the model dtype.
+pub fn rope_tables(max_pos: usize, head_dim: usize, theta: f64) -> (Vec<u16>, Vec<u16>) {
+    assert!(head_dim % 2 == 0, "head_dim must be even");
+    let half = head_dim / 2;
+    let mut cos = Vec::with_capacity(max_pos * head_dim);
+    let mut sin = Vec::with_capacity(max_pos * head_dim);
+    for pos in 0..max_pos {
+        for half_pass in 0..2 {
+            let _ = half_pass;
+            for i in 0..half {
+                let angle = pos as f64 * theta.powf(-2.0 * i as f64 / head_dim as f64);
+                cos.push(f32_to_bf16(angle.cos() as f32));
+                sin.push(f32_to_bf16(angle.sin() as f32));
+            }
+        }
+    }
+    (cos, sin)
+}
+
+/// Apply rotary embedding (HF `rotate_half` convention) to `x` laid out `[tokens, heads, head_dim]`
+/// at the given positions. Every multiply and the add are rounded to bf16, like torch does.
+pub fn rope(x: &[u16], positions: &[u32], heads: usize, head_dim: usize, cos: &[u16], sin: &[u16]) -> Vec<u16> {
+    let half = head_dim / 2;
+    assert_eq!(x.len(), positions.len() * heads * head_dim);
+    let mut out = vec![0u16; x.len()];
+    for (t, &pos) in positions.iter().enumerate() {
+        let table = pos as usize * head_dim;
+        for h in 0..heads {
+            let base = (t * heads + h) * head_dim;
+            for i in 0..half {
+                let (x1, x2) = (bf16_to_f32(x[base + i]), bf16_to_f32(x[base + i + half]));
+                let (c, s) = (bf16_to_f32(cos[table + i]), bf16_to_f32(sin[table + i]));
+                // first half: x1*cos + (-x2)*sin ; second half: x2*cos + x1*sin
+                out[base + i] = f32_to_bf16(round_bf16(x1 * c) + round_bf16(-x2 * s));
+                out[base + i + half] = f32_to_bf16(round_bf16(x2 * c) + round_bf16(x1 * s));
+            }
+        }
+    }
+    out
+}
+
 /// RMSNorm as Hugging Face's Qwen2 does it: normalise in f32, round to bf16, then
 /// multiply by the bf16 weight and round to bf16 again. `x` is `[tokens, hidden]`.
 pub fn rmsnorm(x: &[u16], weight: &[u16], tokens: usize, hidden: usize, eps: f32) -> Vec<u16> {
@@ -122,5 +190,44 @@ mod tests {
     fn rmsnorm_eps_keeps_an_all_zero_row_finite() {
         let y = rmsnorm(&bf(&[0.0; 4]), &bf(&[1.0; 4]), 1, 4, 1e-6);
         assert!(y.iter().all(|&b| bf16_to_f32(b) == 0.0));
+    }
+
+    #[test]
+    fn add_rounds_to_bf16() {
+        assert_eq!(add(&bf(&[1.0, 2.0]), &bf(&[0.5, -2.0])), bf(&[1.5, 0.0]));
+    }
+
+    #[test]
+    fn swiglu_known_values() {
+        // silu(0) = 0; silu(large) ~ large; silu(-large) ~ 0.
+        let y = swiglu(&bf(&[0.0, 8.0, -8.0]), &bf(&[3.0, 1.0, 1.0]));
+        assert_eq!(bf16_to_f32(y[0]), 0.0);
+        assert!((bf16_to_f32(y[1]) - 7.9973).abs() < 0.05, "{}", bf16_to_f32(y[1]));
+        assert!(bf16_to_f32(y[2]).abs() < 0.01);
+    }
+
+    #[test]
+    fn rope_tables_start_with_cos_one_sin_zero_at_position_zero() {
+        let (cos, sin) = rope_tables(2, 4, 10000.0);
+        assert!(cos[..4].iter().all(|&c| bf16_to_f32(c) == 1.0));
+        assert!(sin[..4].iter().all(|&s| bf16_to_f32(s) == 0.0));
+        // halves repeat: entries i and i + head_dim/2 are equal
+        assert_eq!(cos[4], cos[6]);
+        assert_eq!(sin[5], sin[7]);
+    }
+
+    #[test]
+    fn rope_at_position_zero_is_the_identity() {
+        let (cos, sin) = rope_tables(1, 4, 10000.0);
+        let x = bf(&[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(rope(&x, &[0], 1, 4, &cos, &sin), x);
+    }
+
+    #[test]
+    fn rope_rotates_by_the_expected_angle() {
+        // head_dim 2: one frequency, angle = pos. Rotating (1, 0) by 1 rad gives (cos 1, sin 1).
+        let (cos, sin) = rope_tables(2, 2, 10000.0);
+        let y = rope(&bf(&[1.0, 0.0]), &[1], 1, 2, &cos, &sin);
+        assert!((bf16_to_f32(y[0]) - 1f32.cos()).abs() < 0.01 && (bf16_to_f32(y[1]) - 1f32.sin()).abs() < 0.01);
     }
 }

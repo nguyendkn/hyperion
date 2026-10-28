@@ -5,6 +5,7 @@
 //! forward pass are not written yet and return a clear "not wired" error, so
 //! the engine can never reach `Serving` on this backend by accident.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Mutex;
@@ -30,17 +31,17 @@ const WEIGHTS_FILE: &str = "model.safetensors";
 /// Field order is drop order: cuBLAS handle first, then the weights' owner, then the
 /// device (which releases the context they all live in).
 pub struct HopperBackend {
-    cublas: Mutex<Option<Cublas>>,
-    modules: Mutex<Vec<KernelModule>>,
-    weights: Mutex<Option<DeviceWeights>>,
-    device: Mutex<CudaDevice>,
+    pub(super) cublas: Mutex<Option<Cublas>>,
+    pub(super) modules: Mutex<HashMap<&'static str, KernelModule>>,
+    pub(super) weights: Mutex<Option<DeviceWeights>>,
+    pub(super) device: Mutex<CudaDevice>,
 }
 
 impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { cublas: Mutex::new(None), modules: Mutex::new(Vec::new()), weights: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self { cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
     }
 
     /// Copy one uploaded tensor back to the host. A verification aid for hardware
@@ -121,13 +122,7 @@ impl HopperBackend {
         if w_len != hidden * 2 {
             return Err(anyhow!("weight {weight} holds {w_len} bytes, bf16 [{hidden}] needs {}", hidden * 2));
         }
-        let kernel = {
-            let mut modules = self.modules.lock().expect("modules mutex poisoned");
-            if modules.is_empty() {
-                modules.push(KernelModule::load(&dev, RMSNORM_PTX)?);
-            }
-            modules[0].function("rmsnorm_bf16")?
-        };
+        let kernel = self.kernel(&dev, "rmsnorm", RMSNORM_PTX, "rmsnorm_bf16")?;
 
         let bytes: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
         let x_ptr = dev.alloc(bytes.len().max(1))?;

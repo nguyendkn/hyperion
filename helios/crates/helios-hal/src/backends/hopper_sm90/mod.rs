@@ -13,5 +13,6 @@
 //! - [`backend`] — `HopperBackend` struct + its `ComputeBackend` impl.
 
 mod backend;
+mod ops;
 
 pub use backend::HopperBackend;
