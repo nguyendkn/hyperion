@@ -201,11 +201,18 @@ impl Scheduler {
     async fn serve(&self, request: InferenceRequest) {
         let InferenceRequest { request_id, token_ids, sampling_params, response_tx } = request;
         let max_new = sampling_params.max_tokens as usize;
+        // The request id seeds the random generator: a retry is a new request, and a replay of
+        // the same id (tests, debugging) reproduces the same text.
+        let sampling = helios_hal::SamplingConfig {
+            temperature: sampling_params.temperature,
+            top_p: sampling_params.top_p,
+            seed: request_id,
+        };
         let backend = self.backend.clone();
         let sink = response_tx.clone();
         let outcome = tokio::task::spawn_blocking(move || {
             let mut generated = 0u32;
-            let stop = backend.generate(&token_ids, max_new, &mut |token| {
+            let stop = backend.generate(&token_ids, max_new, &sampling, &mut |token| {
                 generated += 1;
                 // The receiver may be gone (client disconnected); finishing the generation
                 // is harmless, so a failed send is ignored.

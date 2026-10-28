@@ -8,6 +8,8 @@ use std::path::Path;
 use anyhow::Result;
 use hyperion_specification::v1::Manifest;
 
+use crate::sampling::SamplingConfig;
+
 /// Snapshot of the device discovered at startup by the backend factory.
 /// Reported back to `helios-core` so the scheduler can size its KV cache and
 /// batch budgets against real VRAM rather than config guesses.
@@ -89,12 +91,19 @@ pub trait ComputeBackend: Send + Sync {
         active_slots: &[u32],
     ) -> Result<u32>;
 
-    /// Greedy generation for one prompt: decode up to `max_new` tokens, calling `on_token` for
+    /// Generation for one prompt: decode up to `max_new` tokens chosen as `sampling` says (greedy,
+    /// or temperature / top-p with a seed), calling `on_token` for
     /// each as soon as it is chosen so the caller can stream it, and stop early at the model's
     /// end-of-sequence token. Optional: a backend that has not implemented the whole forward
     /// pass keeps this default, which says so instead of pretending. The method owns the
     /// per-sequence state (KV history) for the call; `helios-core` stays hardware-agnostic.
-    fn generate(&self, _prompt: &[u32], _max_new: usize, _on_token: &mut dyn FnMut(u32)) -> Result<StopReason> {
+    fn generate(
+        &self,
+        _prompt: &[u32],
+        _max_new: usize,
+        _sampling: &SamplingConfig,
+        _on_token: &mut dyn FnMut(u32),
+    ) -> Result<StopReason> {
         Err(anyhow::anyhow!("this backend cannot generate yet: its forward pass is not implemented"))
     }
 

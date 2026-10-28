@@ -16,6 +16,7 @@ use std::ffi::c_void;
 
 use crate::cuda::{Cublas, CudaDevice, DeviceWeights, KernelModule};
 use super::forward::Qwen2Dims;
+use crate::sampling::SamplingConfig;
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, TensorData};
 use crate::weights_plan;
 
@@ -207,14 +208,20 @@ impl ComputeBackend for HopperBackend {
         Ok(())
     }
 
-    fn generate(&self, prompt: &[u32], max_new: usize, on_token: &mut dyn FnMut(u32)) -> Result<StopReason> {
+    fn generate(
+        &self,
+        prompt: &[u32],
+        max_new: usize,
+        sampling: &SamplingConfig,
+        on_token: &mut dyn FnMut(u32),
+    ) -> Result<StopReason> {
         let (dims, eos) = self
             .runtime
             .lock()
             .expect("runtime mutex poisoned")
             .clone()
             .ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
-        self.generate_greedy_streaming(&dims, prompt, max_new, eos, on_token)
+        self.generate_streaming(&dims, prompt, max_new, eos, sampling, on_token)
     }
 
     fn allocate_kv_cache(

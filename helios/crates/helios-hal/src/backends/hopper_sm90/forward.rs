@@ -12,6 +12,7 @@ use hyperion_specification::v1::ModelConfig;
 
 use super::backend::HopperBackend;
 use crate::reference::{bf16_to_f32, f32_to_bf16, rope_tables};
+use crate::sampling::{sample, Rng, SamplingConfig};
 use crate::traits::StopReason;
 
 /// Dimensions of a Qwen2-style model that the forward pass needs. `ModelConfig` in the manifest
@@ -179,23 +180,25 @@ impl HopperBackend {
     /// at a time, for at most `max_new` tokens or until `eos`. Returns only the new tokens.
     pub fn generate_greedy(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, eos: Option<u32>) -> Result<Vec<u32>> {
         let mut out = Vec::new();
-        self.generate_greedy_streaming(d, prompt, max_new, eos, &mut |t| out.push(t))?;
+        self.generate_streaming(d, prompt, max_new, eos, &SamplingConfig::greedy(), &mut |t| out.push(t))?;
         Ok(out)
     }
 
-    /// [`Self::generate_greedy`], calling `on_token` for each token as soon as it is chosen.
-    pub fn generate_greedy_streaming(
+    /// Generation with the given sampling, calling `on_token` for each token as soon as it is chosen.
+    pub fn generate_streaming(
         &self,
         d: &Qwen2Dims,
         prompt: &[u32],
         max_new: usize,
         eos: Option<u32>,
+        sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
+        let mut rng = Rng::new(sampling.seed);
         let mut cache = KvCache::new(d.layers);
         let mut logits = self.forward_tokens(d, &mut cache, prompt)?;
         for produced in 0..max_new {
-            let next = argmax(&logits) as u32;
+            let next = sample(&logits, sampling, &mut rng);
             on_token(next);
             if Some(next) == eos {
                 return Ok(StopReason::EndOfSequence);
@@ -208,26 +211,9 @@ impl HopperBackend {
     }
 }
 
-/// Index of the largest value; the first one wins ties.
-fn argmax(values: &[f32]) -> usize {
-    let mut best = 0;
-    for (i, v) in values.iter().enumerate() {
-        if *v > values[best] {
-            best = i;
-        }
-    }
-    best
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn argmax_picks_the_first_maximum() {
-        assert_eq!(argmax(&[1.0, 3.0, 3.0, 2.0]), 1);
-        assert_eq!(argmax(&[-5.0]), 0);
-    }
 
     #[test]
     fn a_new_cache_is_empty() {
