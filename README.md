@@ -6,7 +6,7 @@
 
 Hyperion is a local LLM inference engine with an OpenAI-compatible API, built for NVIDIA CUDA GPUs (Blackwell SM120, Hopper SM90). A model is compiled ahead of time into a `.hyperion` package for one target GPU generation, then served by a native Rust runtime through an OpenAI-compatible HTTP API. The runtime has no Python dependency. Targets: Blackwell SM120/SM121 (primary) and Hopper SM90 (H100/H200, planned).
 
-> **Status: pre-alpha.** One path works end to end, verified on an H100: `helios-cli --features sm90` serves Qwen2.5-0.5B and answers `POST /v1/chat/completions` with text whose tokens equal Hugging Face's greedy output (the model's own chat template, non-streaming, one request at a time, greedy or temperature/top-p sampling; activations and the K/V cache stay on the GPU: ~12 ms/token on an H100 for this 0.5B model, measured in a hardware test). Everything else (other models, sm120, batching, device KV cache, sampling, streaming) is not implemented; see `docs/unverified-ledger.md` for exactly what was run and what was not.
+> **Status: pre-alpha.** One path works end to end, verified on an H100: `helios-cli --features sm90` serves Qwen2.5-0.5B and answers `POST /v1/chat/completions` with text whose tokens equal Hugging Face's greedy output (the model's own chat template, optional SSE streaming, one request at a time, greedy or temperature/top-p sampling; activations and the K/V cache stay on the GPU: ~12 ms/token on an H100 for this 0.5B model, measured in a hardware test). Everything else (other models, sm120, batching, device KV cache, sampling, streaming) is not implemented; see `docs/unverified-ledger.md` for exactly what was run and what was not.
 
 ## Architecture
 
