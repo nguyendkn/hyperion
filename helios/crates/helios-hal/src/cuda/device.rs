@@ -1,5 +1,5 @@
-//! CUDA Driver FFI surface for the SM120 backend — device probing, memory
-//! allocation, stream handle. All calls go through `cuda-driver-sys`, which
+//! CUDA Driver FFI surface shared by every NVIDIA backend — device probing, memory
+//! allocation, host/device copies, stream handle. All calls go through `cuda-driver-sys`, which
 //! binds the real CUDA Driver headers. There is **no mock here**: on a host
 //! without the CUDA Driver library present, *this module will not link*, and
 //! a build with `--features sm120` will fail at the link step. That is
@@ -12,10 +12,11 @@
 use anyhow::Result;
 use cuda_driver_sys::{
     cuCtxSetCurrent, cuDeviceGet, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRetain,
-    cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuStreamCreate, cuStreamDestroy_v2,
+    cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
+    cuStreamCreate, cuStreamDestroy_v2,
     CUcontext, CUdevice, CUdeviceptr, CUstream, CUdevice_attribute,
 };
-use std::os::raw::c_int;
+use std::os::raw::{c_int, c_void};
 
 use super::ffi::eval_cuda;
 
@@ -144,6 +145,24 @@ impl CudaDevice {
         Ok(ptr)
     }
 
+    /// Copy host bytes to a device allocation.
+    pub fn htod(&self, dst: u64, src: &[u8]) -> Result<()> {
+        self.set_current()?;
+        unsafe {
+            eval_cuda("cuMemcpyHtoD", cuMemcpyHtoD_v2(dst, src.as_ptr() as *const c_void, src.len()))?;
+        }
+        Ok(())
+    }
+
+    /// Copy a device allocation back to host memory.
+    pub fn dtoh(&self, dst: &mut [u8], src: u64) -> Result<()> {
+        self.set_current()?;
+        unsafe {
+            eval_cuda("cuMemcpyDtoH", cuMemcpyDtoH_v2(dst.as_mut_ptr() as *mut c_void, src, dst.len()))?;
+        }
+        Ok(())
+    }
+
     /// Free a device pointer previously returned by [`Self::alloc`].
     pub fn free(&mut self, ptr: u64) -> Result<()> {
         unsafe {
@@ -153,19 +172,8 @@ impl CudaDevice {
     }
 
     /// Release the primary context and destroy the stream. Called on shutdown.
-    pub fn teardown(self) -> Result<()> {
-        unsafe {
-            eval_cuda("cuStreamDestroy", cuStreamDestroy_v2(self.stream))?;
-            // `cuDevicePrimaryCtxRelease` has no v2 in the driver; the v1
-            // signature is the current one.
-            eval_cuda(
-                "cuDevicePrimaryCtxRelease",
-                cuda_driver_sys::cuDevicePrimaryCtxRelease(self.device),
-            )?;
-            // `self.ctx` is retained by the primary-ctx refcount; released above.
-            let _ = self.ctx;
-        }
-        Ok(())
+    pub fn teardown(mut self) -> Result<()> {
+        self.teardown_ref()
     }
 
     /// Same cleanup as [`teardown`], but operating on `&mut self` — for the
@@ -173,6 +181,10 @@ impl CudaDevice {
     /// move out). The device handle is left in a released state; callers
     /// must not use the device after this.
     pub fn teardown_ref(&mut self) -> Result<()> {
+        // Idempotent: a second call (explicit `shutdown` then `Drop`) is a no-op.
+        if self.ctx.is_null() {
+            return Ok(());
+        }
         unsafe {
             eval_cuda("cuStreamDestroy", cuStreamDestroy_v2(self.stream))?;
             eval_cuda(
@@ -183,5 +195,14 @@ impl CudaDevice {
             self.ctx = std::ptr::null_mut();
         }
         Ok(())
+    }
+}
+
+impl Drop for CudaDevice {
+    /// A device dropped without an explicit `shutdown` still releases its primary
+    /// context. Without this a backend that probed a device and was then refused
+    /// kept ~0.5 GiB of GPU memory until the process exited (seen on an H100).
+    fn drop(&mut self) {
+        let _ = self.teardown_ref();
     }
 }

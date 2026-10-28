@@ -9,7 +9,7 @@ use anyhow::Result;
 
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData};
 
-use super::device::CudaDevice;
+use crate::cuda::CudaDevice;
 use super::graph::StaticCudaGraph;
 use super::kernels;
 

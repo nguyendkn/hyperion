@@ -19,8 +19,7 @@
 use anyhow::Result;
 use cuda_driver_sys::{cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoH_v2, CUdeviceptr};
 
-use super::device::CudaDevice;
-use super::ffi::eval_cuda;
+use crate::cuda::{eval_cuda, CudaDevice};
 use super::graph::StaticCudaGraph;
 
 /// Vocabulary dimension hard-coded for the placeholder. Real value comes

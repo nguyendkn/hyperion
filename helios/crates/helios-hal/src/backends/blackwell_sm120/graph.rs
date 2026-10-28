@@ -20,8 +20,7 @@ use cuda_driver_sys::{
     CUstreamCaptureMode,
 };
 
-use super::device::CudaDevice;
-use super::ffi::eval_cuda;
+use crate::cuda::{eval_cuda, CudaDevice};
 
 /// Capture mode passed to `cuStreamBeginCapture`. We use
 /// `CU_STREAM_CAPTURE_MODE_THREAD_LOCAL`: kernels running on other threads

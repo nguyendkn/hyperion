@@ -17,13 +17,14 @@ default = ["stub"]
 # Stub backend: compiles on any host without CUDA. Lets CI typecheck the HAL
 # contract and lets `helios-core` link against the trait without a GPU.
 stub = []
-# Hopper SM90 (H100/H200): delegates to TensorRT-LLM via FFI bindings.
-# Links TensorRT-LLM + CUDA Driver libs statically at build time (build.rs).
-sm90 = ["dep:bindgen", "dep:cc"]
-# Blackwell SM120 (RTX PRO 6000 / DGX Spark): native CUDA Graph capture.
-# Links CUDA Driver (cuda-driver-sys) for device probing + cudaMalloc + graph
-# capture. Driver only — graph capture lives in the driver, not the runtime.
-sm120 = ["dep:cuda-driver-sys"]
+# Shared CUDA Driver-API core (ADR 0001): context, memory, copies, weight upload.
+# Links the CUDA driver via cuda-driver-sys; without the driver library a build
+# with this feature fails at link time (intended: no emulation).
+cuda = ["dep:cuda-driver-sys"]
+# Hopper SM90 (H100/H200): shared core + Hopper kernels (no TensorRT-LLM shim).
+sm90 = ["cuda"]
+# Blackwell SM120 (RTX PRO 6000 / DGX Spark): shared core + native CUDA Graph capture.
+sm120 = ["cuda"]
 # Enables *both* backends and picks one at runtime via the factory. Increases
 # binary size; intended for distributable builds, not per-host binaries.
 multi = ["sm90", "sm120"]
@@ -34,22 +35,13 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
-# CUDA Driver FFI. Only pulled in under `sm120` (and `multi`). Driver-only: the
+# CUDA Driver FFI. Only pulled in under the `cuda` feature (`sm90`, `sm120`, `multi`). Driver-only: the
 # graph-capture API the backend relies on lives in the CUDA Driver, not the
 # runtime, so we bind the driver directly.
 cuda-driver-sys = { workspace = true, optional = true }
 
-# Build-time only — listed under [dependencies] only when the corresponding
-# feature is on, so non-CUDA hosts don't need bindgen/cc installed.
-bindgen = { version = "0.69", optional = true }
-cc = { version = "1.0", optional = true }
-
 [dev-dependencies]
 serde_json = { workspace = true }
-
-[build-dependencies]
-# Mirrors the optional deps so build.rs can generate FFI bindings per feature.
-bindgen = { version = "0.69", optional = true }
 
 [lib]
 name = "helios_hal"

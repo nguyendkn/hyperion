@@ -7,13 +7,11 @@
 //! doc requires.
 //!
 //! Submodules:
-//! - [`device`]  — driver-level probe + memory allocation, real FFI.
+//! - the CUDA device/memory layer is the shared core in `crate::cuda`.
 //! - [`graph`]   — `StaticCudaGraph` lifecycle wrapper (capture / replay).
 //! - [`kernels`] — kernel-launch surface; stands in for FlashInfer's
 //!   attention/matmul kernels via the package's PTX until those are vendored.
 
-pub mod device;
-pub mod ffi;
 pub mod graph;
 pub mod kernels;
 

@@ -15,10 +15,15 @@
 //!   FFI/kernel calls; here we only mediate.
 
 pub mod traits;
+#[cfg(feature = "cuda")]
+pub mod cuda;
+pub mod weights_plan;
 pub mod triage;
 pub mod backend_factory;
 mod backends;
 
+#[cfg(feature = "sm90")]
+pub use backends::hopper_sm90::HopperBackend;
 pub use backend_factory::{create_backend, BackendKind, CreatedBackend};
 pub use traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData, DynBackend};
 pub use triage::{
