@@ -46,11 +46,11 @@ Status key: **Done** = implemented in code. **Partial** = some code, not end-to-
 | FR-4 | Read manifest, parse `target_arch`, reject unknown `manifest_version` | Done for v1 [v]: string tag `"V1"`; unknown versions and fields rejected |
 | FR-5 | Probe real device compute capability via HAL factory | Partial: SM120 probe is real FFI, not run here; SM90 hardcodes `sm_90`; stub reports `sm_0` |
 | FR-6 | Triage package target vs device (exact match) | Partial: code allows downgrade (see §6) |
-| FR-7 | Load weights to device, capture decode graph | Stub: SM120 `load_model_weights` returns error; SM90 not wired |
+| FR-7 | Load weights to device, capture decode graph | SM90: real weight upload verified on an H100 (byte-identical); no graph capture. SM120: `load_model_weights` still returns an error |
 | FR-8 | Allocate paged KV cache via HAL | Partial: SM120 `cuMemAlloc` real; sizes hard-coded (HEAD_DIM 128, 32 heads) |
 | FR-9 | Tokenize OpenAI `messages` to token ids | Partial: HF `tokenizers` wrapper works against a test fixture; flatten is `role:content`, not a chat template |
 | FR-10 | Continuous-batching scheduler (prefill + decode) | Stub: `Scheduler::run()` closes ingress and returns |
-| FR-11 | Decode and return text in `/v1/chat/completions` | Stub: no tokens generated; see §9 |
+| FR-11 | Decode and return text in `/v1/chat/completions` | Works on SM90 (H100, Qwen2.5-0.5B, greedy, non-streaming); stub returns 500 "cannot generate yet" |
 | FR-12 | Streaming (SSE) responses | Planned: non-streaming only |
 | FR-13 | Engine lifecycle state machine with safe transitions | Done (unit-level logic): 6 states, CAS transitions, exhaustive table |
 | FR-14 | Map engine state to HTTP status (501 no tokenizer; 503 engine down; 504 first-event timeout) | Done in code; see §6 for the 503 rule |

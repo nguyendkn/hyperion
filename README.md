@@ -6,7 +6,7 @@
 
 Hyperion is a local LLM inference engine with an OpenAI-compatible API, built for NVIDIA CUDA GPUs (Blackwell SM120, Hopper SM90). A model is compiled ahead of time into a `.hyperion` package for one target GPU generation, then served by a native Rust runtime through an OpenAI-compatible HTTP API. The runtime has no Python dependency. Targets: Blackwell SM120/SM121 (primary) and Hopper SM90 (H100/H200, planned).
 
-> **Status: pre-alpha skeleton.** The workspace, engine state machine, HAL trait, manifest triage, HTTP route and tokenizer wrapper exist. **No end-to-end generation works yet.** The scheduler does not run, no weights are loaded to a device, and Ignition writes a manifest sidecar only (no weight blob, no signature). The SM120 path is type-checked on a host without CUDA and has never been executed. The SM90 backend is not wired.
+> **Status: pre-alpha.** One path works end to end, verified on an H100: `helios-cli --features sm90` serves Qwen2.5-0.5B and answers `POST /v1/chat/completions` with text whose tokens equal Hugging Face's greedy output (non-streaming, one request at a time, greedy sampling only, activations pass through the host so it is slow: ~160 ms/token). Everything else (other models, sm120, batching, device KV cache, sampling, streaming) is not implemented; see `docs/unverified-ledger.md` for exactly what was run and what was not.
 
 ## Architecture
 
@@ -87,7 +87,7 @@ The `Taskfile.yml` wraps the Cargo commands as `task build`, `task check`, `task
 
 ## Runtime
 
-`helios-cli --model <path>.hyperion [--port 8080] [--bind 127.0.0.1] [--max-seq-len N]` reads `<path>.manifest.json`, probes the device, triages (exact arch + tensor_format), selects a backend, and serves `POST /v1/chat/completions` plus `GET /health`. Today the boot path runs, but generation does not: the scheduler is a no-op that drops each request, so requests that pass tokenization get 503.
+`helios-cli --model <path>.hyperion [--port 8080] [--bind 127.0.0.1] [--max-seq-len N]` reads `<path>.manifest.json`, probes the device, triages (exact arch + tensor_format), selects a backend, loads the weights (`model.safetensors` and `config.json` next to the package until `helios-pkg` exists) and serves `POST /v1/chat/completions` plus `GET /health`. With the stub backend (default build) generation answers HTTP 500 "this backend cannot generate yet"; with `--features sm90` on an H100 it generates.
 
 ## Documentation
 
