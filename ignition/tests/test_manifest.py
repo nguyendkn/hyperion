@@ -100,9 +100,16 @@ def test_model_config_derived_from_real_hf_configs():
     assert model_config_from_hf(FIXTURES / "qwen2-hf") == ModelConfig(28, "gqa", 28, 4, 128, 152064, 131072)
 
 
-def test_tensor_format_comes_from_the_recipe():
-    assert compile_manifest("llama3", "sm_90", "llama3-hf")["tensor_format"] == "fp8"
-    assert compile_manifest("llama3", "sm_120", "llama3-hf")["tensor_format"] == "fp4"
+@pytest.mark.parametrize("arch", ["sm_90", "sm_120"])
+def test_tensor_format_describes_what_is_packaged(arch):
+    # No quantizer exists: the label is bf16 on every target, and the recipe
+    # only says which formats the device could run.
+    assert compile_manifest("llama3", arch, "llama3-hf")["tensor_format"] == "bf16"
+
+
+def test_hopper_recipe_never_allows_fp4():
+    assert "fp4" not in build_recipe("sm_90").supported_formats
+    assert "fp4" in build_recipe("sm_120").supported_formats
 
 
 def hf_config(tmp_path, **overrides):
@@ -110,6 +117,13 @@ def hf_config(tmp_path, **overrides):
            "vocab_size": 10, "max_position_embeddings": 16, **overrides}
     (tmp_path / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
     return tmp_path
+
+
+def test_null_and_false_scaling_fields_are_accepted(tmp_path):
+    # Checked by value, not presence: Llama-3 ships `rope_scaling: null`,
+    # Qwen2 ships `use_sliding_window: false`.
+    cfg = model_config_from_hf(hf_config(tmp_path, rope_scaling=None, use_sliding_window=False))
+    assert cfg.max_seq_len == 16
 
 
 def test_explicit_head_dim_wins_over_hidden_size_division(tmp_path):

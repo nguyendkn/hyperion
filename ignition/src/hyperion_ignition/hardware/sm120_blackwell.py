@@ -8,7 +8,7 @@ from .registry import register
 
 class Sm120BlackwellRecipe:
     target_arch = "sm_120"
-    tensor_format = "fp4"
+    supported_formats = ("bf16", "fp8", "fp4")
 
     def constraints(self) -> dict[str, str]:
         return {

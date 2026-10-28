@@ -86,7 +86,7 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 | `.hyperion` codec is a dedicated crate `helios-pkg` | Not created. `.manifest.json` sidecar placeholder in use |
 | HTTP: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` engine states | Handler also returns 503 for `Draining`, queue-closed, queue-full, and no-scheduler. Decision text and code disagree on `Draining` and scheduler errors |
 | Backend selection order: sm120 -> sm90 -> stub | Implemented in `backend_factory::create_backend` |
-| Hopper (SM90) does not run FP4. sm90 recipe forces FP8/BF16 | Recipe data matches (`fp4: disabled`). Not enforced at runtime |
+| Hopper (SM90) does not run FP4. sm90 recipe forces FP8/BF16 | Recipes list `supported_formats` (sm_90 has no fp4); a Python test checks it. Not enforced at runtime yet; triage (items 8/9) will compare `tensor_format` with each backend's supported formats |
 | RadixCache: in-process, 256-token chunks, index only; device memory via HAL | Index struct exists (`insert`/`lookup`); no eviction, no tiers, not used by scheduler |
 | CUDA FFI: `cuda-driver-sys` 0.3, only under `sm120` | Matches. `sm90` path uses no CUDA FFI yet (see §8) |
 | Tokenizer: HF `tokenizers` 0.19 with `onig` | Matches. Re-check on upgrade |

@@ -15,6 +15,19 @@ from ..hardware.base import HardwareRecipe
 from .model_config import ModelConfig
 
 
+# No quantizer exists yet, so every package holds bf16 weights. The manifest
+# label must describe what was written, never what the recipe would allow:
+# change this only together with code that really produces the new format.
+PACKAGED_FORMAT = "bf16"
+
+
+def packaged_format(recipe: HardwareRecipe) -> str:
+    """The format of the weights this compiler writes, checked against the device."""
+    if PACKAGED_FORMAT not in recipe.supported_formats:
+        raise ValueError(f"{recipe.target_arch} cannot run {PACKAGED_FORMAT} weights")
+    return PACKAGED_FORMAT
+
+
 @dataclass
 class LayerMap:
     """One tensor's place in the output package. Mirrors the Rust

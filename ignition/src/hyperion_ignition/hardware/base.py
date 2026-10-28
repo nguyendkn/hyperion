@@ -9,7 +9,7 @@ from typing import Protocol
 
 class HardwareRecipe(Protocol):
     target_arch: str
-    tensor_format: str  # "bf16" | "fp8" | "fp4" — package weight format
+    supported_formats: tuple[str, ...]  # formats this device can run; not what a package holds
 
     def constraints(self) -> dict[str, str]:
         """k=v flags the backend later interprets (dtype, graph capture, ...)."""

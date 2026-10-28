@@ -2,7 +2,7 @@
   "manifest_version": "V1",
   "model_id": "llama3",
   "target_arch": "sm_90",
-  "tensor_format": "fp8",
+  "tensor_format": "bf16",
   "model": {
     "num_layers": 32,
     "attention": "gqa",
