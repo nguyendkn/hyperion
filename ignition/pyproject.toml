@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = ["pytest>=8", "pytest-cov>=5"]  # pytest-cov: branch-coverage gate (quality-gate.md)
 
 [project.scripts]
 hyperion-compile = "hyperion_ignition.cli:main"

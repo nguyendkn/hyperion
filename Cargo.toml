@@ -2,9 +2,7 @@
 resolver = "2"
 members = [
     "specification",
-    "helios/crates/helios-core",
-    "helios/crates/helios-hal",
-    "helios/crates/helios-cli",
+    "helios/crates/*",
 ]
 
 # Central dependency & feature inheritance. Crates reference these via
@@ -41,9 +39,9 @@ bincode = "1.3"
 # JSON Schema generation from the specification structs (feature-gated in
 # hyperion-specification; never linked into the runtime binary).
 schemars = "1"
-bytes = "1.6"
 
-# Cryptographic integrity of model packages (signature verification at load)
+# Cryptographic integrity of model packages (signature verification at load).
+# No crate depends on these yet: reserved for the package/signing phase.
 sha2 = "0.10"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 
@@ -56,7 +54,7 @@ cuda-driver-sys = "0.3"
 
 # HuggingFace tokenizers (Rust core, Apache-2.0) for runtime prompt encoding.
 # Used by helios-core's API+scheduler path. Apache-2.0, pure Rust, no Python.
-tokenizers = { version = "0.19", default-features = false }
+tokenizers = { version = "0.22", default-features = false }
 
 # Internal crates — pinned to the workspace version
 hyperion-specification = { path = "specification", version = "0.1.0" }

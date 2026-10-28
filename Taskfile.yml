@@ -32,6 +32,12 @@ tasks:
     cmds:
       - "{{.CARGO}} check --workspace --all-targets"
 
+  check:sm120:
+    desc: Type-check the SM120 backend (no CUDA toolkit needed to type-check; linking needs it)
+    cmds:
+      - "{{.CARGO}} check -p helios-hal --features sm120"
+      - "{{.CARGO}} check -p helios-cli --features sm120"
+
   test:
     desc: Run Rust tests plus the manifest schema drift check
     cmds:
