@@ -325,3 +325,68 @@ fn attention_matches_the_cpu_reference_for_prefill_and_decode() {
     assert!(err.to_string().contains("limit"), "{err}");
     backend.shutdown().unwrap();
 }
+
+/// The decisive test: the whole model on the H100 against the Hugging Face reference. The
+/// criteria and tolerance are the ones declared in the oracle file BEFORE any Hyperion run
+/// (`scripts/gen-oracle.py`): max abs logit difference within `tolerance_max_abs`, the same
+/// argmax, and at least 4 of the oracle's top-5 in ours.
+///
+/// Needs `HYPERION_ORACLE=/path/qwen2.5-0.5b.json` next to the usual package variable.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn first_forward_matches_the_hf_oracle() {
+    use helios_hal::Qwen2Dims;
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
+    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
+    let heads = int("num_attention_heads");
+    let dims = Qwen2Dims {
+        layers: int("num_hidden_layers"),
+        hidden: int("hidden_size"),
+        intermediate: int("intermediate_size"),
+        heads,
+        kv_heads: int("num_key_value_heads"),
+        head_dim: int("hidden_size") / heads,
+        vocab: int("vocab_size"),
+        rope_theta: config["rope_theta"].as_f64().expect("rope_theta"),
+        rms_eps: config["rms_norm_eps"].as_f64().expect("rms_norm_eps") as f32,
+    };
+    assert_eq!(config["tie_word_embeddings"], true, "the forward pass assumes a tied output head");
+
+    let ids: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let want: Vec<f32> = oracle["logits"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+    let tolerance = oracle["tolerance_max_abs"].as_f64().unwrap() as f32;
+    let want_top5: Vec<usize> = oracle["next_token_top5"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
+
+    let (_, _, backend) = loaded_backend();
+    let started = std::time::Instant::now();
+    let got = backend.forward_prefill_logits(&dims, &ids).expect("forward pass");
+    let elapsed = started.elapsed();
+    assert_eq!(got.len(), want.len());
+
+    let max_abs = got.iter().zip(&want).fold(0.0f32, |m, (g, r)| m.max((g - r).abs()));
+    let top = |v: &[f32]| -> Vec<usize> {
+        let mut idx: Vec<usize> = (0..v.len()).collect();
+        idx.sort_by(|&a, &b| v[b].partial_cmp(&v[a]).unwrap());
+        idx.truncate(5);
+        idx
+    };
+    let got_top5 = top(&got);
+    let overlap = want_top5.iter().filter(|t| got_top5.contains(t)).count();
+    println!(
+        "forward {} layers over {} tokens in {:.2?}: max abs logit diff {max_abs:.4} (tolerance {tolerance}), argmax ours {} vs oracle {}, top-5 overlap {overlap}/5, ours {got_top5:?}, oracle {want_top5:?}",
+        dims.layers,
+        ids.len(),
+        elapsed,
+        got_top5[0],
+        want_top5[0],
+    );
+    assert_eq!(got_top5[0], want_top5[0], "argmax must equal the oracle's");
+    assert!(overlap >= 4, "at least 4 of the oracle's top-5 must be in ours");
+    assert!(max_abs <= tolerance, "max abs logit difference {max_abs} exceeds the declared tolerance {tolerance}");
+    backend.shutdown().unwrap();
+}

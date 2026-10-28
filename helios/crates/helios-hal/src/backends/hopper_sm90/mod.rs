@@ -13,6 +13,8 @@
 //! - [`backend`] — `HopperBackend` struct + its `ComputeBackend` impl.
 
 mod backend;
+mod forward;
 mod ops;
 
 pub use backend::HopperBackend;
+pub use forward::Qwen2Dims;

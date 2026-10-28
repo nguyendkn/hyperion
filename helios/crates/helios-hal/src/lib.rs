@@ -24,7 +24,7 @@ pub mod backend_factory;
 mod backends;
 
 #[cfg(feature = "sm90")]
-pub use backends::hopper_sm90::HopperBackend;
+pub use backends::hopper_sm90::{HopperBackend, Qwen2Dims};
 pub use backend_factory::{create_backend, BackendKind, CreatedBackend};
 pub use traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData, DynBackend};
 pub use triage::{
