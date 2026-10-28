@@ -123,17 +123,18 @@ async fn main() -> Result<()> {
     let backend: Arc<helios_hal::DynBackend> = Arc::from(created.backend);
     tracing::info!(actual = %actual_cap, outcome = ?triage.outcome, "triage done");
 
-    // 5. Bring up the engine state machine. We move to `Ready` (device
-    //    probed, triage passed) but **not** `Loaded`: `load_model_weights`
-    //    is a real HAL call that the `helios-pkg` codec must drive, and per
-    //    the architecture rule `Loaded` means "weights are in device
-    //    memory." Until that lands, leaving the engine at `Ready` keeps
-    //    the state machine honest. The API still admits `Ready` (it
-    //    rejects only `Uninitialized`/`Draining`/`Stopped`), so requests
-    //    during the slice fail fast at the no-op scheduler rather than
-    //    against a fake `Loaded`. Promoting to `Loaded` waits on weights.
+    // 5. Bring up the engine state machine and load the weights. `Ready` means
+    //    the device is probed and triage passed; `Loaded` means the weights are
+    //    really in device memory, so it is set only after `load_model_weights`
+    //    succeeds. A failed load exits non-zero at startup (fail fast) and the
+    //    backend is dropped, which releases the device context.
     let sm = helios_core::StateMachine::new();
     sm.mark_ready()?;
+    backend
+        .load_model_weights(&cli.model, &manifest)
+        .map_err(|e| anyhow!("loading model weights failed: {e:#}"))?;
+    sm.mark_loaded()?;
+    tracing::info!(status = ?sm.status(), "weights loaded");
 
     // 6. Build the ingress channel and spawn the scheduler. The receiver
     //    moves into the scheduler task; the sender moves into `AppState`.

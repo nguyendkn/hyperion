@@ -23,7 +23,35 @@ fn package(tag: &str, edit: impl FnOnce(&mut serde_json::Value)) -> PathBuf {
     dir.join("model.hyperion")
 }
 
-fn spawn(model: &PathBuf, extra: &[&str]) -> Child {
+/// Owns a spawned server and kills it on drop, so a failing assertion cannot
+/// leak a process that keeps `cargo test`'s stdout pipe open forever.
+struct Server(Child);
+
+impl std::ops::Deref for Server {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Server {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn(model: &PathBuf, extra: &[&str]) -> Server {
+    Server(spawn_child(model, extra))
+}
+
+fn spawn_child(model: &PathBuf, extra: &[&str]) -> Child {
     Command::new(env!("CARGO_BIN_EXE_helios-cli"))
         .args(["--model", model.to_str().unwrap(), "--port", "0"])
         .args(extra)
@@ -51,6 +79,10 @@ fn wait_for_addr(child: &mut Child) -> String {
 }
 
 fn http(addr: &str, method: &str, path: &str, body: &str) -> u16 {
+    http_full(addr, method, path, body).0
+}
+
+fn http_full(addr: &str, method: &str, path: &str, body: &str) -> (u16, String) {
     let mut s = TcpStream::connect(addr).unwrap();
     let req = format!(
         "{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -59,12 +91,13 @@ fn http(addr: &str, method: &str, path: &str, body: &str) -> u16 {
     s.write_all(req.as_bytes()).unwrap();
     let mut raw = String::new();
     s.read_to_string(&mut raw).unwrap();
-    raw.split_whitespace().nth(1).unwrap().parse().unwrap()
+    let code = raw.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (code, raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string())
 }
 
 /// Run to completion and return (success, stdout + stderr).
 fn run_to_exit(model: &PathBuf, extra: &[&str]) -> (bool, String) {
-    let out = spawn(model, extra).wait_with_output().unwrap();
+    let out = spawn_child(model, extra).wait_with_output().unwrap();
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     (out.status.success(), text)
 }
@@ -79,8 +112,6 @@ fn serves_on_loopback_with_health_and_v1_routes() {
     // The package ships no tokenizer: the documented capability error.
     assert_eq!(http(&addr, "POST", "/v1/chat/completions", body), 501);
     assert_eq!(http(&addr, "POST", "/chat/completions", body), 404);
-    child.kill().unwrap();
-    child.wait().unwrap();
 }
 
 #[test]
@@ -105,6 +136,13 @@ fn max_seq_len_within_the_limit_is_accepted() {
     let mut child = spawn(&package("capok", |_| {}), &["--max-seq-len", "32"]);
     let addr = wait_for_addr(&mut child);
     assert_eq!(http(&addr, "GET", "/health", ""), 200);
-    child.kill().unwrap();
-    child.wait().unwrap();
+}
+
+#[test]
+fn health_reports_loaded_once_the_weights_are_loaded() {
+    let mut child = spawn(&package("loaded", |_| {}), &[]);
+    let addr = wait_for_addr(&mut child);
+    let (code, body) = http_full(&addr, "GET", "/health", "");
+    assert_eq!(code, 200);
+    assert!(body.contains("Loaded"), "engine must be Loaded after load_model_weights: {body}");
 }
