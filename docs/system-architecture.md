@@ -114,7 +114,7 @@ Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or 
 3. `PromptTokenizer` loads lazily (`OnceCell`). Truncation = manifest `model.max_seq_len`.
 4. Prompt is a placeholder `role:content` join, not a chat template. Real template waits on the codec.
 5. Encode uses special tokens; decode skips them.
-6. Dependency: `tokenizers` 0.22 with `onig` (0.22 requires a regex backend).
+6. Dependency: `tokenizers` 0.22 with `fancy-regex` (0.22 requires a regex backend; pure Rust).
 7. [gap] `tests/encode_path_smoke.rs` uses a cwd-relative fixture path; CLAUDE.md requires `CARGO_MANIFEST_DIR`.
 
 ## 7. RadixCache (intent vs code)

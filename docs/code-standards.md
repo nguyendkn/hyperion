@@ -21,7 +21,7 @@ Status tags: **[enforced]** code matches · **[pending]** decided, code not ther
 | State machine: `AtomicU8` + CAS loop, 6 states, exhaustive transition table, lock-free read path | [enforced] `helios-core/src/state.rs` |
 | RadixCache: in-process, 256-token chunks, owns index + block IDs only, memory via HAL `allocate_kv_cache` | [enforced] chunk const in `cache.rs`; ownership not audited |
 | CUDA FFI: `cuda-driver-sys` v0.3, Driver API, behind `#[cfg(feature = "sm120")]`, real FFI | [enforced] `helios-hal/src/backends/blackwell_sm120/` |
-| Tokenizer: HF `tokenizers` 0.22 with `onig` (0.22 requires a regex backend; see `helios-core/Cargo.toml`) | [enforced] real Qwen3 tokenizer test in `helios-core/tests/qwen3_tokenizer.rs` |
+| Tokenizer: HF `tokenizers` 0.22 with `fancy-regex` (pure Rust; identical ids to `onig` on a varied corpus, see `helios-core/Cargo.toml`) | [enforced] Hugging Face reference tests: `helios-core/tests/{chat_template,stream_decoder,model_tokenizers}.rs` |
 | HTTP status: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` | [drift] `api.rs` also returns 503 for queue-full/send-failure; `scheduler.rs` docs mention 429 |
 | Triage: exact `target_arch` match only; PTX fallback only as explicit manifest field | [done] `triage.rs` is exact-match + backend arch + format table; 14 matrix tests |
 | Model parameters (`ModelConfig`: layers, kv heads, head_dim, vocab, max_seq_len) in manifest; no hard-coded dims | [partial] `ModelConfig` is in the manifest (P0b); `blackwell_sm120/backend.rs` still hard-codes `HEAD_DIM`, `NUM_HEADS`; `kernels.rs` hard-codes `VOCAB_SIZE` |
@@ -42,7 +42,7 @@ Status tags: **[enforced]** code matches · **[pending]** decided, code not ther
 ## 4. Rust conventions
 
 - **Edition/versions:** `edition = "2021"`, `rust-version = "1.75"`, license Apache-2.0, all from `[workspace.package]` via `field.workspace = true`.
-- **Dependencies:** declared once in root `[workspace.dependencies]`; crates use `dep = { workspace = true }`. Feature additions per crate are allowed (`tokenizers` + `onig`). [drift: `helios-cli` `clap`, `helios-hal` `bindgen`/`cc` pinned locally]
+- **Dependencies:** declared once in root `[workspace.dependencies]`; crates use `dep = { workspace = true }`. Feature additions per crate are allowed (`tokenizers` + `fancy-regex`). [drift: `helios-cli` `clap`, `helios-hal` `bindgen`/`cc` pinned locally]
 - **Errors:** `anyhow::Result` for backend/app paths; `thiserror` for typed errors that callers branch on (`TriageError`, `ManifestError`). Use `eval_cuda("<driver fn>", call)?` for every CUDA Driver call; it attaches the driver error string and the call label.
 - **Logging:** `tracing` only (no `println!` in library code). Structured fields: `tracing::info!(model = %id, target = ?x, "msg")`. `EnvFilter::from_default_env()` in the CLI.
 - **Hardware gating:** backend code under `#[cfg(feature = "...")]`; feature-off builds must compile with zero native linkage (`stub` default).

@@ -89,7 +89,7 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 | Hopper (SM90) does not run FP4. sm90 recipe forces FP8/BF16 | Recipes list `supported_formats` (sm_90 has no fp4); a Python test checks it. Not enforced at runtime yet; triage (items 8/9) will compare `tensor_format` with each backend's supported formats |
 | RadixCache: in-process, 256-token chunks, index only; device memory via HAL | Index struct exists (`insert`/`lookup`); no eviction, no tiers, not used by scheduler |
 | CUDA FFI: `cuda-driver-sys` 0.3, only under `sm120` | Matches. `sm90` path uses no CUDA FFI yet (see §8) |
-| Tokenizer: HF `tokenizers` 0.22 with `onig` | Updated: 0.19 could not parse the current Qwen3 tokenizer.json |
+| Tokenizer: HF `tokenizers` 0.22 with `fancy-regex` | Updated: 0.19 could not parse the current Qwen3 tokenizer.json; `onig` dropped (identical ids, no C build) |
 
 ## 7. Success criteria
 
