@@ -42,3 +42,4 @@ coverage*.xml
 
 # Real third-party model files used by tests (fetched by scripts/fetch-model-fixtures.py)
 testdata/models/
+testdata/oracle/

@@ -22,4 +22,6 @@ What has been run for real, and what has not. Tags: `[RUN]` executed on the buil
 | `--features sm90` | `[TYPE-CHECK]` not even type-checked in phase 01 | |
 | Any kernel, forward pass, decode, throughput | `[NEEDS-GPU]` | scheduler is a no-op; first forward is phase 10 |
 | KV-vs-VRAM check against a real device total | `[NEEDS-GPU]` | unit-tested with synthetic totals only; stub reports 0 and is skipped |
+| HF reference oracle for Qwen2.5-0.5B (prompt "The capital of France is" -> top-1 " Paris"; bf16, eager vs sdpa differ by 0.75 max-abs; declared tolerance 3.0 + argmax + top-5 criteria) generated on the H100 (torch 2.5.1, transformers 4.51.3) | `[RUN on H100]` | `scripts/gen-oracle.py`; file in gitignored `testdata/oracle/` |
+| Hyperion logits vs this oracle | `[NEEDS-GPU]` | no forward pass exists yet (phase 10) |
 | `cuda-driver-sys` 0.3 graph API at kernel time on CUDA 13 | `[NEEDS-GPU]` | links on CUDA 12.4 toolkit; graph calls never executed |
