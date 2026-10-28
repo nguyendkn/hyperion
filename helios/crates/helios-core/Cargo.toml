@@ -1,0 +1,34 @@
+[package]
+name = "helios-core"
+description = "Device-agnostic inference kernel: HTTP API, paged KV cache scheduler, and engine state machine. Talks to GPU only through the HAL trait."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+helios-hal = { workspace = true }
+hyperion-specification = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# HuggingFace tokenizers (Rust core, Apache-2.0) — runtime prompt encode.
+# Only `onig` is forced because tokenizers 0.19 guards its regex module with
+# `cfg(not(feature = "unstable_wasm"))`, not `cfg(feature = "onig")` — so
+# `default-features = false` leaves the module compiled against an unlinked
+# `onig` crate (unresolved import). Enabling `onig` links the real Oniguruma
+# C lib (bundled via `cc`); the alternative `unstable_wasm` path uses
+# `fancy-regex` (pure Rust) but the feature name is misleading and the path
+# is the wasm escape hatch, not the documented native one. We need only
+# BPE encode → Vec<u32>; no progress bar, no http/hf-hub.
+tokenizers = { workspace = true, features = ["onig"] }
+
+[lib]
+name = "helios_core"
+path = "src/lib.rs"

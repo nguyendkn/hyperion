@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hyperion-ignition"
+version = "0.1.0"
+description = "Build-time compiler for .hyperion packages: extract weights, compile model graphs, sign and package."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "click>=8.1",
+]
+
+[project.scripts]
+hyperion-compile = "hyperion_ignition.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hyperion_ignition"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

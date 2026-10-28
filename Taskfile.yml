@@ -1,0 +1,48 @@
+version: "3"
+
+# Automation for build, cross-compile, and developer tasks. Mirrors the
+# architecture doc's "biên dịch & đóng gói chéo" requirement.
+
+vars:
+  CARGO: cargo
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the whole Rust workspace (stub backend, no CUDA needed)
+    cmds:
+      - "{{.CARGO}} build --workspace"
+
+  build:sm90:
+    desc: Build with the Hopper SM90 backend (requires TensorRT-LLM + CUDA)
+    cmds:
+      - "{{.CARGO}} build -p helios-cli --no-default-features --features sm90"
+
+  build:sm120:
+    desc: Build with the Blackwell SM120 backend (requires CUDA Driver + NVRTC)
+    cmds:
+      - "{{.CARGO}} build -p helios-cli --no-default-features --features sm120"
+
+  check:
+    desc: Typecheck the workspace without producing artifacts
+    cmds:
+      - "{{.CARGO}} check --workspace --all-targets"
+
+  test:
+    desc: Run Rust unit tests
+    cmds:
+      - "{{.CARGO}} test --workspace"
+
+  ignition:install:
+    desc: Install the Python Ignition compiler in dev mode
+    cmds:
+      - "pip install -e ignition"
+
+  ignition:compile:
+    desc: Compile a model package (usage: task ignition:compile -- --model <id> --hw <sm>)
+    cmds:
+      - "hyperion-compile {{.CLI_ARGS}}"

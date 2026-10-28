@@ -1,0 +1,150 @@
+# Codebase Summary
+
+Last updated: 2026-10-28 · Workspace v0.1.0 · Branch main (no commits yet)
+
+Sources: helios-core, helios-cli, helios-hal, specification and ignition read directly from source. `repomix-output.xml` not used for these (stale for helios-core). Tags: **[v]** verified by reading source or `cargo metadata`; **[i]** inference; **[x]** not executed.
+
+## Layout
+
+```
+specification/           shared manifest schema (Rust = source of truth)
+helios/crates/helios-core/   device-agnostic runtime: api, scheduler, state, tokenizer, cache
+helios/crates/helios-hal/    ComputeBackend trait, factory, triage, backends (stub, hopper_sm90, blackwell_sm120)
+helios/crates/helios-cli/    binary: manifest -> HAL probe -> triage -> engine state -> serve
+ignition/                    Python build-time compiler (package hyperion_ignition)
+```
+
+## Module map
+
+### specification (Rust)
+| File | Purpose |
+|---|---|
+| `src/lib.rs` | `Manifest` enum, `#[serde(tag="manifest_version")]`, variant `V1`; `ManifestError`; `LATEST = 1` |
+| `src/v1/mod.rs` | v1 structs: `Manifest` (model_id, target_arch, tokenizer, layers, hardware_recipe, signature), `TokenizerConfig`, `LayerMapping`, `TensorMetadata` |
+
+### helios-core (Rust)
+| File | Purpose |
+|---|---|
+| `src/lib.rs` | Module list + re-exports (`StateMachine`, `Scheduler`, `StreamEvent`, ...) |
+| `src/api.rs` | Axum `POST chat_completions`; `AppState {state, tokenizer, ingress_tx}`; non-streaming; 500 ms ingress timeout, 5 s first-event timeout |
+| `src/scheduler.rs` | `Scheduler`, `InferenceRequest`, `StreamEvent`, `SamplingParams`, `FinishReason`, `ingress_channel()` (bounded, cap 32). `run()` is a no-op |
+| `src/state.rs` | `EngineStatus` (6 states, `repr(u8)`), `EngineState` (`AtomicU8` + CAS loop, transition table), `StateMachine` wrapper |
+| `src/tokenizer.rs` | `PromptTokenizer`: lazy `OnceCell` load of `tokenizer.json`, right-truncation (default 4096), `encode_messages`, `decode`; flatten = `role:content` joined by `\n` |
+| `src/cache.rs` | `RadixCache` = `HashMap<ChunkHash, BlockEntry>`, `CHUNK_TOKENS = 256`; `lookup`/`insert` only |
+
+### helios-hal (Rust)
+| File | Purpose |
+|---|---|
+| `src/lib.rs` | Re-exports `create_backend`, `ComputeBackend`, `DynBackend`, `Triage` |
+| `src/traits.rs` | `ComputeBackend` trait; `HardwareInfo`, `DevicePointer`, `TensorData`; `DynBackend = Box<dyn ComputeBackend>` |
+| `src/triage.rs` | `Triage::evaluate(target, actual)`: equal -> `Exact`, target < actual -> `Downgrade`, target > actual -> error |
+| `src/backend_factory.rs` | `create_backend(target)`; `BackendKind` (cfg-gated); `instantiate()` per kind |
+| `src/backends/mod.rs` | cfg-gated module list |
+| `src/backends/stub.rs` | `StubBackend`: reports `sm_0`, returns placeholder Ok values |
+| `src/backends/hopper_sm90/` | `HopperBackend`: reports `sm_90` (hardcoded); all runtime methods return "not wired" errors |
+| `src/backends/blackwell_sm120/device.rs` | `CudaDevice`: `probe`, `alloc`, `free`, `teardown_ref` via cuda-driver-sys |
+| `.../blackwell_sm120/graph.rs` | `StaticCudaGraph`: begin/end capture, instantiate, launch, destroy |
+| `.../blackwell_sm120/kernels.rs` | `prefill_launch` (empty-graph capture + logits alloc), `decode_replay` (argmax over raw u16 lanes), `VOCAB_SIZE = 128_256` |
+| `.../blackwell_sm120/ffi.rs` | `eval_cuda`: `CUresult` -> `anyhow::Result` |
+| `.../blackwell_sm120/backend.rs` | `BlackwellBackend` (Mutex-guarded device + graph); `load_model_weights` returns error |
+| `build.rs` | sm90 link/bindgen block commented out; sm120 only `rerun-if-env` (CUDA_PATH, CUDA_LIB_DIR) |
+
+### helios-cli (Rust)
+| File | Purpose |
+|---|---|
+| `src/main.rs` | Boot: read `<model>.manifest.json` sidecar -> `create_backend` -> engine `Ready` -> spawn scheduler + supervisor -> resolve tokenizer (path-safe) -> `axum::serve` on `0.0.0.0:port` -> graceful shutdown |
+
+### ignition (Python)
+| File | Purpose |
+|---|---|
+| `cli.py` | click `hyperion-compile --model --hw --out --source`; writes `<out>.manifest.json` only |
+| `compiler/base.py` | `CompiledManifest` (+ `to_json_dict`), `LayerMap`, `ModelCompiler` Protocol |
+| `compiler/registry.py` | `register`, `build_compiler`; imports `architectures` at bottom |
+| `compiler/architectures/{llama,qwen,deepseek}.py` | One compiler class each, ids `llama3`, `qwen2`, `deepseek`; `layers=[]` |
+| `hardware/base.py` | `HardwareRecipe` Protocol (`target_arch`, `constraints()`) |
+| `hardware/registry.py` | `register`, `build_recipe`; imports sm90/sm120 recipes at bottom |
+| `hardware/sm90_hopper.py` | Recipe `sm_90`: fp4 off, fp8/bf16 on, cuda_graphs off |
+| `hardware/sm120_blackwell.py` | Recipe `sm_120`: fp4/fp6/fp8/bf16 on, cuda_graphs on |
+
+## Key contracts
+
+- `ComputeBackend` (helios-hal/traits.rs): `initialize_device`, `load_model_weights`, `allocate_kv_cache`, `execute_prefill`, `execute_decode_step`, `shutdown` (default no-op). Must be `Send + Sync`.
+- `InferenceRequest` + `StreamEvent` (scheduler.rs): API -> scheduler over bounded mpsc; scheduler streams `Tokens*` then exactly one `Done` or `Error`, then drops the sender.
+- `EngineStatus` transitions (state.rs): Uninitialized -> Ready -> Loaded <-> Serving; Loaded/Serving -> Draining -> Stopped; Loaded/Ready -> Stopped.
+- `Manifest` (specification): versioned by `manifest_version`; `target_arch` drives triage.
+
+## Feature flags
+
+| Crate | Feature | Enables |
+|---|---|---|
+| helios-hal | `default` = `stub` | stub backend only |
+| helios-hal | `stub` | nothing extra |
+| helios-hal | `sm90` | `dep:bindgen`, `dep:cc` (build.rs wiring still commented out) |
+| helios-hal | `sm120` | `dep:cuda-driver-sys`; `BlackwellSm120` candidate |
+| helios-hal | `multi` | `sm90` + `sm120` |
+| helios-core | none | |
+| helios-cli | none [v] | no `[features]` table; does not forward HAL features |
+
+Backend selection (backend_factory.rs): candidate list built from enabled features, order sm120, sm90, stub. The loop returns on the first candidate; a failing probe is an error, not a fallthrough. [v]
+
+## Build and test commands
+
+| Command | Source | Status |
+|---|---|---|
+| `task build` = `cargo build --workspace` | Taskfile.yml | [x] stub build, expected to work |
+| `task build:sm90` = `cargo build -p helios-cli --no-default-features --features sm90` | Taskfile.yml | BROKEN [v]: helios-cli has no `sm90` feature |
+| `task build:sm120` = same with `sm120` | Taskfile.yml | BROKEN [v]: same cause |
+| `task check` = `cargo check --workspace --all-targets` | Taskfile.yml | [x] |
+| `task test` = `cargo test --workspace` | Taskfile.yml | [x] |
+| `cargo check -p helios-hal --features sm120` | CLAUDE.md | type-check only, no CUDA on host |
+| `python -m compileall ignition/src` | CLAUDE.md | [x] |
+| `pip install -e ignition` / `hyperion-compile ...` | Taskfile.yml | [x] not run |
+
+Release profile: fat LTO, `codegen-units=1`, `panic="abort"` [v].
+
+## Tests present
+
+- helios-core unit (`src/tokenizer.rs`): 2 (`flatten_single_message`, `flatten_multiple_messages_join_with_newline`).
+- helios-core integration (`tests/encode_path_smoke.rs`): 7 `#[tokio::test]` over `tests/fixtures/dummy_tokenizer.json` (WordLevel fixture, not a real model).
+- Total 9. No tests in helios-hal, state, cache, scheduler, api, cli, specification or ignition. `cargo test --workspace` passes (9 tests, stub backend).
+
+## Module status
+
+Status: **implemented** (works as designed, reachable) / **partial** (some paths wired or working) / **skeleton** (seams only) / **not wired** (no callers) / **smoke** (FFI path only, unexecuted here).
+
+| Module | Status | Evidence |
+|---|---|---|
+| specification v1 | implemented | Structs + tagged enum. Python writes `"manifest_version": 1`; serde default tag for `V1` is `"V1"` -> mismatch [i] |
+| core/api | partial | Handler complete. Route is `/chat/completions`: `main.rs` calls `router().with_state()` with no `/v1` nest, although api.rs docs say `/v1` [v]. End-to-end never returns 200 today (see scheduler) [v] |
+| core/scheduler | skeleton | `run()` closes ingress and returns Ok; no batching, no backend calls [v] |
+| core/state | implemented, partial wiring | CAS table works. `begin_serving`, `end_serving`, `mark_loaded` have no callers; CLI stays `Ready` [v] |
+| core/tokenizer | implemented, wired | Built by CLI from manifest; 9 tests above [v] |
+| core/cache | skeleton, not wired | `HashMap` index; no callers, no eviction; not a radix tree despite name/docs [v] |
+| hal/traits | implemented | Contract only; no runtime caller invokes backend methods [v] |
+| hal/triage | implemented | Used by factory; no unit tests [v] |
+| hal/backend_factory | partial | First candidate only; no sm120 -> sm90 -> stub fallthrough [v] |
+| hal/stub | implemented as fake | Reports `sm_0`, placeholder tensors. Conflicts with "no fakes on main" rule (see Q4) [v] |
+| hal/hopper_sm90 | skeleton | `initialize_device` hardcodes `sm_90`, no probe; other methods error; build.rs linkage commented out [v] |
+| hal/blackwell device + ffi | smoke | Real cuda-driver-sys calls; compiled only under sm120; never run (no CUDA host) [x] |
+| hal/blackwell graph | smoke | Real capture/instantiate/launch calls; never run [x] |
+| hal/blackwell kernels | smoke | Prefill captures empty graph; decode argmax compares raw bf16 bits [v] |
+| hal/blackwell backend | partial | `load_model_weights` returns error, so `Loaded` never reached [v] |
+| helios-cli | partial | Boot path complete for tokenizer/engine; no features; sm90/sm120 tasks broken [v] |
+| ignition cli | skeleton | Writes sidecar only; weight blob and signature are TODO [v] |
+| ignition registries | implemented | Import-side-effect registration; circular-import fix not verified by `pip install` [v read / x run] |
+| ignition architectures | skeleton | `layers=[]`, hardcoded tokenizer dict per arch [v] |
+| ignition hardware recipes | implemented (declarative) | Emitted into `hardware_recipe`; no helios code reads it [v] |
+
+Hard-coded model dims: `HEAD_DIM = 128`, `NUM_HEADS = 32` (blackwell backend.rs), `VOCAB_SIZE` (kernels.rs). CLAUDE.md says these must come from manifest `ModelConfig`; no `ModelConfig` exists in spec v1 [v].
+
+## Unresolved questions
+
+1. Fix Taskfile `build:sm90` / `build:sm120` (add HAL feature forwarding to helios-cli) or remove them?
+2. `/v1` prefix: nest the router in `main.rs`, or change api.rs docs and clients?
+3. Factory: implement sm120 -> sm90 -> stub fallthrough, or document first-match-only?
+4. `StubBackend` is a fake. Allowed in default builds, or move behind a test-only feature?
+5. Manifest tag: Python writes integer `1`, Rust expects `"V1"`. Add serde rename before v1 freezes?
+6. Add `ModelConfig` to spec v1 before first release (CLAUDE.md decision) and drop hard-coded dims?
+7. `panic = "abort"` in release makes main.rs supervisor panic path (JoinError) dev-only. Intended?
+8. Ignition registry circular-import fix: run `pip install -e ignition` and import each entry point.
+9. Regenerate `repomix-output.xml` before next docs wave (helios-core stale).

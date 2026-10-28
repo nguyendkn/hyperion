@@ -1,0 +1,54 @@
+[package]
+name = "helios-hal"
+description = "Hardware Abstraction Layer for Helios — trait contract for every GPU backend, feature-gated per compute capability."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Feature flags select a backend at compile time. At runtime the backend
+# factory probes the actual device and may *downgrade* (run sm_90 kernels on
+# sm_120) but never *upgrade*. Exactly one target backend is usually enabled —
+# `--features sm120` for a Blackwell workstation, `--features sm90` for a
+# Hopper cluster node, or `default` for a stub that compiles without CUDA.
+[features]
+default = ["stub"]
+# Stub backend: compiles on any host without CUDA. Lets CI typecheck the HAL
+# contract and lets `helios-core` link against the trait without a GPU.
+stub = []
+# Hopper SM90 (H100/H200): delegates to TensorRT-LLM via FFI bindings.
+# Links TensorRT-LLM + CUDA Driver libs statically at build time (build.rs).
+sm90 = ["dep:bindgen", "dep:cc"]
+# Blackwell SM120 (RTX PRO 6000 / DGX Spark): native CUDA Graph capture.
+# Links CUDA Driver (cuda-driver-sys) for device probing + cudaMalloc + graph
+# capture. Driver only — graph capture lives in the driver, not the runtime.
+sm120 = ["dep:cuda-driver-sys"]
+# Enables *both* backends and picks one at runtime via the factory. Increases
+# binary size; intended for distributable builds, not per-host binaries.
+multi = ["sm90", "sm120"]
+
+[dependencies]
+hyperion-specification = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+
+# CUDA Driver FFI. Only pulled in under `sm120` (and `multi`). Driver-only: the
+# graph-capture API the backend relies on lives in the CUDA Driver, not the
+# runtime, so we bind the driver directly.
+cuda-driver-sys = { workspace = true, optional = true }
+
+# Build-time only — listed under [dependencies] only when the corresponding
+# feature is on, so non-CUDA hosts don't need bindgen/cc installed.
+bindgen = { version = "0.69", optional = true }
+cc = { version = "1.0", optional = true }
+
+[build-dependencies]
+# Mirrors the optional deps so build.rs can generate FFI bindings per feature.
+bindgen = { version = "0.69", optional = true }
+
+[lib]
+name = "helios_hal"
+path = "src/lib.rs"

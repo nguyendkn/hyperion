@@ -1,0 +1,63 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "<|im_start|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "<|im_end|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    },
+    {
+      "id": 2,
+      "content": "<|eot_id|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "<|im_start|>": 0,
+      "<|im_end|>": 1,
+      "<|eot_id|>": 2,
+      "user": 3,
+      "system": 4,
+      "assistant": 5,
+      "hello": 6,
+      "world": 7,
+      "you": 8,
+      "are": 9,
+      "helpful": 10,
+      "hi": 11,
+      "hi:": 12,
+      "user:": 13,
+      "system:": 14,
+      "assistant:": 15,
+      "<unk>": 16
+    },
+    "unk_token": "<unk>"
+  }
+}

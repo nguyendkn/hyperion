@@ -1,0 +1,284 @@
+//! `helios-cli` — the single-binary entrypoint. Implements the runtime
+//! dynamic triage flow from the architecture doc:
+//!
+//! 1. read + verify the `.hyperion` package signature,
+//! 2. parse the manifest to learn `target_arch`,
+//! 3. via HAL, probe the real device's compute capability,
+//! 4. triage (forward-compat check), pick the backend,
+//! 5. (later) load weights, allocate KV — gated on the `helios-pkg` codec,
+//! 6. spawn the scheduler, wire the tokenizer from the manifest, serve Axum.
+//!
+//! Steps 1–2 are stubbed (we just deserialize the manifest) until the package
+//! codec exists; 3–4 and 6 are wired against the HAL factory and core state
+//! machine. The engine stays at `Ready` until weights are really loaded.
+
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
+use clap::Parser;
+use tokio_util::sync::CancellationToken;
+use tracing_subscriber::EnvFilter;
+
+/// How long the CLI waits for `axum::serve` to drain in-flight HTTP requests
+/// after the shutdown signal. A hung client could otherwise block shutdown
+/// indefinitely; this bounds the whole drain phase. Fat LTO release builds
+/// can afford a bit more — keep it modest for the dev slice.
+const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the CLI waits for the scheduler task to observe its cancellation
+/// token and exit on its own after the server has stopped serving. Only if
+/// this elapses do we fall back to `AbortHandle::abort`, which can cut a
+/// device call mid-flight (use-after-free risk) — so the timeout is the
+/// last resort, not the default path.
+const SCHED_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Launch the Helios runtime against a single `.hyperion` package.
+#[derive(Parser, Debug)]
+#[command(name = "helios-cli", version, about = "Run a local inference engine from a .hyperion package")]
+struct Cli {
+    /// Path to the `.hyperion` model package.
+    #[arg(short, long)]
+    model: PathBuf,
+
+    /// Port for the OpenAI-compatible HTTP API.
+    #[arg(short, long, default_value = "8080")]
+    port: u16,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
+    let cli = Cli::parse();
+
+    // 1–2. Load + verify the manifest. TODO: real codec (signature, encryption).
+    let manifest = load_manifest(&cli.model)?;
+    tracing::info!(model = %manifest.model_id, target = %manifest.target_arch, "manifest loaded");
+
+    // 3–4. Probe device via HAL factory and triage. The backend is shared
+    //    (via `Arc`) between the scheduler task and the CLI's shutdown path:
+    //    the scheduler drives prefill/decode while it runs, and after the
+    //    server stops the CLI calls `shutdown()` to tear down device
+    //    allocations. `triage.outcome` is bound for logging only.
+    let (backend, actual_cap, triage) =
+        helios_hal::create_backend(&manifest.target_arch)?;
+    let backend: Arc<helios_hal::DynBackend> = Arc::from(backend);
+    tracing::info!(actual = %actual_cap, outcome = ?triage.outcome, "triage done");
+
+    // 5. Bring up the engine state machine. We move to `Ready` (device
+    //    probed, triage passed) but **not** `Loaded`: `load_model_weights`
+    //    is a real HAL call that the `helios-pkg` codec must drive, and per
+    //    the architecture rule `Loaded` means "weights are in device
+    //    memory." Until that lands, leaving the engine at `Ready` keeps
+    //    the state machine honest. The API still admits `Ready` (it
+    //    rejects only `Uninitialized`/`Draining`/`Stopped`), so requests
+    //    during the slice fail fast at the no-op scheduler rather than
+    //    against a fake `Loaded`. Promoting to `Loaded` waits on weights.
+    let sm = helios_core::StateMachine::new();
+    sm.mark_ready()?;
+
+    // 6. Build the ingress channel and spawn the scheduler. The receiver
+    //    moves into the scheduler task; the sender moves into `AppState`.
+    //    A *supervisor* task awaits the scheduler's `JoinHandle` (in turn
+    //    observing the scheduler's `Result`) and moves the engine to
+    //    `Stopped` when it resolves — this covers `Ok`, `Err`, and panic
+    //    (a panic surfaces as a `JoinError` on `await`). Relying on a line
+    //    after `run()` inside the scheduler task would miss the panic case,
+    //    since that line never runs.
+    //
+    //    `sched_cancel` is the cooperative shutdown signal: the CLI trips it
+    //    (below, step 9) after the server stops serving, then waits
+    //    `SCHED_EXIT_TIMEOUT` for `run()` to exit at a safe point (it checks
+    //    `is_cancelled()` between batch iterations — never mid-call). Only if
+    //    that timeout elapses do we fall back to `abort()` on the supervisor's
+    //    `JoinHandle`, which can cut a device call mid-flight; that is a last
+    //    resort, never the default path.
+    let (ingress_tx, ingress_rx) = helios_core::scheduler::ingress_channel();
+    let sched_cancel = CancellationToken::new();
+    let sched_cancel_for_task = sched_cancel.clone();
+    let scheduler =
+        helios_core::Scheduler::new(backend.clone(), sm.clone(), ingress_rx);
+    let sched_handle = tokio::spawn(async move {
+        scheduler.run(sched_cancel_for_task).await
+    });
+
+    let sm_for_sup = sm.clone();
+    let mut sup_handle = tokio::spawn(async move {
+        match sched_handle.await {
+            Ok(Ok(())) => tracing::info!("scheduler task exited cleanly"),
+            Ok(Err(e)) => tracing::error!(error = %e, "scheduler task failed"),
+            Err(je) => tracing::error!(error = %je, "scheduler task panicked"),
+        }
+        // Any exit path → engine must be Stopped so subsequent API requests
+        // are rejected consistently. `Stopped -> Stopped` is idempotent, so
+        // a racing CLI shutdown is safe.
+        let _ = sm_for_sup.shutdown();
+    });
+
+    // 7. Resolve the tokenizer asset from the manifest. A package whose
+    //    manifest names a tokenizer must actually carry one — a missing
+    //    file is a broken package and we refuse to boot (architecture
+    //    rule: fail loudly, don't paper over with a per-request 501).
+    //    `resolve_in_package` keeps `asset_path` inside the package dir:
+    //    absolute paths and `..` components are rejected so the manifest
+    //    cannot point at files outside the package. Empty `asset_path` is
+    //    the only way to ship a tokenizer-less package; then we boot and
+    //    the handler returns 501 per request.
+    let tokenizer = if manifest.tokenizer.asset_path.as_os_str().is_empty() {
+        None
+    } else {
+        let tok_path = resolve_in_package(&cli.model, &manifest.tokenizer.asset_path)?;
+        if !tok_path.exists() {
+            return Err(anyhow!(
+                "manifest names tokenizer asset {p} but it does not exist",
+                p = tok_path.display()
+            ));
+        }
+        tracing::info!(tok = %tok_path.display(), "tokenizer asset located");
+        Some(helios_core::tokenizer::PromptTokenizer::new(
+            tok_path.to_string_lossy().into_owned(),
+            manifest.tokenizer.max_seq_len.map(|n| n as usize),
+        ))
+    };
+
+    // 8. Assemble AppState and serve.
+    let app_state = helios_core::api::AppState {
+        state: Arc::new(sm.clone()),
+        tokenizer,
+        ingress_tx: Some(ingress_tx),
+    };
+    let app = helios_core::api::router().with_state(app_state);
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", cli.port))
+        .await
+        .map_err(|e| anyhow!("bind :{port} failed: {e}", port = cli.port))?;
+    tracing::info!(addr = %listener.local_addr()?, "helios API up");
+
+    // 9. Serve until shutdown. The graceful-shutdown sequence:
+    //    a. `shutdown_signal()` fires (Ctrl-C / SIGTERM).
+    //    b. We ask the engine to drain. `drain_for_shutdown` is a tolerant
+    //       no-op if the engine is already past the states where draining
+    //       is legal (`Uninitialized`/`Ready` — nothing loaded, `Draining`,
+    //       `Stopped`), so a racing supervisor that already moved to
+    //       `Stopped` does not surface a spurious `IllegalTransition` here.
+    //    c. `axum::serve` stops accepting and drains in-flight HTTP. Wrap it
+    //       in `tokio::time::timeout(HTTP_DRAIN_TIMEOUT, …)` so a hung client
+    //       cannot block shutdown forever; on timeout we drop the serve
+    //       future, which closes the listener and abandons in-flight work.
+    //    d. After `serve` returns: trip `sched_cancel` and wait up to
+    //       `SCHED_EXIT_TIMEOUT` for the scheduler to exit at a safe point.
+    //       Only on timeout do we fall back to `abort()`, which can cut a
+    //       device call mid-flight; that is the last resort.
+    //    e. Then `backend.shutdown()` frees device memory, and `sm.shutdown()`
+    //       marks the engine `Stopped`. Idempotent vs a racing supervisor.
+    if let Err(e) = sm.drain_for_shutdown() {
+        tracing::warn!(error = %e, "engine drain_for_shutdown errored; continuing shutdown");
+    }
+    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+    match tokio::time::timeout(HTTP_DRAIN_TIMEOUT, serve).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::error!(error = %e, "axum serve returned an error"),
+        Err(_) => tracing::warn!(
+            timeout = ?HTTP_DRAIN_TIMEOUT,
+            "axum graceful drain timed out; forcing shutdown"
+        ),
+    }
+
+    // Trip the scheduler's cooperative cancellation and give it a bounded
+    // window to exit at a safe point. The supervisor's task observes the
+    // scheduler `JoinHandle` resolving and then flips the engine to
+    // `Stopped`; awaiting the supervisor itself is the cleanest signal that
+    // the scheduler has exited. Fall back to `abort()` only if that window
+    // elapses — `abort()` can cut a device call mid-flight, so it is a last
+    // resort, not the default path.
+    sched_cancel.cancel();
+    let sup_timed_out = tokio::time::timeout(SCHED_EXIT_TIMEOUT, &mut sup_handle)
+        .await
+        .is_err();
+    if sup_timed_out {
+        tracing::warn!(
+            timeout = ?SCHED_EXIT_TIMEOUT,
+            "scheduler did not exit in time; falling back to abort"
+        );
+        sup_handle.abort();
+    }
+    // else: supervisor resolved within the window — its body already moved
+    // the engine to `Stopped` (or races our `sm.shutdown()` below, which is
+    // idempotent). Detaching via drop is implicit on scope end.
+    if let Err(e) = backend.shutdown() {
+        tracing::error!(error = %e, "backend shutdown failed");
+    }
+    let _ = sm.shutdown();
+    Ok(())
+}
+
+/// Wait for Ctrl-C / SIGTERM to trigger `axum::serve`'s graceful shutdown.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("installing ctrl-c handler should not fail");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        signal(SignalKind::terminate())
+            .expect("installing SIGTERM handler should not fail")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
+/// Deserialize a manifest from the package. Placeholder until the real
+/// `.hyperion` codec exists — reads a JSON sidecar next to the package path.
+fn load_manifest(path: &std::path::Path) -> Result<hyperion_specification::v1::Manifest> {
+    let sidecar = path.with_extension("manifest.json");
+    let bytes = std::fs::read(&sidecar)
+        .map_err(|e| anyhow!("read manifest {p}: {e}", p = sidecar.display()))?;
+    let wrapped: hyperion_specification::Manifest = serde_json::from_slice(&bytes)?;
+    match wrapped {
+        hyperion_specification::Manifest::V1(m) => Ok(m),
+    }
+}
+
+/// Resolve a manifest's package-relative `asset_path` against the package's
+/// own directory and guarantee the result stays *inside* that directory.
+///
+/// - `package_path` is the `.hyperion` file (or whatever the codec hands us
+///   today); its parent is the package root.
+/// - `asset_path` may be relative (`"tokenizer.json"`, `"assets/vocab.json"`).
+/// - We reject absolute paths and any `..` component, so a hostile or buggy
+///   manifest cannot escape the package and point at arbitrary host files.
+/// - `CurDir` (`.`) components are collapsed by the join and are harmless.
+///
+/// Returns a path under the package dir. We do not `canonicalize` because
+/// the asset need not exist yet at this layer; the caller checks existence.
+fn resolve_in_package(package_path: &Path, asset_path: &Path) -> Result<PathBuf> {
+    if asset_path.is_absolute() {
+        return Err(anyhow!(
+            "tokenizer asset_path {p} is absolute; must be relative to the package",
+            p = asset_path.display()
+        ));
+    }
+    if asset_path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(anyhow!(
+            "tokenizer asset_path {p} contains '..'; must stay inside the package",
+            p = asset_path.display()
+        ));
+    }
+    // `parent()` is None only for paths like "foo" with no separator. The
+    // CLI requires a real package file path, so hitting None is misuse.
+    let package_dir = package_path
+        .parent()
+        .ok_or_else(|| anyhow!("package path {p} has no parent dir", p = package_path.display()))?;
+    Ok(package_dir.join(asset_path))
+}

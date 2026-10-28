@@ -1,0 +1,36 @@
+# Rust
+/target
+**/target/
+Cargo.lock
+*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.eggs/
+.pytest_cache/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+
+# Compiled artifacts
+*.hyperion
+*.manifest.json
+
+# Local config / secrets
+.env
+.env.*
+.claude/settings.local.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated
+repomix-output.xml
