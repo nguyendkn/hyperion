@@ -24,14 +24,14 @@ axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # HuggingFace tokenizers (Rust core, Apache-2.0) — runtime prompt encode.
-# 0.22 fails to compile unless one regex backend is chosen (`onig` or
-# `fancy-regex`). `onig` (Oniguruma via `cc`) is the upstream default, so token
-# ids match the reference implementation; `fancy-regex` (pure Rust) was not
-# evaluated for identical output on real tokenizers. (The 0.19 `cfg` quirk that
-# the old comment described no longer applies.) 0.19.1 also could not parse the
-# current Qwen3 tokenizer.json, hence the bump. We need only BPE encode ->
+# 0.22 fails to compile unless one regex backend is chosen. `fancy-regex` is pure Rust (no C
+# compiler, no Oniguruma build) and was checked against `onig`, the upstream default: on 36
+# strings (two real tokenizers, 18 samples with emoji, CJK, RTL scripts, combining marks, CRLF,
+# NBSP, code, URLs, special tokens) the token ids are identical, and every test against Hugging
+# Face reference ids passes with it (see `tests/regex_backend_dump.rs` to repeat the comparison).
+# 0.19.1 could not parse the current Qwen3 tokenizer.json, hence 0.22. We need only BPE encode ->
 # Vec<u32>: no progress bar, no http/hf-hub.
-tokenizers = { workspace = true, features = ["onig"] }
+tokenizers = { workspace = true, features = ["fancy-regex"] }
 
 [dev-dependencies]
 # Tests build manifests to ask the HAL factory for a real (stub) backend.
