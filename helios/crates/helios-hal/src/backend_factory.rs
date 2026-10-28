@@ -91,6 +91,12 @@ pub fn create_backend(manifest: &Manifest) -> Result<CreatedBackend> {
             }
             Err(e) => {
                 info!(backend = ?kind, actual = %device_arch, error = %e, "triage refused backend");
+                // A probed backend may hold a device context (the SM120 one keeps a
+                // CUDA primary context until `shutdown`, ~0.5 GiB, seen on an H100
+                // while a different backend served). Release it before moving on.
+                if let Err(teardown) = backend.shutdown() {
+                    info!(backend = ?kind, error = %teardown, "teardown of refused backend failed");
+                }
                 refusals.push(format!("{kind:?}: {e}"));
             }
         }
