@@ -390,3 +390,49 @@ fn first_forward_matches_the_hf_oracle() {
     assert!(max_abs <= tolerance, "max abs logit difference {max_abs} exceeds the declared tolerance {tolerance}");
     backend.shutdown().unwrap();
 }
+
+/// Decode path: greedy generation with the K/V cache against Hugging Face's `generate`. The
+/// criterion was declared in the oracle file before any Hyperion run: the first 8 generated ids
+/// must equal ours; later ones may diverge when two bf16 logits are nearly tied.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn greedy_generation_matches_hf_generate() {
+    use helios_hal::Qwen2Dims;
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
+    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
+    let heads = int("num_attention_heads");
+    let dims = Qwen2Dims {
+        layers: int("num_hidden_layers"),
+        hidden: int("hidden_size"),
+        intermediate: int("intermediate_size"),
+        heads,
+        kv_heads: int("num_key_value_heads"),
+        head_dim: int("hidden_size") / heads,
+        vocab: int("vocab_size"),
+        rope_theta: config["rope_theta"].as_f64().unwrap(),
+        rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
+    };
+    let ids = |key: &str| -> Vec<u32> { oracle[key].as_array().expect(key).iter().map(|v| v.as_u64().unwrap() as u32).collect() };
+    let (prompt, want) = (ids("prompt_ids"), ids("generated_ids"));
+
+    let (_, _, backend) = loaded_backend();
+    let started = std::time::Instant::now();
+    let got = backend.generate_greedy(&dims, &prompt, want.len(), None).expect("generation");
+    let elapsed = started.elapsed();
+    let prefix = got.iter().zip(&want).take_while(|(a, b)| a == b).count();
+    println!(
+        "generated {} tokens in {:.2?} ({:.0} ms/token incl. prefill): first {prefix}/{} equal to HF; ours {got:?}; HF {want:?}; HF text {:?}",
+        got.len(),
+        elapsed,
+        elapsed.as_millis() as f64 / got.len() as f64,
+        want.len(),
+        oracle["generated_text"].as_str().unwrap_or(""),
+    );
+    assert!(prefix >= 8, "the first 8 generated tokens must equal HF's, only {prefix} do");
+    backend.shutdown().unwrap();
+}

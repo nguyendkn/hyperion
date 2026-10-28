@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = json.loads((ROOT / "testdata" / "models.json").read_text(encoding="utf-8"))["models"]
 PROMPT = "The capital of France is"
+GENERATE_TOKENS = 16
 
 
 def main() -> None:
@@ -53,6 +54,14 @@ def main() -> None:
 
     sdpa = last_logits("sdpa")
     eager = last_logits("eager")
+
+    # Greedy continuation by the reference implementation (decode path check).
+    model = AutoModelForCausalLM.from_pretrained(
+        spec["repo"], revision=spec["revision"], torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+    ).to(device).eval()
+    with torch.no_grad():
+        generated = model.generate(ids, max_new_tokens=GENERATE_TOKENS, do_sample=False)[0, ids.shape[1]:].tolist()
+    del model
     observed = float((sdpa - eager).abs().max())
     tolerance = max(4 * observed, 0.05)
 
@@ -72,6 +81,9 @@ def main() -> None:
             "at least 4 of the oracle's top-5 are in the candidate's top-5",
         ],
         "next_token_top5": [int(i) for i in sdpa.topk(5).indices],
+        "generated_ids": generated,
+        "generated_text": tokenizer.decode(generated),
+        "generation_criterion": "the first 8 generated ids must equal ours (greedy); later ids may diverge on near-tied bf16 logits",
         "logits": [float(x) for x in sdpa],
     }
     out = ROOT / "testdata" / "oracle" / f"{model_id}.json"
@@ -79,6 +91,7 @@ def main() -> None:
     out.write_text(json.dumps(oracle) + "\n", encoding="utf-8")
     top = oracle["next_token_top5"]
     print(f"wrote {out}: {len(ids[0])} prompt tokens, vocab {len(oracle['logits'])}, top5 {top}")
+    print(f"greedy continuation: {oracle['generated_text']!r}")
     print(f"decoded top1: {tokenizer.decode([top[0]])!r}; observed {observed:.4f}; tolerance {tolerance:.4f}")
 
 
