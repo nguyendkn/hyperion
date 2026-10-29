@@ -57,6 +57,11 @@ DEFAULT_MARGIN = 1.5
 TOLERANCE_FLOOR = 0.02
 
 
+def script_sha256() -> str:
+    """sha256 of this script with line endings normalised to LF, so a Windows checkout and a Linux one agree."""
+    return hashlib.sha256(Path(__file__).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def git_revision() -> str:
     explicit = os.environ.get("HYPERION_REVISION")
     if explicit:
@@ -201,7 +206,7 @@ def main() -> None:
         sys.exit(f"{source}: no config.json; fetch the model first (python scripts/fetch-model-fixtures.py {args.model} --weights)")
     config = json.loads((source / "config.json").read_text(encoding="utf-8"))
 
-    print(f"ORACLE git_revision={git_revision()} script_sha256={hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}", flush=True)
+    print(f"ORACLE git_revision={git_revision()} script_sha256={script_sha256()}", flush=True)
     print(f"ORACLE model={args.model} repo={spec.get('repo', 'local')} revision={spec.get('revision', 'local')} source={source}", flush=True)
     print(f"ORACLE torch={torch.__version__} transformers={transformers.__version__} device={device}", flush=True)
     for name, info in spec.get("weights", {}).items():
@@ -287,7 +292,7 @@ def main() -> None:
         "revision": spec.get("revision", "local"),
         "generated_by": {
             "git_revision": git_revision(),
-            "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "script_sha256": script_sha256(),
             "torch": torch.__version__,
             "transformers": transformers.__version__,
             "device": device,
@@ -317,7 +322,7 @@ def main() -> None:
         ],
     }
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(oracle) + "\n", encoding="utf-8")
+    out.write_text(json.dumps(oracle) + "\n", encoding="utf-8", newline="\n")
     print(
         f"ORACLE wrote {out} ({out.stat().st_size} bytes): bf16 vs fp32 over {worst['positions']} positions: "
         f"max top-k logit diff {worst['top_logits']:.4f}, max logsumexp diff {worst['logsumexp']:.4f}, "

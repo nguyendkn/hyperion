@@ -62,7 +62,7 @@ def main() -> None:
                 raw = handle.get_tensor(name).contiguous().view(torch.uint8).flatten().tolist()
                 data = bytes(raw)
                 expected[name] = {"shard": shard, "length": len(data), "first16": data[:16].hex(), "last16": data[-16:].hex()}
-    (OUT / "expected.json").write_text(json.dumps(expected, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    (OUT / "expected.json").write_text(json.dumps(expected, indent=1, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     total = sum(p.stat().st_size for p in OUT.iterdir())
     print(f"wrote {OUT}: {len(shards)} shards, {len(expected)} tensors, {total} bytes")
 

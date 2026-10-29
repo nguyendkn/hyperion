@@ -153,7 +153,7 @@ def fetch_weights(model_id: str, spec: dict, dest: Path = DEST, endpoint: str = 
         sys.exit(f"{model_id}: the registry lists no `weights` to download")
     target = dest / model_id
     target.mkdir(parents=True, exist_ok=True)
-    script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    script_hash = hashlib.sha256(Path(__file__).read_bytes().replace(b"\r\n", b"\n")).hexdigest()  # LF-normalised: the same on Windows and Linux
     print(f"FETCH git_revision={git_revision()} script_sha256={script_hash}")
     print(f"FETCH model={model_id} repo={spec['repo']} revision={spec['revision']} endpoint={endpoint}")
     for name, info in weights.items():

@@ -51,7 +51,7 @@ def main() -> None:
     corpus = [{"text": t, "ids": tokenizer(t, add_special_tokens=False).input_ids} for t in corpus_texts]
     out = ROOT / "testdata" / "oracle" / f"chat-{model_id}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"model": model_id, "revision": REGISTRY[model_id]["revision"], "cases": cases, "corpus": corpus}, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    out.write_text(json.dumps({"model": model_id, "revision": REGISTRY[model_id]["revision"], "cases": cases, "corpus": corpus}, indent=1, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
     print(f"wrote {out}: {len(cases)} conversations, {len(corpus)} corpus texts")
     if cases:
         print(repr(cases[0]["text"]))

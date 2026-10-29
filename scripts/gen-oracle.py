@@ -88,7 +88,7 @@ def main() -> None:
     }
     out = ROOT / "testdata" / "oracle" / f"{model_id}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(oracle) + "\n", encoding="utf-8")
+    out.write_text(json.dumps(oracle) + "\n", encoding="utf-8", newline="\n")
     top = oracle["next_token_top5"]
     print(f"wrote {out}: {len(ids[0])} prompt tokens, vocab {len(oracle['logits'])}, top5 {top}")
     print(f"greedy continuation: {oracle['generated_text']!r}")
