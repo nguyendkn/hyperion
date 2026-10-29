@@ -40,6 +40,8 @@ cargo check -p helios-hal --features sm120       # type-check only when CUDA is 
 python -m compileall ignition/src                # syntax check for Ignition
 pytest ignition/tests                            # Ignition tests (pip install -e "ignition[test]")
 bash scripts/build-kernels.sh                    # rebuild helios-hal/kernels/*.fatbin (needs nvcc, i.e. a GPU host); ignition/tests/test_kernel_binaries.py fails when a source changed without it
+python scripts/fetch-model-fixtures.py <id> --weights    # full weights of a registry model (disk-checked, resumable, sha256-verified)
+python scripts/gen-oracle-large.py <id>                  # compact fp32/bf16 logit oracle for a large model (needs torch)
 cargo test -p hyperion-specification --features schema   # manifest contract + schema drift (task schema:check)
 cargo run -p hyperion-specification --features schema --bin gen-schema   # regenerate schema (task schema:gen)
 ```

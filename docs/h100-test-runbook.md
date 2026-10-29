@@ -13,6 +13,19 @@ How hardware runs are done and what went wrong before. Every number recorded fro
 - Profilers: install `nsight-systems-20xx.y.z` (the `-target` package has no CLI); use `--cuda-graph-trace=node` to see kernels inside graphs. `ncu` needs GPU counter access, which the pod does not grant (`ERR_NVGPUCTRPERM`).
 - From Windows: set `MSYS_NO_PATHCONV=1`; `kubectl cp` reads a `C:` path as a remote spec, so run it from the file's directory with a relative name.
 
+## Qwen2.5-7B session (planned; nothing here has run on a GPU yet)
+
+Needs about 40 GB of free disk (15.2 GB of weights, the package, caches), a GPU with at least 40 GB (the float32 reference is about 30 GB; the oracle process exits before Hyperion starts, so the two never share the GPU), and `uv pip install hf_transfer accelerate transformers` plus a CUDA build of torch. In order:
+
+1. Step 1 check (about 10 minutes): all hardware tests with the run-time-loaded driver and cuBLAS; read the `CUDA driver library loaded` and `cuBLAS library loaded` log lines.
+2. Step 4 (graph hygiene).
+3. `python scripts/fetch-model-fixtures.py qwen2.5-7b --weights` (prints the revision and the pinned hashes, checks the disk, verifies every shard).
+4. `python scripts/gen-oracle-large.py qwen2.5-7b --contexts 1024,4096`: float32 pass, bfloat16 pass, writes `testdata/oracle/qwen2.5-7b.compact.json` with the tolerance derived from the measured drift, then exits. Copy the file out of the pod.
+5. `hyperion-compile --model qwen2 --hw sm_90 --source testdata/models/qwen2.5-7b --out testdata/models/qwen2.5-7b/model.hyperion` (hashes the 4 shards into the payload table).
+6. Hyperion: `forward_matches_the_compact_oracle` (also prints the free device memory after the weights loaded), `decode_time_vs_context` for ms per token at several contexts (CUDA events inside one run), then the hardware suite.
+
+It closes these ledger rows at once: the device upload of a sharded model, an untied `lm_head` on a GPU, head_dim 128 on a real model, the free-memory number for KV sizing, and the first ms per token of a real-size model.
+
 ## Rules learned from incidents
 
 1. **One `CARGO_TARGET_DIR` per build in an A/B comparison.** With one shared target directory cargo saw the second tree's sources as up to date and did not rebuild, so "B" was the A binary and a whole run was void. It was noticed only because the output format was the old one.
