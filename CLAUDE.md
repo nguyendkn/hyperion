@@ -76,7 +76,7 @@ cargo run -p hyperion-specification --features schema --bin gen-schema   # regen
 - Surface any design decision you make on your own in your report so the user can review it.
 - Ask before changing project direction or scope; do not decide unilaterally.
 - Test fixtures resolve paths via `env!("CARGO_MANIFEST_DIR")`, never the cwd.
-- **H100 runs follow `docs/h100-runbook.md`**: one `CARGO_TARGET_DIR` per build in any A/B comparison, the revision and the binary's sha256 printed at the start of every result, decode time measured with CUDA events inside one run.
+- **H100 runs follow `docs/h100-test-runbook.md`**: one `CARGO_TARGET_DIR` per build in any A/B comparison, the revision and the binary's sha256 printed at the start of every result, decode time measured with CUDA events inside one run.
 - **No per-model test files in the engine.** Real third-party model files (HF `config.json`, `tokenizer.json`) live in `testdata/models/<id>/`, which is gitignored; `testdata/models.json` (committed) pins repo, revision and sha256, and `python scripts/fetch-model-fixtures.py` downloads them. Tests are generic over that registry and name no model; missing files skip with a visible message, `HYPERION_REQUIRE_MODEL_FIXTURES=1` makes that a failure. (The small `llama3-hf`/`qwen2-hf` configs under `ignition/tests/fixtures` predate this rule and back the committed golden manifests.)
 - Avoid adding new dependencies unless needed, and give the reason when you do.
 - Reply in the language the user writes in; keep code, identifiers and commit messages in English.

@@ -34,6 +34,7 @@ fn qwen2_dims(package: &std::path::Path) -> helios_hal::Qwen2Dims {
         vocab: int("vocab_size"),
         rope_theta: config["rope_theta"].as_f64().unwrap(),
         rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
+        tied_head: config["tie_word_embeddings"] == true,
     }
 }
 
@@ -375,8 +376,8 @@ fn first_forward_matches_the_hf_oracle() {
         vocab: int("vocab_size"),
         rope_theta: config["rope_theta"].as_f64().expect("rope_theta"),
         rms_eps: config["rms_norm_eps"].as_f64().expect("rms_norm_eps") as f32,
+        tied_head: config["tie_word_embeddings"] == true,
     };
-    assert_eq!(config["tie_word_embeddings"], true, "the forward pass assumes a tied output head");
 
     let ids: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
     let want: Vec<f32> = oracle["logits"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
@@ -437,6 +438,7 @@ fn greedy_generation_matches_hf_generate() {
         vocab: int("vocab_size"),
         rope_theta: config["rope_theta"].as_f64().unwrap(),
         rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
+        tied_head: config["tie_word_embeddings"] == true,
     };
     let ids = |key: &str| -> Vec<u32> { oracle[key].as_array().expect(key).iter().map(|v| v.as_u64().unwrap() as u32).collect() };
     let (prompt, want) = (ids("prompt_ids"), ids("generated_ids"));
@@ -483,6 +485,7 @@ fn device_pipeline_is_bit_identical_to_the_host_path() {
         vocab: int("vocab_size"),
         rope_theta: config["rope_theta"].as_f64().unwrap(),
         rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
+        tied_head: config["tie_word_embeddings"] == true,
     };
     let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
     let want: Vec<u32> = oracle["generated_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();

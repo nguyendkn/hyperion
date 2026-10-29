@@ -265,7 +265,7 @@ impl HopperBackend {
             argmax: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "argmax_chain_bf16")?,
             bias_cast: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "bias_cast_bf16")?,
         };
-        let (embed, final_norm, layers) = {
+        let (embed, head, final_norm, layers) = {
             let weights = self.weights.lock().expect("weights mutex poisoned");
             let weights = weights.as_ref().ok_or_else(|| anyhow!("no weights loaded"))?;
             let ptr = |name: &str| -> Result<u64> {
@@ -289,11 +289,11 @@ impl HopperBackend {
                     down: ptr(&n("mlp.down_proj.weight"))?,
                 });
             }
-            (ptr("embed_tokens.weight")?, ptr("norm.weight")?, layers)
+            (ptr("embed_tokens.weight")?, ptr(d.head_weight())?, ptr("norm.weight")?, layers)
         };
 
         let mut arena = Arena { allocated: Vec::new() };
-        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace, profile, timing);
+        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, head, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace, profile, timing);
         arena.free(&mut dev);
         result
     }
@@ -306,6 +306,7 @@ impl HopperBackend {
         d: &Qwen2Dims,
         k: &Kernels,
         embed: u64,
+        head: u64,
         final_norm: u64,
         layers: &[LayerWeights],
         prompt: &[u32],
@@ -461,7 +462,7 @@ impl HopperBackend {
             let last_row = b.h + ((t - 1) * hidden * bf) as u64;
             norm(last_row, final_norm, b.x, 1)?;
             mark("norm")?;
-            cublas.linear_bf16_f32(embed, b.x, b.logits, 1, d.vocab, hidden)?;
+            cublas.linear_bf16_f32(head, b.x, b.logits, 1, d.vocab, hidden)?;
             mark("lm_head")
         };
         // Host to device: the token ids and their positions (the only per-step inputs).

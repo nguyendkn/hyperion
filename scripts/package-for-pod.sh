@@ -3,7 +3,7 @@
 # with a REVISION file holding `git rev-parse HEAD`, plus "-dirty" when the tree has changes.
 # Usage: scripts/package-for-pod.sh <out.tgz>
 # On the pod, `. scripts/pod-lib.sh` prints that revision and each binary's sha256 before a run
-# (docs/h100-runbook.md, rule 2).
+# (docs/h100-test-runbook.md, rule 2).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=${1:?usage: scripts/package-for-pod.sh <out.tgz>}

@@ -29,6 +29,9 @@ pub struct Qwen2Dims {
     pub vocab: usize,
     pub rope_theta: f64,
     pub rms_eps: f32,
+    /// `tie_word_embeddings`: the output head is the embedding matrix. When false the model has its
+    /// own `lm_head.weight` (Qwen2.5-7B and larger).
+    pub tied_head: bool,
 }
 
 /// Per-layer K/V history (after RoPE) of one sequence, `[len, kv_heads, head_dim]` bf16 bits.
@@ -54,9 +57,17 @@ impl KvCache {
 }
 
 impl Qwen2Dims {
+    /// Name (as the manifest records it) of the matrix that produces the logits.
+    pub fn head_weight(&self) -> &'static str {
+        if self.tied_head {
+            "embed_tokens.weight"
+        } else {
+            "lm_head.weight"
+        }
+    }
+
     /// Read the dimensions from a Hugging Face `config.json` and refuse anything the forward
-    /// pass does not implement (another architecture, untied output head, sliding-window or
-    /// scaled RoPE) or that disagrees with the manifest. Returns the end-of-sequence token
+    /// pass does not implement (another architecture, sliding-window or scaled RoPE) or that disagrees with the manifest. Returns the end-of-sequence token
     /// too: it ends a generation, and the manifest does not carry it yet.
     pub fn from_config_json(config: &serde_json::Value, manifest: &ModelConfig) -> Result<(Self, Option<u32>)> {
         let int = |key: &str| -> Result<usize> {
@@ -65,9 +76,6 @@ impl Qwen2Dims {
         let architectures = config["architectures"].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
         if !architectures.is_some_and(|a| a.contains(&"Qwen2ForCausalLM")) {
             return Err(anyhow!("config.json: the sm90 forward pass implements Qwen2ForCausalLM, found {:?}", config["architectures"]));
-        }
-        if config["tie_word_embeddings"] != true {
-            return Err(anyhow!("config.json: the forward pass assumes tie_word_embeddings = true"));
         }
         if config["use_sliding_window"] == true || !config["rope_scaling"].is_null() {
             return Err(anyhow!("config.json: sliding-window attention and RoPE scaling are not implemented"));
@@ -83,6 +91,7 @@ impl Qwen2Dims {
             vocab: int("vocab_size")?,
             rope_theta: config["rope_theta"].as_f64().context("config.json: `rope_theta`")?,
             rms_eps: config["rms_norm_eps"].as_f64().context("config.json: `rms_norm_eps`")? as f32,
+            tied_head: config["tie_word_embeddings"] == true,
         };
         let agree = [
             ("num_layers", dims.layers, manifest.num_layers),
@@ -118,8 +127,8 @@ impl HopperBackend {
 
     /// Run `ids` (the next `ids.len()` positions of the sequence in `cache`) through every layer,
     /// appending their K/V to the cache, and return the logits of the last token rounded to
-    /// bf16 like the reference model's output. The output head shares the embedding matrix
-    /// (`tie_word_embeddings`). Prefill is a call on an empty cache with the whole prompt; a
+    /// bf16 like the reference model's output. The output head is the embedding matrix when
+    /// `tie_word_embeddings` is set, else `lm_head.weight`. Prefill is a call on an empty cache with the whole prompt; a
     /// decode step is a call with the single newest token.
     pub fn forward_tokens(&self, d: &Qwen2Dims, cache: &mut KvCache, ids: &[u32]) -> Result<Vec<f32>> {
         if ids.is_empty() {
@@ -167,7 +176,7 @@ impl HopperBackend {
         // Only the last position's logits are needed for the next token.
         let last = &h[(t - 1) * hidden..];
         let x = self.rmsnorm_bf16("norm.weight", last, 1, hidden, d.rms_eps)?;
-        let logits = self.linear_bf16_f32("embed_tokens.weight", &x, 1, d.vocab, hidden)?;
+        let logits = self.linear_bf16_f32(d.head_weight(), &x, 1, d.vocab, hidden)?;
         Ok(logits.into_iter().map(|v| bf16_to_f32(f32_to_bf16(v))).collect())
     }
 
@@ -223,6 +232,51 @@ impl HopperBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The configuration values of a 7B-class Qwen2 model with its own output head
+    /// (`tie_word_embeddings` false, head_dim 128 derived from hidden size / heads).
+    fn untied_config() -> (serde_json::Value, ModelConfig) {
+        let config = serde_json::json!({
+            "architectures": ["Qwen2ForCausalLM"],
+            "hidden_size": 3584, "intermediate_size": 18944, "num_hidden_layers": 28,
+            "num_attention_heads": 28, "num_key_value_heads": 4, "vocab_size": 152064,
+            "rope_theta": 1000000.0, "rms_norm_eps": 1e-6, "tie_word_embeddings": false,
+            "use_sliding_window": false, "sliding_window": 131072, "rope_scaling": null,
+            "eos_token_id": 151643
+        });
+        let manifest = ModelConfig {
+            num_layers: 28,
+            attention: hyperion_specification::v1::AttentionKind::Gqa,
+            num_attention_heads: 28,
+            num_kv_heads: 4,
+            head_dim: 128,
+            vocab_size: 152064,
+            max_seq_len: 131072,
+        };
+        (config, manifest)
+    }
+
+    #[test]
+    fn an_untied_head_reads_lm_head_and_a_tied_one_the_embedding() {
+        let (mut config, manifest) = untied_config();
+        let (dims, eos) = Qwen2Dims::from_config_json(&config, &manifest).expect("a 7B-class config is accepted");
+        assert!(!dims.tied_head);
+        assert_eq!(dims.head_weight(), "lm_head.weight");
+        assert_eq!(dims.head_dim, 128);
+        assert_eq!(eos, Some(151643));
+        config["tie_word_embeddings"] = serde_json::json!(true);
+        let (tied, _) = Qwen2Dims::from_config_json(&config, &manifest).unwrap();
+        assert!(tied.tied_head);
+        assert_eq!(tied.head_weight(), "embed_tokens.weight");
+    }
+
+    #[test]
+    fn a_config_that_disagrees_with_the_manifest_is_still_refused() {
+        let (config, mut manifest) = untied_config();
+        manifest.num_kv_heads = 8;
+        let error = Qwen2Dims::from_config_json(&config, &manifest).unwrap_err();
+        assert!(error.to_string().contains("num_kv_heads"), "{error}");
+    }
 
     #[test]
     fn a_new_cache_is_empty() {

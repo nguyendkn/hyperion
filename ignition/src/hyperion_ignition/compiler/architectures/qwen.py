@@ -12,6 +12,7 @@ from ..weights import map_qwen2_layers, read_safetensors_header
 
 # A full checkpoint or a header-only file; only the header is read either way.
 WEIGHT_FILES = ("model.safetensors", "model.safetensors.header")
+SHARD_INDEX = "model.safetensors.index.json"
 
 
 class QwenCompiler:
@@ -21,6 +22,11 @@ class QwenCompiler:
     def compile(self, *, source: Path, recipe: HardwareRecipe) -> CompiledManifest:
         config = model_config_from_hf(source, self.architectures)
         weights = next((source / n for n in WEIGHT_FILES if (source / n).is_file()), None)
+        if weights is None and (source / SHARD_INDEX).is_file():
+            # Refuse rather than write a package with no layers: a sharded checkpoint (several
+            # model-0000N-of-0000M.safetensors files plus an index) is not supported yet, because
+            # the manifest records offsets inside a single weights file.
+            raise ValueError(f"{source.name}: sharded checkpoints ({SHARD_INDEX}) are not supported yet; the manifest has no way to say which file holds a tensor")
         layers = []
         if weights is not None:
             tied = bool(json.loads((source / "config.json").read_text(encoding="utf-8")).get("tie_word_embeddings", False))
