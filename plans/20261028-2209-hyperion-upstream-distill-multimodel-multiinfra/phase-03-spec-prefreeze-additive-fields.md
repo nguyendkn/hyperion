@@ -15,6 +15,7 @@ Priority P1. Pending. Depends: 01. Wave: W2. Effort: 3d. v1 is not frozen: the c
 1. `ModelConfig` additions: `attention` variants extensible (tagged, e.g. window); `eos_token_ids`, `chat_template` (payload ref), `sampling_defaults` + clamp ranges; per-model, authored not derived from generation_config.
 2. `qualified_checkpoint { repo, revision, arch, stored_bytes, formats }` provenance.
 3. Payload identity: per-payload sha256 of bytes only; `locations` listed separately and NOT in signed body (decision 6 affects layout).
+   - **Done 2026-10-29 (ADR 0003, decision 6 answered: safetensors):** manifest `payloads` table (`file`, `byte_length`, `sha256`) in the signed body, `layers[].payload` index, compatible default of one `model.safetensors`; bare file names only. Remote `locations` stay outside the signed body and are not implemented.
 4. Parallelism (phase 13 D2; decision 3 now "add now", decision 20):
    - per-tensor sharding plan declared by the compiler (column-split, row-split, replicated, vocab-split);
    - supported TP sizes derived from head counts, with an explicit KV-head replication rule when kv_heads < tp_size;

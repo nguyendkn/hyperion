@@ -20,6 +20,8 @@ dist/
 # Compiled artifacts
 *.hyperion
 *.manifest.json
+# committed golden manifest of the synthetic sharded fixture (checked by the Ignition test)
+!testdata/synthetic/**/model.manifest.json
 
 # Local config / secrets
 .env
