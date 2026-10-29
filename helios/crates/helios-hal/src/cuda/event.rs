@@ -4,11 +4,12 @@
 use std::os::raw::c_uint;
 
 use anyhow::Result;
-use cuda_driver_sys::{cuEventCreate, cuEventDestroy_v2, cuEventRecord, cuEventSynchronize, CUevent};
+use cuda_driver_sys::{cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuEventSynchronize, CUevent};
 
 use super::device::CudaDevice;
 use super::ffi::eval_cuda;
 
+const CU_EVENT_DEFAULT: c_uint = 0;
 const CU_EVENT_DISABLE_TIMING: c_uint = 2;
 
 pub struct Event {
@@ -19,13 +20,32 @@ pub struct Event {
 unsafe impl Send for Event {}
 
 impl Event {
+    /// An event that only orders work (cheaper: it carries no timestamp).
     pub fn new(dev: &CudaDevice) -> Result<Self> {
+        Self::with_flags(dev, CU_EVENT_DISABLE_TIMING)
+    }
+
+    /// An event that also records a timestamp, for [`Event::elapsed_ms`].
+    pub fn new_timed(dev: &CudaDevice) -> Result<Self> {
+        Self::with_flags(dev, CU_EVENT_DEFAULT)
+    }
+
+    fn with_flags(dev: &CudaDevice, flags: c_uint) -> Result<Self> {
         dev.set_current()?;
         let mut event: CUevent = std::ptr::null_mut();
         unsafe {
-            eval_cuda("cuEventCreate", cuEventCreate(&mut event, CU_EVENT_DISABLE_TIMING))?;
+            eval_cuda("cuEventCreate", cuEventCreate(&mut event, flags))?;
         }
         Ok(Self { event })
+    }
+
+    /// GPU milliseconds between two timed events, both already reached (call [`Event::wait`] on `end` first).
+    pub fn elapsed_ms(start: &Event, end: &Event) -> Result<f64> {
+        let mut ms = 0f32;
+        unsafe {
+            eval_cuda("cuEventElapsedTime", cuEventElapsedTime(&mut ms, start.event, end.event))?;
+        }
+        Ok(f64::from(ms))
     }
 
     /// Complete when everything queued on the stream so far has finished.

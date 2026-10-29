@@ -14,7 +14,7 @@ use anyhow::{anyhow, Result};
 use super::backend::{HopperBackend, ROW_BLOCK, RMSNORM_PTX};
 use super::forward::Qwen2Dims;
 use super::ops::ELEMENTWISE_PTX;
-use super::decode_profile::DecodeProfile;
+use super::decode_profile::{DecodeProfile, DecodeTiming};
 use crate::cuda::event::Event;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{CudaDevice, GraphExec, Kernel};
@@ -161,13 +161,26 @@ impl HopperBackend {
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None, None, None)
+    }
+
+    /// Steps run before the timed window starts: the first launches directly, the second captures
+    /// the graph, the third is the first plain replay.
+    const TIMING_WARM_UP: usize = 3;
+
+    /// Time `steps` greedy decode steps inside one run: CUDA events and the host clock around the
+    /// window, after warm-up steps, so neither the prompt nor the graph capture is in the figure.
+    pub fn generate_timed(&self, d: &Qwen2Dims, prompt: &[u32], steps: usize, mode: DecodeMode) -> Result<DecodeTiming> {
+        let mut timing = None;
+        let max_new = 1 + Self::TIMING_WARM_UP + steps;
+        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, Some(&mut timing))?;
+        timing.ok_or_else(|| anyhow!("no timing produced (steps must be at least 1)"))
     }
 
     /// Greedy generation of `max_new` tokens with the decode steps profiled; see [`DecodeProfile`].
     pub fn generate_profiled(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, mode: DecodeMode) -> Result<DecodeProfile> {
         let mut profile = DecodeProfile::default();
-        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, Some(&mut profile))?;
+        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, Some(&mut profile), None)?;
         Ok(profile)
     }
 
@@ -183,7 +196,7 @@ impl HopperBackend {
         mode: DecodeMode,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, on_token, mode, None, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, mode, None, None, None)
     }
 
     /// Like [`Self::generate_streaming`] with an explicit decode mode; when `trace` is given, the
@@ -199,14 +212,14 @@ impl HopperBackend {
         mode: DecodeMode,
         trace: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, trace, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, trace, None, None)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
     /// verification entry point that is compared bit for bit with the host path.
     pub fn forward_prefill_logits_device(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
         let mut trace = Vec::new();
-        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, Some(&mut trace), None)?;
+        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, Some(&mut trace), None, None)?;
         trace.into_iter().next().ok_or_else(|| anyhow!("no logits produced"))
     }
 
@@ -222,6 +235,7 @@ impl HopperBackend {
         mode: DecodeMode,
         trace: Option<&mut Vec<Vec<f32>>>,
         profile: Option<&mut DecodeProfile>,
+        timing: Option<&mut Option<DecodeTiming>>,
     ) -> Result<StopReason> {
         if prompt.is_empty() {
             return Err(anyhow!("no prompt tokens"));
@@ -279,7 +293,7 @@ impl HopperBackend {
         };
 
         let mut arena = Arena { allocated: Vec::new() };
-        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace, profile);
+        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace, profile, timing);
         arena.free(&mut dev);
         result
     }
@@ -303,6 +317,7 @@ impl HopperBackend {
         mode: DecodeMode,
         mut trace: Option<&mut Vec<Vec<f32>>>,
         mut profile: Option<&mut DecodeProfile>,
+        timing: Option<&mut Option<DecodeTiming>>,
     ) -> Result<StopReason> {
         let (hidden, heads, kv_heads, hd) = (d.hidden, d.heads, d.kv_heads, d.head_dim);
         let (q_dim, kv_dim) = (heads * hd, kv_heads * hd);
@@ -497,6 +512,11 @@ impl HopperBackend {
                 dev.dtoh(&mut raw, b.ring + (index * 4) as u64)?;
                 Ok(u32::from_le_bytes(raw))
             };
+            let window = match timing {
+                Some(out) if max_new > Self::TIMING_WARM_UP + 1 => Some((out, Event::new_timed(dev)?, Event::new_timed(dev)?)),
+                _ => None,
+            };
+            let mut window_started = None;
             let mut graph: Option<GraphExec> = None;
             let mut warmed_up = false;
             for index in 1..max_new {
@@ -518,6 +538,14 @@ impl HopperBackend {
                     warmed_up = true;
                 }
                 events[index % events.len()].record(dev)?;
+                if let Some((_, start, end)) = &window {
+                    if index == Self::TIMING_WARM_UP {
+                        start.record(dev)?;
+                        window_started = Some(std::time::Instant::now());
+                    } else if index == max_new - 1 {
+                        end.record(dev)?;
+                    }
+                }
                 let token = read_token(dev, index - 1)?;
                 on_token(token);
                 if Some(token) == eos {
@@ -528,6 +556,11 @@ impl HopperBackend {
             let token = read_token(dev, max_new - 1)?;
             on_token(token);
             dev.synchronize()?;
+            if let (Some((out, start, end)), Some(started)) = (window, window_started) {
+                end.wait()?;
+                let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+                *out = Some(DecodeTiming { steps: max_new - 1 - Self::TIMING_WARM_UP, gpu_ms: Event::elapsed_ms(&start, &end)?, wall_ms });
+            }
             return Ok(if Some(token) == eos { StopReason::EndOfSequence } else { StopReason::MaxTokens });
         }
 

@@ -19,6 +19,29 @@ pub struct DecodeProfile {
     pub host_sample_ms: f64,
 }
 
+/// Time of a window of decode steps measured inside one run: CUDA events around the window give
+/// the GPU time, the host clock gives the wall time. No subtraction of two runs is involved and the
+/// prompt is outside the window.
+#[derive(Debug, Clone, Copy)]
+pub struct DecodeTiming {
+    /// Decode steps inside the window.
+    pub steps: usize,
+    /// GPU milliseconds from the start event to the end event (idle gaps included).
+    pub gpu_ms: f64,
+    /// Host milliseconds over the same window, from the start mark to the end event being reached.
+    pub wall_ms: f64,
+}
+
+impl DecodeTiming {
+    pub fn gpu_ms_per_token(&self) -> f64 {
+        self.gpu_ms / self.steps as f64
+    }
+
+    pub fn wall_ms_per_token(&self) -> f64 {
+        self.wall_ms / self.steps as f64
+    }
+}
+
 impl DecodeProfile {
     pub(super) fn add_gpu(&mut self, group: &'static str, ms: f64) {
         match self.gpu_ms_by_group.iter_mut().find(|(g, _)| *g == group) {

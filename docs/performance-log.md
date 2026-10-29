@@ -2,7 +2,7 @@
 
 Every number here is **single H100 80GB HBM3 (sm_90), driver 580.126.20, nvcc 12.4, batch 1, Qwen2.5-0.5B, context 5 to 133 tokens, greedy**, and nothing more general. Release builds only.
 
-Protocol: per-token time = (136-token run minus 8-token run) / 128, median of 3 runs, whole step including token upload, logits download and greedy sampling (`weights_hw.rs::graph_decode_is_bit_identical_to_direct_launches`). In-process GPU time per group of kernels comes from CUDA events (`weights_hw.rs::profile_decode_steps`, `HopperBackend::generate_profiled`); event marks add a little overhead, so group times are indicative. Kernel and gap numbers come from Nsight Systems (`nsys`, `--trace=cuda`, graph mode with `--cuda-graph-trace=node`).
+Protocol (from step 3b on): per-token time = GPU time between two CUDA events placed around a window of 128 decode steps inside one run (after three warm-up steps, so the prompt and the graph capture are outside), divided by 128; direct launches and graph replay alternate inside one process, 10 windows each, median with p10 and p90 (`HopperBackend::generate_timed`, `weights_hw.rs::measure_modes`). Host time over the same window is reported next to it. The figures of steps 0 to 3b below were taken as (136-token run minus 8-token run) / 128, which subtracts two noisy times and turned out to have a spread of tens of percent; they are kept as history, and the table in the last section replaces them. In-process GPU time per group of kernels comes from CUDA events (`weights_hw.rs::profile_decode_steps`, `HopperBackend::generate_profiled`); event marks add a little overhead, so group times are indicative. Kernel and gap numbers come from Nsight Systems (`nsys`, `--trace=cuda`, graph mode with `--cuda-graph-trace=node`).
 
 | Step | Direct ms/token | Graph ms/token | Notes |
 |---|---|---|---|
@@ -67,3 +67,16 @@ At short context the split-K step is about 0.64 ms slower than before. Register 
 | 7900 | 3.379 [1.461 to 5.066] | 2.850 [0.699 to 4.542] | not run |
 
 The short-context loss of step 3 is gone and the long-context steps are 25% to 35% faster than step 3 by medians. Register spills were not the problem (none before or after); the change is the loop structure: head_dim known at compile time, 16-byte loads, independent loads issued back to back. The spread at 1024 and 7900 is too wide to read more into the medians; the 4096 figure is tight. Open: the PTX file grew about ten times, which makes the driver's load-time JIT slower (not measured; step 5 replaces PTX by a prebuilt binary).
+
+## Event-based measurement (replaces the noisy figures above)
+
+Single H100 80GB HBM3 (sm_90), driver 580.126.20, SM clock 1980 MHz throughout, batch 1, Qwen2.5-0.5B, vectorised split-K attention. GPU ms per token between two CUDA events around 128 decode steps, median [p10, p90] of 10 windows, direct and graph alternating inside one process; wall = host clock over the same window.
+
+| Context (tokens) | Direct, GPU | Graph, GPU | Graph, wall | Attention share of the profiled direct step |
+|---|---|---|---|---|
+| 5 | 2.473 [2.472, 2.483] | 1.755 [1.753, 1.756] | 1.782 | not run |
+| 1024 | 2.517 [2.514, 2.523] | 1.816 [1.809, 1.817] | 1.844 | 11% |
+| 4096 | 2.657 [2.653, 2.672] | 1.929 [1.927, 1.929] | 1.959 | 10% |
+| 7900 | 2.761 [2.753, 2.765] | 2.017 [2.013, 2.018] | 2.048 | 12% |
+
+The spread inside a configuration is under 1%, against tens of percent with the earlier method, so the wide ranges seen before (for example 0.70 to 4.54 ms at 7900) were measurement noise. The step is GPU-bound: wall time exceeds GPU time by about 0.03 ms. Graph replay is 1.4x faster than direct launches at every context length. At 7900 tokens the graph step is 2.02 ms, inside the 2 to 2.5 ms target.
