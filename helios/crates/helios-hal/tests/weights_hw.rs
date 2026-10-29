@@ -935,7 +935,18 @@ fn forward_matches_the_compact_oracle() {
         total as f64 / (1u64 << 30) as f64
     );
     println!("tolerance declared in the oracle: top-k logits {} , logsumexp {}", oracle.tolerance.max_abs_top_logits, oracle.tolerance.max_abs_logsumexp);
+    if let Some(d) = &oracle.bf16_drift {
+        println!(
+            "ORACLE HF bf16 vs fp32 drift: top-k logits {:.4}, logsumexp {:.4}; the top-k limit is set by the {} (margin x drift, or the floor)",
+            d.max_abs_top_logits, d.max_abs_logsumexp, d.binding_top_logits
+        );
+    }
     let required = 8.min(oracle.generated_tokens);
+    // Failures are collected, not asserted at once, so the summary below (ratio and worst position) is
+    // always printed. A failure is never answered by loosening the tolerance: see the runbook.
+    let (mut failures, mut overall_top, mut overall_lse, mut worst_at) = (Vec::new(), 0f32, 0f64, String::new());
+    // HF bf16's deviation over exactly the positions Hyperion was compared on (the like-for-like denominator).
+    let mut bf16_same_set = Some(0f32);
     for prompt in &oracle.prompts {
         let mut trace = Vec::new();
         backend
@@ -950,11 +961,21 @@ fn forward_matches_the_compact_oracle() {
             let c = compare(logits, record, &oracle.tolerance).expect("comparison");
             worst_top = worst_top.max(c.max_abs_top_logits);
             worst_lse = worst_lse.max(c.abs_logsumexp);
-            assert!(
-                c.within(&oracle.tolerance),
-                "{}: position {} (step {i}): top-k diff {:.4} (tolerance {}), logsumexp diff {:.4} (tolerance {}), argmax {} vs {} (ok: {})",
-                prompt.label, record.position, c.max_abs_top_logits, oracle.tolerance.max_abs_top_logits, c.abs_logsumexp, oracle.tolerance.max_abs_logsumexp, c.argmax, record.argmax, c.argmax_ok
-            );
+            if c.max_abs_top_logits > overall_top {
+                overall_top = c.max_abs_top_logits;
+                worst_at = format!("{} ({} prompt tokens), position {} (step {i})", prompt.label, prompt.ids.len(), record.position);
+            }
+            overall_lse = overall_lse.max(c.abs_logsumexp);
+            bf16_same_set = match (bf16_same_set, &prompt.bf16_deviation) {
+                (Some(m), Some(dev)) => Some(m.max(dev[i].0)),
+                _ => None,
+            };
+            if !c.within(&oracle.tolerance) {
+                failures.push(format!(
+                    "{}: position {} (step {i}): top-k diff {:.4} (tolerance {}), logsumexp diff {:.4} (tolerance {}), argmax {} vs {} (ok: {})",
+                    prompt.label, record.position, c.max_abs_top_logits, oracle.tolerance.max_abs_top_logits, c.abs_logsumexp, oracle.tolerance.max_abs_logsumexp, c.argmax, record.argmax, c.argmax_ok
+                ));
+            }
             compared += 1;
         }
         println!(
@@ -963,7 +984,27 @@ fn forward_matches_the_compact_oracle() {
             prompt.ids.len(),
             oracle.generated_tokens
         );
-        assert!(compared >= required, "{}: only {compared} positions agreed with the reference's tokens, {required} are required", prompt.label);
+        if compared < required {
+            failures.push(format!("{}: only {compared} positions agreed with the reference's tokens, {required} are required", prompt.label));
+        }
     }
+    let ratio = |denominator: Option<f32>| denominator.filter(|d| *d > 0.0).map_or("n/a".to_string(), |d| format!("{:.2}", overall_top / d));
+    println!(
+        "ORACLE SUMMARY: Hyperion max top-k logit diff {overall_top:.4} at {worst_at}; max logsumexp diff {overall_lse:.4}; tolerance {}",
+        oracle.tolerance.max_abs_top_logits
+    );
+    println!(
+        "ORACLE SUMMARY ratio, same positions (HF bf16 max over the compared positions: {}): {}; ratio, all positions (HF bf16 max over every position, the basis of the tolerance: {}): {}",
+        bf16_same_set.map_or("n/a".to_string(), |v| format!("{v:.4}")),
+        ratio(bf16_same_set),
+        oracle.bf16_drift.as_ref().map_or("n/a".to_string(), |d| format!("{:.4}", d.max_abs_top_logits)),
+        ratio(oracle.bf16_drift.as_ref().map(|d| d.max_abs_top_logits))
+    );
     backend.shutdown().unwrap();
+    assert!(
+        failures.is_empty(),
+        "{} failure(s); do not loosen the tolerance and rerun (docs/h100-test-runbook.md, `If Hyperion exceeds the tolerance`):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

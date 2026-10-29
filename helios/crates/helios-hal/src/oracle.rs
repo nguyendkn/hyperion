@@ -38,6 +38,18 @@ pub struct OraclePrompt {
     pub generated_ids: Vec<u32>,
     /// One record per generated token, the first at the last prompt position.
     pub reference: Vec<Record>,
+    /// Per generated token, how far the Hugging Face bfloat16 run was from float32 at that position
+    /// (`(max |top-k logit diff|, |logsumexp diff|)`). Absent in files written before it was recorded.
+    pub bf16_deviation: Option<Vec<(f32, f64)>>,
+}
+
+/// How far the Hugging Face bfloat16 run was from float32 (the numbers the tolerance was derived from), and
+/// which term of `max(margin * drift, floor)` set the top-k limit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bf16Drift {
+    pub max_abs_top_logits: f32,
+    pub max_abs_logsumexp: f64,
+    pub binding_top_logits: String,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +57,8 @@ pub struct CompactOracle {
     pub model: String,
     pub generated_tokens: usize,
     pub tolerance: Tolerance,
+    /// Absent in files written before the drift was recorded.
+    pub bf16_drift: Option<Bf16Drift>,
     pub prompts: Vec<OraclePrompt>,
 }
 
@@ -95,17 +109,39 @@ impl CompactOracle {
             if reference.len() != generated_tokens || generated_ids.len() != generated_tokens {
                 bail!("a prompt must have {generated_tokens} generated ids and records");
             }
+            let bf16_deviation = match prompt["bf16_deviation"].as_array() {
+                None => None,
+                Some(rows) => {
+                    let parsed: Vec<(f32, f64)> = rows
+                        .iter()
+                        .map(|r| Ok((r["top_logits"].as_f64().context("bf16_deviation.top_logits")? as f32, r["logsumexp"].as_f64().context("bf16_deviation.logsumexp")?)))
+                        .collect::<Result<_>>()?;
+                    if parsed.len() != generated_tokens {
+                        bail!("bf16_deviation must have {generated_tokens} entries");
+                    }
+                    Some(parsed)
+                }
+            };
             prompts.push(OraclePrompt {
                 label: prompt["label"].as_str().context("label")?.to_string(),
                 ids: ids_of(&prompt["ids"], "ids")?,
                 generated_ids,
                 reference,
+                bf16_deviation,
             });
         }
         if prompts.is_empty() {
             bail!("the oracle has no prompts");
         }
-        Ok(Self { model: doc["model"].as_str().context("model")?.to_string(), generated_tokens, tolerance, prompts })
+        let bf16_drift = match (doc["bf16_vs_fp32"]["top_logits"].as_f64(), doc["bf16_vs_fp32"]["logsumexp"].as_f64()) {
+            (Some(top), Some(lse)) => Some(Bf16Drift {
+                max_abs_top_logits: top as f32,
+                max_abs_logsumexp: lse,
+                binding_top_logits: doc["tolerance"]["binding_top_logits"].as_str().unwrap_or("unrecorded").to_string(),
+            }),
+            _ => None,
+        };
+        Ok(Self { model: doc["model"].as_str().context("model")?.to_string(), generated_tokens, tolerance, bf16_drift, prompts })
     }
 }
 
@@ -267,5 +303,23 @@ mod tests {
         let short = document(FORMAT).replace("\"generated_tokens\":1", "\"generated_tokens\":2");
         assert!(CompactOracle::from_json(short.as_bytes()).is_err());
         assert!(CompactOracle::from_json(b"not json").is_err());
+    }
+
+    #[test]
+    fn the_per_position_bf16_deviation_is_read_and_must_match_the_generated_count() {
+        let with = document(FORMAT).replace("\"reference_fp32\"", "\"bf16_deviation\":[{\"top_logits\":0.5,\"logsumexp\":0.25}],\"reference_fp32\"");
+        assert_eq!(CompactOracle::from_json(with.as_bytes()).unwrap().prompts[0].bf16_deviation, Some(vec![(0.5, 0.25)]));
+        assert_eq!(CompactOracle::from_json(document(FORMAT).as_bytes()).unwrap().prompts[0].bf16_deviation, None);
+        let wrong = with.replace("[{\"top_logits\":0.5,\"logsumexp\":0.25}]", "[]");
+        assert!(CompactOracle::from_json(wrong.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_recorded_bf16_drift_and_its_binding_term_are_read_when_present() {
+        assert_eq!(CompactOracle::from_json(document(FORMAT).as_bytes()).unwrap().bf16_drift, None);
+        let with = document(FORMAT)
+            .replace("\"max_abs_logsumexp\":0.05}", "\"max_abs_logsumexp\":0.05,\"binding_top_logits\":\"floor\"},\"bf16_vs_fp32\":{\"top_logits\":0.25,\"logsumexp\":0.125}");
+        let drift = CompactOracle::from_json(with.as_bytes()).unwrap().bf16_drift.unwrap();
+        assert_eq!(drift, Bf16Drift { max_abs_top_logits: 0.25, max_abs_logsumexp: 0.125, binding_top_logits: "floor".into() });
     }
 }

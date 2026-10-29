@@ -15,14 +15,24 @@ How hardware runs are done and what went wrong before. Every number recorded fro
 
 ## Qwen2.5-7B session (planned; nothing here has run on a GPU yet)
 
-Needs about 40 GB of free disk (15.2 GB of weights, the package, caches), a GPU with at least 40 GB (the float32 reference is about 30 GB; the oracle process exits before Hyperion starts, so the two never share the GPU), and `uv pip install hf_transfer accelerate transformers` plus a CUDA build of torch. In order:
+Needs about 40 GB of free disk (15.2 GB of weights, the package, caches), an 80 GB GPU for the 8192-token oracle prompt (the float32 weights alone are about 30 GB, plus the activations and attention of 8192 tokens; the oracle prints the peak GPU memory after each prompt, so the real need is measured; the oracle process exits before Hyperion starts, so the two never share the GPU). On a 40 GB card lower `--natural-contexts` to 4096 and say so in the report, and `uv pip install hf_transfer accelerate transformers` plus a CUDA build of torch. In order:
 
 1. Step 1 check (about 10 minutes): all hardware tests with the run-time-loaded driver and cuBLAS; read the `CUDA driver library loaded` and `cuBLAS library loaded` log lines.
 2. Step 4 (graph hygiene).
-3. `python scripts/fetch-model-fixtures.py qwen2.5-7b --weights` (prints the revision and the pinned hashes, checks the disk, verifies every shard).
-4. `python scripts/gen-oracle-large.py qwen2.5-7b --contexts 1024,4096`: float32 pass, bfloat16 pass, writes `testdata/oracle/qwen2.5-7b.compact.json` with the tolerance derived from the measured drift, then exits. Copy the file out of the pod.
+3. First fetch one small file of the model alone to see which download path works (`hf_transfer` has never run against the real huggingface.co): `python scripts/fetch-model-fixtures.py qwen2.5-7b` (config and tokenizer, a few MB) and read the `FETCH download path ...: hf_transfer | single stream` line. If `hf_transfer` fails, the single stream is acceptable (a download path, not a compute path); write which one was used in the log. Then `python scripts/fetch-model-fixtures.py qwen2.5-7b --weights` (prints the revision and the pinned hashes, checks the disk, verifies every shard).
+4. `python scripts/gen-oracle-large.py qwen2.5-7b --contexts 1024`: float32 pass, bfloat16 pass, writes `testdata/oracle/qwen2.5-7b.compact.json` with the tolerance derived from the measured drift, then exits. Prompts: short, paragraph, a 1024-token repeated prompt, and 8192 tokens of non-repeating repository prose (`--natural-contexts`, default 8192; the long prompt is what exercises split-K attention at head_dim 128 over a varied cache; the passes run one after the other; the file keeps the token ids and `source` (the docs files and the sha256 of the joined text), so the oracle does not depend on `docs/` as it is later; the script exits with an error, never repeats or pads, if `docs/` holds fewer tokens than asked). Copy the file out of the pod. Read the last `ORACLE wrote` line: it says whether each limit is set by the margin (drift x 1.5) or by the 0.02 floor.
 5. `hyperion-compile --model qwen2 --hw sm_90 --source testdata/models/qwen2.5-7b --out testdata/models/qwen2.5-7b/model.hyperion` (hashes the 4 shards into the payload table).
 6. Hyperion: `forward_matches_the_compact_oracle` (also prints the free device memory after the weights loaded), `decode_time_vs_context` for ms per token at several contexts (CUDA events inside one run), then the hardware suite.
+
+### If Hyperion exceeds the tolerance
+
+The tolerance is fixed in the oracle file before Hyperion runs. A failure is never answered by loosening it and rerunning. Hyperion and Hugging Face bf16 sum in different orders, so the 1.5 margin may simply be tight; that is a finding, not a reason to move the bound. Instead:
+
+1. Report the measured ratio (Hyperion's max top-k logit diff divided by the HF bf16 deviation, printed in `ORACLE SUMMARY`) and where the largest difference is (prompt, position). Two ratios are printed: "same positions" (both max over the positions Hyperion was compared on; this is the like-for-like one) and "all positions" (the denominator the tolerance was derived from, never smaller, so it flatters Hyperion). Quote both, labelled.
+2. Investigate the cause first (which layer, which context length, short vs the 8192-token prompt).
+3. Changing the margin or the floor is the owner's decision, written down (here and in the ledger) before the next run.
+
+State in the report which term set the limit: the margin (drift x 1.5) or the 0.02 floor. When the floor binds (the fixture drift was 0.0031, so the limit was about 6 times the drift) the check is looser than "1.5 x bf16" suggests.
 
 It closes these ledger rows at once: the device upload of a sharded model, an untied `lm_head` on a GPU, head_dim 128 on a real model, the free-memory number for KV sizing, and the first ms per token of a real-size model.
 

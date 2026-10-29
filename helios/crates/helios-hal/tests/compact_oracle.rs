@@ -29,6 +29,21 @@ fn the_script_output_parses_with_the_declared_shape() {
         }
     }
     assert!(oracle.tolerance.max_abs_top_logits > 0.0 && oracle.tolerance.max_abs_logsumexp > 0.0);
+    assert!(oracle.prompts.iter().any(|p| p.label.contains("repository prose") && p.ids.len() == 192), "the long natural prompt is in the file");
+}
+
+#[test]
+fn the_bf16_drift_and_the_per_position_deviation_are_recorded_and_agree() {
+    let oracle = CompactOracle::from_json(&std::fs::read(oracle_path()).unwrap()).unwrap();
+    let drift = oracle.bf16_drift.as_ref().expect("the file records the bf16 drift");
+    assert!(["margin", "floor"].contains(&drift.binding_top_logits.as_str()), "{}", drift.binding_top_logits);
+    let mut worst = 0f32;
+    for prompt in &oracle.prompts {
+        let deviation = prompt.bf16_deviation.as_ref().unwrap_or_else(|| panic!("{}: no per-position deviation", prompt.label));
+        assert_eq!(deviation.len(), oracle.generated_tokens);
+        worst = deviation.iter().fold(worst, |m, d| m.max(d.0));
+    }
+    assert_eq!(worst, drift.max_abs_top_logits, "the drift is the maximum of the per-position deviations");
 }
 
 #[test]
