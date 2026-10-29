@@ -4,6 +4,8 @@
 
 Hyperion is a local LLM inference engine targeting multiple hardware generations and multiple model architectures. Supported hardware: Blackwell (SM120/SM121) and Hopper (H100/H200, SM90).
 
+**Scope (owner direction, 2026-10-29): many GPUs per node and many nodes.** One GPU is the first milestone, not the scope. The order is tensor parallelism inside one node (TP 2/4/8 over NVLink), then independent engines across nodes behind a KV-aware router (data parallel; integrating as an NVIDIA Dynamo worker is the recommended first path, an owner decision), then pipeline parallel only when a target model does not fit one node. Contracts that are expensive to change later (manifest, backend trait, scheduler output, KV layout and hashing, process model) are designed rank-aware now; the kernels stay per GPU. The design items D1 to D6 are in `plans/20261028-2209-hyperion-upstream-distill-multimodel-multiinfra/phase-13-multi-gpu-multi-node.md` (the `plans/` directory is gitignored) and are **proposals until each is accepted as an ADR**; nothing in it is decided yet.
+
 Two-stage architecture:
 
 - **Ignition** (Python, build-time): reads weights, compiles/captures graphs, packages and signs the model into a `.hyperion` bundle. It may be ported to Rust long-term, but stays Python initially to reuse the Hugging Face/PyTorch ecosystem.
@@ -57,6 +59,7 @@ cargo run -p hyperion-specification --features schema --bin gen-schema   # regen
 - **State machine:** `AtomicU8` + CAS loop, 6 states, exhaustive transition table. The API read path is lock-free.
 - **RadixCache:** in-process, 256-token chunks, owns only the index and block IDs. Device memory is allocated through the HAL `allocate_kv_cache`. An LMCache-style sidecar becomes a separate crate later.
 - **sm90 backend (decided 2026-10-28):** shared CUDA Driver-API core with per-arch kernel sets, cuBLAS first for the initial forward pass; no TensorRT-LLM C++ shim. First verification model is Qwen2.5-0.5B (plan phase 10).
+- **Backend trait changes happen once.** Every change to `ComputeBackend` is held for a single merged change (rank-aware backends and a device group, a graph-capturable collective capability, page-index KV allocation per ADR 0002). Until then work stays inside the backends; stop and ask before touching the trait.
 - **CUDA FFI:** `cuda-driver-sys` v0.3 (Driver API) behind the `cuda` feature (enabled by `sm90` and `sm120`). Its generated `cuGraphInstantiate` has the pre-CUDA-12 signature, so `helios-hal/src/cuda/graph.rs` declares `cuGraphInstantiateWithFlags` by hand. Real FFI, no emulation.
 - **Chat template:** the model's own Jinja `chat_template` from `tokenizer_config.json` next to the tokenizer, rendered with `minijinja` (same whitespace settings as Hugging Face); no prompt format is hard-coded per model. Checked against `apply_chat_template` for Qwen2.5-0.5B. Moving the template (and hidden size, EOS, sampling defaults) into the manifest is a pending spec decision.
 - **Tokenizer:** Hugging Face `tokenizers` 0.22 with the pure-Rust `fancy-regex` backend (0.22 requires choosing one; `onig` was dropped after producing identical token ids on a varied multilingual corpus for two real tokenizers and passing every Hugging Face reference test). 0.19 could not parse the current Qwen3 `tokenizer.json`; the real files are test fixtures fetched by script. Encoding speed matched `onig` within noise on a 2.8 MB prompt (one machine, one text shape).
@@ -73,6 +76,7 @@ cargo run -p hyperion-specification --features schema --bin gen-schema   # regen
 - Surface any design decision you make on your own in your report so the user can review it.
 - Ask before changing project direction or scope; do not decide unilaterally.
 - Test fixtures resolve paths via `env!("CARGO_MANIFEST_DIR")`, never the cwd.
+- **H100 runs follow `docs/h100-runbook.md`**: one `CARGO_TARGET_DIR` per build in any A/B comparison, the revision and the binary's sha256 printed at the start of every result, decode time measured with CUDA events inside one run.
 - **No per-model test files in the engine.** Real third-party model files (HF `config.json`, `tokenizer.json`) live in `testdata/models/<id>/`, which is gitignored; `testdata/models.json` (committed) pins repo, revision and sha256, and `python scripts/fetch-model-fixtures.py` downloads them. Tests are generic over that registry and name no model; missing files skip with a visible message, `HYPERION_REQUIRE_MODEL_FIXTURES=1` makes that a failure. (The small `llama3-hf`/`qwen2-hf` configs under `ignition/tests/fixtures` predate this rule and back the committed golden manifests.)
 - Avoid adding new dependencies unless needed, and give the reason when you do.
 - Reply in the language the user writes in; keep code, identifiers and commit messages in English.
