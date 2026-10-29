@@ -615,3 +615,103 @@ fn profile_decode_steps() {
     }
     backend.shutdown().unwrap();
 }
+
+fn host_argmax(values: &[f32]) -> u32 {
+    let mut best = 0;
+    for (i, v) in values.iter().enumerate() {
+        if *v > values[best] {
+            best = i;
+        }
+    }
+    best as u32
+}
+
+/// Greedy decoding with the token chain on the device (argmax kernel, 4-byte token ids to the
+/// host) must pick exactly the tokens the host picks from the downloaded logits, in both decode
+/// modes, and must stop at an end-of-sequence token with that token emitted last.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn device_token_chain_matches_host_argmax() {
+    use helios_hal::{DecodeMode, SamplingConfig};
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let dims = qwen2_dims(&package);
+    let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (_, _, backend) = loaded_backend();
+    let greedy = SamplingConfig::greedy();
+
+    // The reference: the host picks each token from the logits of the logits-returning path.
+    let steps = 40;
+    let mut trace = Vec::new();
+    backend.generate_traced(&dims, &prompt, steps, None, &greedy, DecodeMode::Direct, Some(&mut trace)).expect("reference");
+    let want: Vec<u32> = trace.iter().map(|l| host_argmax(l)).collect();
+    assert_eq!(want.len(), steps);
+
+    for mode in [DecodeMode::Direct, DecodeMode::Graph] {
+        let mut got = Vec::new();
+        let stop = backend.generate_mode(&dims, &prompt, steps, None, &greedy, mode, &mut |t| got.push(t)).expect("device chain");
+        assert_eq!(got, want, "{mode:?}: tokens differ from the host argmax");
+        assert_eq!(stop, helios_hal::traits::StopReason::MaxTokens);
+        println!("{mode:?}: {steps} tokens identical to the host argmax");
+
+        // End of sequence: stop at the 11th token, which is emitted last.
+        let eos = want[10];
+        let first = want.iter().position(|&t| t == eos).unwrap();
+        let mut got = Vec::new();
+        let stop = backend.generate_mode(&dims, &prompt, steps, Some(eos), &greedy, mode, &mut |t| got.push(t)).expect("device chain with eos");
+        assert_eq!(got, want[..=first].to_vec(), "{mode:?}: must stop right after the end-of-sequence token");
+        assert_eq!(stop, helios_hal::traits::StopReason::EndOfSequence);
+    }
+    // One token, and none.
+    let mut one = Vec::new();
+    backend.generate_mode(&dims, &prompt, 1, None, &greedy, DecodeMode::Graph, &mut |t| one.push(t)).unwrap();
+    assert_eq!(one, want[..1].to_vec());
+    backend.generate_mode(&dims, &prompt, 0, None, &greedy, DecodeMode::Graph, &mut |_| panic!("no token expected")).unwrap();
+    backend.shutdown().unwrap();
+}
+
+/// How decode time and the attention share grow with the context length (single GPU, batch 1).
+/// The prompt is the oracle prompt repeated, so the logits are meaningless; only timing counts.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn decode_time_vs_context() {
+    use helios_hal::{DecodeMode, SamplingConfig};
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (_, _, backend) = loaded_backend();
+    let greedy = SamplingConfig::greedy();
+    let (short, long) = (8usize, 136usize);
+    for context in [5usize, 1024, 4096, 7900] {
+        let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
+        let time = |mode: DecodeMode, n: usize| {
+            let started = std::time::Instant::now();
+            backend.generate_mode(&dims, &prompt, n, None, &greedy, mode, &mut |_| {}).expect("generation");
+            started.elapsed().as_secs_f64() * 1000.0
+        };
+        let per_token = |mode: DecodeMode| {
+            time(mode, long);
+            let mut runs: Vec<f64> = (0..3).map(|_| (time(mode, long) - time(mode, short)) / (long - short) as f64).collect();
+            runs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            runs[1]
+        };
+        let (direct, graph) = (per_token(DecodeMode::Direct), per_token(DecodeMode::Graph));
+        // GPU time per group over 32 steps at this context (direct, logits path).
+        let profile = backend.generate_profiled(&dims, &prompt, 33, DecodeMode::Direct).expect("profile");
+        let n = profile.steps as f64;
+        let total: f64 = profile.gpu_ms_by_group.iter().map(|(_, ms)| ms / n).sum();
+        let attention = profile.gpu_ms_by_group.iter().find(|(g, _)| *g == "attention").map(|(_, ms)| ms / n).unwrap_or(0.0);
+        println!(
+            "context {:>5}..{:>5}: direct {direct:.3} ms/token, graph {graph:.3} ms/token; attention {attention:.3} of {total:.3} ms/step ({:.0}%) in the profiled direct path",
+            prompt.len(),
+            prompt.len() + long,
+            100.0 * attention / total
+        );
+    }
+    backend.shutdown().unwrap();
+}

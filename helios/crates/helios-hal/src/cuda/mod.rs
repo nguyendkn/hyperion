@@ -6,6 +6,7 @@
 
 pub mod cublas;
 pub mod device;
+pub mod event;
 mod ffi;
 pub mod graph;
 pub mod module;

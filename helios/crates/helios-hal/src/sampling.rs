@@ -20,7 +20,8 @@ impl SamplingConfig {
         Self { temperature: None, top_p: None, seed: 0 }
     }
 
-    fn is_greedy(&self) -> bool {
+    /// Whether the next token is always the highest logit (no randomness involved).
+    pub fn is_greedy(&self) -> bool {
         self.temperature.is_none_or(|t| t <= 0.0)
     }
 }

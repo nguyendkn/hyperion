@@ -8,6 +8,7 @@ Protocol: per-token time = (136-token run minus 8-token run) / 128, median of 3 
 |---|---|---|---|
 | (earlier, debug build: not a valid performance number) | 9.51 | 10.27 | `cargo test` without `--release`; host work in a debug build is far slower |
 | 0. baseline, release | 2.980 | 2.288 (1.30x) | graph is faster than direct |
+| 2. greedy token chain on the device (argmax kernel, 4-byte token ids to the host) | 2.417 | 1.797 (1.35x) | 15 of 15 hardware tests pass; tokens identical to the host argmax in both modes |
 
 ## Step 0 profile (release, 128 decode steps)
 
@@ -27,3 +28,16 @@ Kernel time by kernel (direct run, share of the 1.66 ms): cuBLAS GEMV kernels (`
 Reading (inference from the numbers above): the direct path is bound by the host issuing about 533 launches per step; a graph removes those gaps and the step becomes about 1.66 ms of GPU work plus about 0.5 ms of logits copy and host argmax. The kernels are small and latency-bound (average about 3 us each): the cuBLAS GEMV calls move 1 to 2 MB each in 4 to 6 us, far below the memory-bandwidth bound. Attention is not the bottleneck at context 5 to 133 tokens; how it scales with long contexts has not been measured.
 
 Not measured: occupancy and achieved bandwidth of any kernel (`ncu` was installed but the pod lacks permission to read GPU performance counters: `ERR_NVGPUCTRPERM`), HTTP latency, contexts beyond 133 tokens.
+
+## Step 2: decode time grows with the context (release, same machine, batch 1, 136 tokens generated after the prompt)
+
+Measured with `weights_hw.rs::decode_time_vs_context` on a prompt made of the oracle prompt repeated (the logits are meaningless; only timing counts). The attention share comes from the GPU-event profile of the logits-returning direct path, which runs the same attention math.
+
+| Context (tokens) | Direct ms/token | Graph ms/token | Attention share of the GPU step |
+|---|---|---|---|
+| 5 to 141 | 2.414 | 1.718 | 8% |
+| 1024 to 1160 | 4.740 | 4.049 | 47% |
+| 4096 to 4232 | 11.606 | 10.870 | 77% |
+| 7900 to 8036 | 19.818 | 20.594 | 86% |
+
+Attention cost grows with the context and dominates from about 1k tokens: the untiled decode kernel runs one block per query head (14 blocks on 132 SMs) and each block walks the whole context. At 8k the graph is not faster than direct launches; the reason has not been investigated (one hypothesis, untested: the graph's attention kernel sizes shared memory for the longest sequence of the run, which lowers occupancy).

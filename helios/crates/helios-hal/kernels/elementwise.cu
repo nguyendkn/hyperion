@@ -160,3 +160,55 @@ extern "C" __global__ void bias_cast_bf16(const float* __restrict__ y, const bf1
         out[i] = __float2bfloat16(v);
     }
 }
+
+// Greedy token choice on the device, and the chaining of decode steps. Every f32 logit is first
+// rounded to bf16 (the precision logits are defined at, and what the host path compares), the
+// highest wins, the lowest index on ties, and a value that is NaN never wins. The winner is then
+// written as the next step's input id, the position advances by one, and the token is stored at
+// ring[position - ring_base] for the host to read later. One block of 1024 threads.
+extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, int n, unsigned int* ids,
+                                             int* pos, unsigned int* ring, int ring_base) {
+    __shared__ float warp_value[32];
+    __shared__ int warp_index[32];
+    float best = -INFINITY;
+    int best_at = 0x7fffffff;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float v = rnd(logits[i]);
+        if (v > best) {
+            best = v;
+            best_at = i;
+        }
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        const float other = __shfl_down_sync(0xffffffffu, best, offset);
+        const int other_at = __shfl_down_sync(0xffffffffu, best_at, offset);
+        if (other > best || (other == best && other_at < best_at)) {
+            best = other;
+            best_at = other_at;
+        }
+    }
+    if ((threadIdx.x & 31) == 0) {
+        warp_value[threadIdx.x >> 5] = best;
+        warp_index[threadIdx.x >> 5] = best_at;
+    }
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        best = threadIdx.x < (blockDim.x >> 5) ? warp_value[threadIdx.x] : -INFINITY;
+        best_at = threadIdx.x < (blockDim.x >> 5) ? warp_index[threadIdx.x] : 0x7fffffff;
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            const float other = __shfl_down_sync(0xffffffffu, best, offset);
+            const int other_at = __shfl_down_sync(0xffffffffu, best_at, offset);
+            if (other > best || (other == best && other_at < best_at)) {
+                best = other;
+                best_at = other_at;
+            }
+        }
+        if (threadIdx.x == 0) {
+            const unsigned int token = best_at == 0x7fffffff ? 0u : (unsigned int)best_at;
+            const int p = *pos;
+            ring[p - ring_base] = token;
+            ids[0] = token;
+            *pos = p + 1;
+        }
+    }
+}

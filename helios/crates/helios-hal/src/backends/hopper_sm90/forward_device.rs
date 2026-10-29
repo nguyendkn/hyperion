@@ -15,6 +15,7 @@ use super::backend::{HopperBackend, ROW_BLOCK, RMSNORM_PTX};
 use super::forward::Qwen2Dims;
 use super::ops::ELEMENTWISE_PTX;
 use super::decode_profile::DecodeProfile;
+use crate::cuda::event::Event;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{CudaDevice, GraphExec, Kernel};
 use crate::reference::{bf16_to_f32, f32_to_bf16, rope_tables};
@@ -24,6 +25,7 @@ use crate::traits::StopReason;
 const ATTENTION_BLOCK: u32 = 128;
 const ELEMENT_BLOCK: u32 = 256;
 const ROPE_BLOCK: u32 = 64;
+const ARGMAX_BLOCK: u32 = 1024;
 /// Longest sequence the untiled attention kernel's shared memory allows.
 const MAX_SEQ: usize = 8192;
 
@@ -79,6 +81,7 @@ struct Kernels {
     attention: Kernel,
     attention_decode: Kernel,
     kv_append: Kernel,
+    argmax: Kernel,
     bias_cast: Kernel,
 }
 
@@ -117,6 +120,8 @@ struct Buffers {
     down: u64,
     y_f32: u64,
     logits: u64,
+    /// Greedy tokens in the order they were chosen, written by the argmax kernel.
+    ring: u64,
     cos: u64,
     sin: u64,
     /// Per layer: (K cache, V cache), `[cap_seq, kv_heads, head_dim]` bf16 each.
@@ -137,6 +142,11 @@ pub enum DecodeMode {
 impl HopperBackend {
     /// Greedy or sampled generation entirely on the device; see the module docs. Same contract as
     /// [`HopperBackend::generate_streaming_host`]. Decode steps are launched one by one.
+    ///
+    /// Greedy decoding chains the steps on the GPU: the argmax kernel writes each token as the
+    /// next step's input, so only 4-byte token ids reach the host and the host runs one step
+    /// behind the device (an end-of-sequence token is noticed one step late and that extra step
+    /// is discarded). Sampled decoding still copies the logits back each step.
     pub fn generate_streaming(
         &self,
         d: &Qwen2Dims,
@@ -154,6 +164,21 @@ impl HopperBackend {
         let mut profile = DecodeProfile::default();
         self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, Some(&mut profile))?;
         Ok(profile)
+    }
+
+    /// [`Self::generate_streaming`] with an explicit decode mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_mode(
+        &self,
+        d: &Qwen2Dims,
+        prompt: &[u32],
+        max_new: usize,
+        eos: Option<u32>,
+        sampling: &SamplingConfig,
+        mode: DecodeMode,
+        on_token: &mut dyn FnMut(u32),
+    ) -> Result<StopReason> {
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, mode, None, None)
     }
 
     /// Like [`Self::generate_streaming`] with an explicit decode mode; when `trace` is given, the
@@ -217,6 +242,7 @@ impl HopperBackend {
             attention: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_bf16")?,
             attention_decode: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_decode_bf16")?,
             kv_append: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "kv_append_bf16")?,
+            argmax: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "argmax_chain_bf16")?,
             bias_cast: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "bias_cast_bf16")?,
         };
         let (embed, final_norm, layers) = {
@@ -294,6 +320,7 @@ impl HopperBackend {
             down: arena.alloc(dev, t_max * hidden * bf)?,
             y_f32: arena.alloc(dev, t_max * widest * 4)?,
             logits: arena.alloc(dev, d.vocab * 4)?,
+            ring: arena.alloc(dev, max_new.max(1) * 4)?,
             cos: arena.alloc(dev, cap_seq * hd * bf)?,
             sin: arena.alloc(dev, cap_seq * hd * bf)?,
             kv: {
@@ -427,6 +454,65 @@ impl HopperBackend {
             launches(dev, ids.len(), start, false, None)?;
             download(dev)
         };
+
+        if trace.is_none() && profile.is_none() && sampling.is_greedy() {
+            if max_new == 0 {
+                return Ok(StopReason::MaxTokens);
+            }
+            // Greedy: the argmax kernel picks each token and feeds it to the next step, so the
+            // host never needs the logits. It reads token ids from a device ring, one step late.
+            let ring_base = prompt.len() - 1;
+            let pick = |dev: &CudaDevice| -> Result<()> {
+                launch(dev, k.argmax, 1, ARGMAX_BLOCK, 0, &[Arg::Ptr(b.logits), Arg::Int(i32::try_from(d.vocab)?), Arg::Ptr(b.ids), Arg::Ptr(b.positions), Arg::Ptr(b.ring), Arg::Int(i32::try_from(ring_base)?)])
+            };
+            let events = (0..4).map(|_| Event::new(dev)).collect::<Result<Vec<_>>>()?;
+            // Prefill, then token 0 from its logits. The position buffer must hold the last
+            // prompt position for the chain; wait for the prefill before overwriting it.
+            upload(dev, prompt, 0)?;
+            launches(dev, prompt.len(), 0, false, None)?;
+            dev.synchronize()?;
+            dev.htod(b.positions, &(ring_base as u32).to_le_bytes())?;
+            pick(dev)?;
+            events[0].record(dev)?;
+            let read_token = |dev: &CudaDevice, index: usize| -> Result<u32> {
+                events[index % events.len()].wait()?;
+                let mut raw = [0u8; 4];
+                dev.dtoh(&mut raw, b.ring + (index * 4) as u64)?;
+                Ok(u32::from_le_bytes(raw))
+            };
+            let mut graph: Option<GraphExec> = None;
+            let mut warmed_up = false;
+            for index in 1..max_new {
+                // Enqueue the step that produces token `index`, then read token `index - 1`
+                // while the device works on it.
+                if mode == DecodeMode::Graph && warmed_up {
+                    if graph.is_none() {
+                        graph = Some(GraphExec::capture(dev, || {
+                            launches(dev, 1, 0, true, None)?;
+                            pick(dev)
+                        })?);
+                    }
+                    graph.as_ref().expect("captured above").launch(dev)?;
+                } else {
+                    // Launched directly; in graph mode this first step also lets cuBLAS set up
+                    // its one-token state, which must not happen while a capture is open.
+                    launches(dev, 1, 0, true, None)?;
+                    pick(dev)?;
+                    warmed_up = true;
+                }
+                events[index % events.len()].record(dev)?;
+                let token = read_token(dev, index - 1)?;
+                on_token(token);
+                if Some(token) == eos {
+                    dev.synchronize()?;
+                    return Ok(StopReason::EndOfSequence);
+                }
+            }
+            let token = read_token(dev, max_new - 1)?;
+            on_token(token);
+            dev.synchronize()?;
+            return Ok(if Some(token) == eos { StopReason::EndOfSequence } else { StopReason::MaxTokens });
+        }
 
         let mut rng = Rng::new(sampling.seed);
         let mut logits = step(dev, prompt, 0)?;
