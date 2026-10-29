@@ -15,6 +15,8 @@ How hardware runs are done and what went wrong before. Every number recorded fro
 
 ## Qwen2.5-7B session (planned; nothing here has run on a GPU yet)
 
+Local CPU venv for dry-running `gen-oracle-large.py` and other oracle scripts without a GPU: `%LOCALAPPDATA%\hyperion\venvs\oracle` (Python 3.12, CPU torch, transformers, safetensors). Not a scratch venv — keep it across sessions instead of recreating it in `%TEMP%\hyperion-scratch\`.
+
 Needs about 40 GB of free disk (15.2 GB of weights, the package, caches), an 80 GB GPU for the 8192-token oracle prompt (the float32 weights alone are about 30 GB, plus the activations and attention of 8192 tokens; the oracle prints the peak GPU memory after each prompt, so the real need is measured; the oracle process exits before Hyperion starts, so the two never share the GPU). On a 40 GB card lower `--natural-contexts` to 4096 and say so in the report, and `uv pip install hf_transfer accelerate transformers` plus a CUDA build of torch. In order:
 
 1. Step 1 check (about 10 minutes): all hardware tests with the run-time-loaded driver and cuBLAS; read the `CUDA driver library loaded` and `cuBLAS library loaded` log lines.
