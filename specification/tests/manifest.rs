@@ -155,13 +155,17 @@ fn a_payload_table_round_trips_and_names_the_files_in_order() {
 
 #[test]
 fn only_bare_file_names_are_payload_names() {
-    for good in ["model.safetensors", "model-00001-of-00004.safetensors", "weights.v2.bin"] {
-        assert!(is_bare_file_name(good), "{good}");
+    // The same examples are read by the Ignition test (fixtures/bare-file-names.json), so the two
+    // implementations of the rule cannot drift apart.
+    let cases: Value = serde_json::from_slice(&std::fs::read(spec_dir().join("fixtures/bare-file-names.json")).unwrap()).unwrap();
+    for good in cases["good"].as_array().unwrap() {
+        assert!(is_bare_file_name(good.as_str().unwrap()), "{good}");
     }
-    let too_long = "a".repeat(256);
-    for bad in ["", ".", "..", "../x", "a/b", "a\\b", "/abs", "C:evil", "stream:name", "x\0y", too_long.as_str()] {
-        assert!(!is_bare_file_name(bad), "{bad:?} must be refused");
+    for bad in cases["bad"].as_array().unwrap() {
+        assert!(!is_bare_file_name(bad.as_str().unwrap()), "{bad} must be refused");
     }
+    assert!(!is_bare_file_name(&"a".repeat(256)), "256 bytes is too long");
+    assert!(is_bare_file_name(&"a".repeat(255)));
 }
 
 #[test]

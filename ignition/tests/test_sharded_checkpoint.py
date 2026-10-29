@@ -160,10 +160,13 @@ def test_a_shard_name_that_is_a_path_is_refused(tmp_path: Path, bad: str):
 
 
 def test_the_bare_file_name_rule_matches_the_rust_spec():
-    for good in ["model.safetensors", "model-00001-of-00004.safetensors", "weights.v2.bin"]:
+    # The same examples are read by the Rust spec test, so the two implementations cannot drift apart.
+    cases = json.loads((FIXTURE.parents[2] / "specification" / "fixtures" / "bare-file-names.json").read_text(encoding="utf-8"))
+    for good in cases["good"]:
         assert is_bare_file_name(good), good
-    for bad in ["", ".", "..", "../x", "a/b", "a\\b", "/abs", "C:evil", "stream:name", "x\0y", "a" * 256]:
+    for bad in cases["bad"] + ["a" * 256]:
         assert not is_bare_file_name(bad), repr(bad)
+    assert is_bare_file_name("a" * 255)
 
 
 def test_header_only_shards_map_tensors_to_shards_without_hashing(tmp_path: Path):

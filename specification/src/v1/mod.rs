@@ -184,15 +184,35 @@ pub struct Payload {
     pub sha256: String,
 }
 
-/// Whether `name` is a plain file name that cannot leave the package directory: non-empty, at most
-/// 255 bytes, not `.` or `..`, and without a path separator (`/`, `\\`), a drive or stream
-/// separator (`:`) or a NUL.
+/// Whether `name` is a plain file name that cannot leave the package directory and opens an
+/// ordinary file on every platform: non-empty, at most 255 bytes, not `.` or `..`, without a path
+/// separator (`/`, `\`), a drive or stream separator (`:`) or a NUL, not ending in a dot or a space
+/// (Windows drops those), and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`,
+/// `LPT0`-`LPT9`, `CONIN$`, `CONOUT$`, in any case and with any extension, so `NUL.safetensors` is
+/// refused): opening one of those on Windows reaches a device, not a file.
 pub fn is_bare_file_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 255
         && name != "."
         && name != ".."
+        && !name.ends_with('.')
+        && !name.ends_with(' ')
         && !name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '\0'))
+        && !is_windows_device_name(name)
+}
+
+/// Whether Windows treats `name` as a device: the part before the first dot, without trailing
+/// spaces, is a reserved name (case-insensitive).
+fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ').to_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let mut chars = stem.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    matches!(prefix.as_str(), "COM" | "LPT")
+        && matches!(chars.next(), Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'))
+        && chars.next().is_none()
 }
 
 impl Manifest {

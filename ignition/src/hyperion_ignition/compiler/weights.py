@@ -84,9 +84,26 @@ SHARD_INDEX = "model.safetensors.index.json"
 HEADER_SUFFIX = ".header"
 
 
+def _is_windows_device_name(name: str) -> bool:
+    stem = name.split(".")[0].rstrip(" ").upper()
+    if stem in ("CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"):
+        return True
+    return len(stem) == 4 and stem[:3] in ("COM", "LPT") and stem[3] in "0123456789¹²³"
+
+
 def is_bare_file_name(name: str) -> bool:
-    """A plain file name that cannot leave the package directory (the rule of the Rust spec crate)."""
-    return bool(name) and len(name.encode()) <= 255 and name not in (".", "..") and not any(c in name for c in "/\\:\0")
+    """A plain file name that cannot leave the package directory and opens an ordinary file on every
+    platform (the rule of the Rust spec crate, `hyperion_specification::v1::is_bare_file_name`): not
+    empty, at most 255 bytes, not `.` or `..`, no slash, backslash, colon or NUL, not ending in a dot
+    or a space, and not a Windows device name (`NUL.safetensors` is one)."""
+    return (
+        bool(name)
+        and len(name.encode()) <= 255
+        and name not in (".", "..")
+        and not name.endswith((".", " "))
+        and not any(c in name for c in ("/", "\\", ":", "\0"))
+        and not _is_windows_device_name(name)
+    )
 
 
 @dataclass(frozen=True)
