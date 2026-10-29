@@ -34,6 +34,13 @@
           "description": "Identifier of the compiled model, e.g. \"llama3\".",
           "type": "string"
         },
+        "payloads": {
+          "description": "The weights files of the package, in the order `layers[].payload` indexes them, each with its\nsize and sha256. Absent (empty) means one file, [`DEFAULT_PAYLOAD_FILE`], with nothing recorded\nabout it, which is what a header-only compile and every older manifest look like.\nA checkpoint split over several files (`model-00001-of-00004.safetensors` ...) needs the table.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Payload"
+          }
+        },
         "signature": {
           "description": "Ed25519 signature over the weight blob, verified at load. Absent =\nunsigned package (allowed in dev builds, rejected by release loader).",
           "type": [
@@ -103,7 +110,7 @@
           "minimum": 0
         },
         "byte_offset": {
-          "description": "On-package byte range where this tensor's weights begin.",
+          "description": "Byte range where this tensor's weights begin, counted from the start of the data section of its payload file.",
           "type": "integer",
           "format": "uint64",
           "minimum": 0
@@ -117,6 +124,12 @@
         "name": {
           "description": "Logical name, e.g. \"attention.q_proj\" — matches the kernel registry.",
           "type": "string"
+        },
+        "payload": {
+          "description": "Index into the manifest's payload table of the file that holds this tensor (0, the default,\nis the first or only payload).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         },
         "tensor": {
           "description": "Tensor metadata describing dtype/shape — see [`TensorMetadata`].",
@@ -186,6 +199,36 @@
         "head_dim",
         "vocab_size",
         "max_seq_len"
+      ]
+    },
+    "Payload": {
+      "description": "One weights file of the package. The file sits beside the package under exactly this name; the\nname is part of what is signed, so a swapped or edited file is detectable once the runtime\nchecks `sha256` (planned with package signing; the runtime does not verify it yet).",
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "description": "Size of the file in bytes.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "file": {
+          "description": "File name only: no directory separator, no `:`, not `.` or `..`. See [`is_bare_file_name`].",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[^/\\\\:]+$"
+        },
+        "sha256": {
+          "description": "Lowercase hexadecimal SHA-256 of the whole file.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "byte_length",
+        "sha256"
       ]
     },
     "TensorFormat": {

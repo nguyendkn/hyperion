@@ -30,6 +30,9 @@ pub enum ManifestError {
 
     #[error("bincode decode failure: {0}")]
     Decode(#[from] bincode::Error),
+
+    #[error("invalid payload table: {0}")]
+    InvalidPayloads(String),
 }
 
 /// Discriminated top-level wrapper so loaders can branch on version before
