@@ -23,7 +23,10 @@ Argmax rule: equal to the fp32 argmax, or, when the fp32 gap between its two bes
 than the logit tolerance, either of those two (a near tie may flip legitimately).
 
     python scripts/gen-oracle-large.py qwen2.5-7b                       # weights in testdata/models/qwen2.5-7b
-    python scripts/gen-oracle-large.py tiny --source testdata/synthetic/qwen2-tiny-sharded --device cpu
+    python scripts/gen-oracle-large.py tiny --source testdata/synthetic/qwen2-tiny-sharded --device cpu --natural-contexts ""
+
+Prompts: short, a paragraph, `--contexts` (the short prompt repeated) and `--natural-contexts` (the first n
+tokens of docs/*.md; default 8192, a long varied cache for split-K attention).
 
 Needs torch and transformers (not project dependencies). Prints the git revision, this script's sha256
 and the pinned weight files first, so the output names its inputs.
@@ -103,6 +106,17 @@ def load_model(source: Path, dtype_name: str, device: str):
     return (model if on_gpu else model.to(device)).eval()
 
 
+def peak_memory(device: str) -> str:
+    """Peak device memory since the last reset, for the 80 GB vs 40 GB question; empty on the CPU."""
+    if not device.startswith("cuda"):
+        return ""
+    import torch
+
+    peak = torch.cuda.max_memory_allocated() / 2**30
+    torch.cuda.reset_peak_memory_stats()
+    return f", peak GPU memory {peak:.1f} GiB"
+
+
 def release(device: str) -> None:
     gc.collect()
     if device.startswith("cuda"):
@@ -113,9 +127,19 @@ def release(device: str) -> None:
         print(f"ORACLE gpu memory after freeing the model: {free / 2**30:.1f} of {total / 2**30:.1f} GiB free", flush=True)
 
 
-def build_prompts(source: Path, vocab: int, contexts: list[int]):
-    """(label, kind, ids) for each prompt. Natural text needs the tokenizer; without one (a synthetic
-    model) fixed pseudo-random ids stand in for text."""
+def natural_text() -> tuple[str, list[str]]:
+    """Long non-repeating English prose that is already in the repository (docs/*.md, sorted by name), and
+    the file names it was joined from. docs/ changes with commits, so the token ids (not this text) are what
+    the oracle keeps, and `source` in the file names what they came from."""
+    files = sorted((ROOT / "docs").glob("*.md"))
+    return "\n\n".join(p.read_text(encoding="utf-8") for p in files), [f"docs/{p.name}" for p in files]
+
+
+def build_prompts(source: Path, vocab: int, contexts: list[int], natural_contexts: list[int]):
+    """((label, kind, ids) for each prompt, {label: source description}). Natural text needs the tokenizer; without one (a synthetic
+    model) fixed pseudo-random ids stand in for text. A cycled context repeats the short prompt (a
+    degenerate attention pattern); a natural context is the first n tokens of repository prose, which
+    is what exercises split-K attention over a long, varied cache."""
     tokenizer = None
     if (source / "tokenizer.json").is_file() or (source / "tokenizer_config.json").is_file():
         from transformers import AutoTokenizer
@@ -129,9 +153,28 @@ def build_prompts(source: Path, vocab: int, contexts: list[int]):
         short = [rng.randrange(vocab) for _ in range(5)]
         paragraph = [rng.randrange(vocab) for _ in range(60)]
     prompts = [("short text", "text", short), ("paragraph", "text", paragraph)]
+    sources = {}
     for n in contexts:
         prompts.append((f"{n} tokens, the short prompt repeated", "cycled", [short[i % len(short)] for i in range(n)]))
-    return prompts
+    if natural_contexts:
+        if tokenizer is not None:
+            text, files = natural_text()
+            pool = tokenizer(text, add_special_tokens=False).input_ids
+            origin = {"files": files, "joined_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), "pool_tokens": len(pool)}
+        else:
+            rng = random.Random(11)
+            pool = [rng.randrange(vocab) for _ in range(max(natural_contexts))]
+            origin = {"files": [], "note": "no tokenizer: fixed pseudo-random ids (seed 11)"}
+        for n in natural_contexts:
+            if len(pool) < n:
+                sys.exit(
+                    f"docs/*.md hold only {len(pool)} tokens, a natural context of {n} needs more; lower --natural-contexts "
+                    "(the script never repeats or pads the text)"
+                )
+            label = f"{n} tokens of repository prose"
+            prompts.append((label, "natural", pool[:n]))
+            sources[label] = {**origin, "tokens_used": n}
+    return prompts, sources
 
 
 def main() -> None:
@@ -142,6 +185,7 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--generate", type=int, default=16, help="greedy tokens recorded after each prompt")
     parser.add_argument("--contexts", default="1024", help="comma-separated lengths of the repeated-prompt contexts")
+    parser.add_argument("--natural-contexts", default="8192", help="comma-separated lengths of long prompts made of repository prose (empty for none)")
     parser.add_argument("--margin", type=float, default=DEFAULT_MARGIN)
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
@@ -166,7 +210,12 @@ def main() -> None:
         if have != info["bytes"]:
             sys.exit(f"{name}: {have} bytes on disk, expected {info['bytes']}: run fetch-model-fixtures.py --weights")
 
-    prompts = build_prompts(source, int(config["vocab_size"]), [int(c) for c in args.contexts.split(",") if c])
+    prompts, sources = build_prompts(
+        source,
+        int(config["vocab_size"]),
+        [int(c) for c in args.contexts.split(",") if c],
+        [int(c) for c in args.natural_contexts.split(",") if c],
+    )
     generated = args.generate
 
     # Pass 1: float32 reference.
@@ -174,6 +223,8 @@ def main() -> None:
     model = load_model(source, "float32", device)
     for label, kind, ids in prompts:
         tensor = torch.tensor([ids], device=device)
+        if device.startswith("cuda"):
+            torch.cuda.reset_peak_memory_stats()
         with torch.no_grad():
             new = model.generate(tensor, max_new_tokens=generated, do_sample=False, pad_token_id=0)[0, len(ids):].tolist()
             sequence = torch.tensor([ids + new], device=device)
@@ -181,36 +232,46 @@ def main() -> None:
         positions = list(range(len(ids) - 1, len(ids) - 1 + generated))
         sequences.append((sequence, positions, new))
         reference.append(records_at(rows, positions, args.top_k))
-        print(f"ORACLE fp32 {label}: {len(ids)} prompt tokens, generated {new[:6]}...", flush=True)
+        print(f"ORACLE fp32 {label}: {len(ids)} prompt tokens, generated {new[:6]}...{peak_memory(device)}", flush=True)
     del model
     release(device)
 
     # Pass 2: bfloat16 on the same sequences; keep only the deviation from float32.
-    bf16_records, worst = [], {"top_logits": 0.0, "logsumexp": 0.0, "argmax_mismatches": 0, "near_tie_mismatches": 0, "positions": 0}
+    bf16_records, bf16_deviation, worst = [], [], {"top_logits": 0.0, "logsumexp": 0.0, "argmax_mismatches": 0, "near_tie_mismatches": 0, "positions": 0}
     model = load_model(source, "bfloat16", device)
+    peak_memory(device)  # reset: the peak printed per prompt then excludes the load
     for (label, kind, ids), (sequence, positions, new), ref in zip(prompts, sequences, reference):
         with torch.no_grad():
             rows = model(sequence, logits_to_keep=generated + 1).logits[0, :generated].float()
         records = records_at(rows, positions, args.top_k)
         bf16_records.append(records)
+        deviation = []  # per position, so a Hyperion run can be compared on exactly the positions it compared
         for row, ours, theirs in zip(rows, records, ref):
             ids_top = torch.tensor(theirs["top_ids"], device=row.device)
             diff = (row[ids_top].cpu() - torch.tensor(theirs["top_logits"])).abs().max().item()
+            lse_diff = abs(ours["logsumexp"] - theirs["logsumexp"])
+            deviation.append({"top_logits": diff, "logsumexp": lse_diff})
             worst["top_logits"] = max(worst["top_logits"], diff)
-            worst["logsumexp"] = max(worst["logsumexp"], abs(ours["logsumexp"] - theirs["logsumexp"]))
+            worst["logsumexp"] = max(worst["logsumexp"], lse_diff)
             worst["positions"] += 1
             if ours["argmax"] != theirs["argmax"]:
                 worst["argmax_mismatches"] += 1
                 if theirs["top_logits"][0] - theirs["top_logits"][1] <= 4 * diff:
                     worst["near_tie_mismatches"] += 1
+        bf16_deviation.append(deviation)
+        print(f"ORACLE bf16 {label}: max top-k logit diff {max(d['top_logits'] for d in deviation):.4f}{peak_memory(device)}", flush=True)
     del model
     release(device)
 
+    scaled_top, scaled_lse = args.margin * worst["top_logits"], args.margin * worst["logsumexp"]
     tolerance = {
         "margin": args.margin,
         "floor": TOLERANCE_FLOOR,
-        "max_abs_top_logits": max(args.margin * worst["top_logits"], TOLERANCE_FLOOR),
-        "max_abs_logsumexp": max(args.margin * worst["logsumexp"], TOLERANCE_FLOOR),
+        "max_abs_top_logits": max(scaled_top, TOLERANCE_FLOOR),
+        "max_abs_logsumexp": max(scaled_lse, TOLERANCE_FLOOR),
+        # Which term sets each limit: "margin" (drift x margin) or "floor". Report it with the result.
+        "binding_top_logits": "margin" if scaled_top >= TOLERANCE_FLOOR else "floor",
+        "binding_logsumexp": "margin" if scaled_lse >= TOLERANCE_FLOOR else "floor",
         "rule": (
             "Each tolerance is the largest difference seen between the bfloat16 and float32 Hugging Face runs "
             "(over the fp32 top-k ids, and over the logsumexp) times the margin, with a floor. A Hyperion bf16 "
@@ -242,8 +303,17 @@ def main() -> None:
             "positions are compared while our greedy tokens equal the reference's; the first 8 generated tokens must agree",
         ],
         "prompts": [
-            {"label": label, "kind": kind, "ids": ids, "generated_ids": new, "reference_fp32": ref, "hf_bf16": bf}
-            for (label, kind, ids), (_, _, new), ref, bf in zip(prompts, sequences, reference, bf16_records)
+            {
+                "label": label,
+                "kind": kind,
+                "source": sources.get(label),
+                "ids": ids,
+                "generated_ids": new,
+                "reference_fp32": ref,
+                "hf_bf16": bf,
+                "bf16_deviation": dev,
+            }
+            for (label, kind, ids), (_, _, new), ref, bf, dev in zip(prompts, sequences, reference, bf16_records, bf16_deviation)
         ],
     }
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +322,8 @@ def main() -> None:
         f"ORACLE wrote {out} ({out.stat().st_size} bytes): bf16 vs fp32 over {worst['positions']} positions: "
         f"max top-k logit diff {worst['top_logits']:.4f}, max logsumexp diff {worst['logsumexp']:.4f}, "
         f"argmax mismatches {worst['argmax_mismatches']} (near ties {worst['near_tie_mismatches']}); "
-        f"declared tolerance {tolerance['max_abs_top_logits']:.4f} / {tolerance['max_abs_logsumexp']:.4f}",
+        f"declared tolerance {tolerance['max_abs_top_logits']:.4f} (set by the {tolerance['binding_top_logits']}) / "
+        f"{tolerance['max_abs_logsumexp']:.4f} (set by the {tolerance['binding_logsumexp']})",
         flush=True,
     )
 

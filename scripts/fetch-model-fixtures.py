@@ -138,10 +138,12 @@ def _download(url: str, part: Path, total: int) -> None:
     if hf_transfer is not None and not (part.is_file() and part.stat().st_size):
         try:
             hf_transfer.download(url=url, filename=str(part), max_files=16, chunk_size=10 * 1024 * 1024, parallel_failures=3, max_retries=5)
+            print(f"FETCH download path for {part.name}: hf_transfer", flush=True)
             return
         except Exception as error:  # fall back to the plain stream rather than fail a long download
             print(f"hf_transfer failed ({error}); falling back to one stream")
             part.unlink(missing_ok=True)
+    print(f"FETCH download path for {part.name}: single stream", flush=True)
     _download_stream(url, part, total)
 
 
