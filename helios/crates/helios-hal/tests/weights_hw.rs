@@ -198,6 +198,8 @@ fn rmsnorm_kernel_matches_the_cpu_reference() {
 // ---- single ops from kernels/elementwise.cu, each against the CPU reference ----
 
 fn loaded_backend() -> (PathBuf, hyperion_specification::v1::Manifest, HopperBackend) {
+    // The revision the pod script packaged (scripts/pod-lib.sh sets it), so a result names its build.
+    println!("BUILD revision={}", std::env::var("HYPERION_REVISION").unwrap_or_else(|_| "unknown".into()));
     let package = package();
     let Manifest::V1(manifest) =
         serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();

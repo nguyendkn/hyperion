@@ -16,7 +16,7 @@ How hardware runs are done and what went wrong before. Every number recorded fro
 ## Rules learned from incidents
 
 1. **One `CARGO_TARGET_DIR` per build in an A/B comparison.** With one shared target directory cargo saw the second tree's sources as up to date and did not rebuild, so "B" was the A binary and a whole run was void. It was noticed only because the output format was the old one.
-2. **Print the revision and the sha256 of every executable at the start of each result.** Package the tree with a `REVISION` file (`git rev-parse HEAD`, plus `-dirty` if the tree is modified) and run `sha256sum` on each test binary before using it, so a wrong build is visible in the output instead of by luck.
+2. **Print the revision and the sha256 of every executable at the start of each result.** `scripts/package-for-pod.sh <out.tgz>` packages the tree with a `REVISION` file (`git rev-parse HEAD`, plus `-dirty` if the tree is modified); on the pod `. scripts/pod-lib.sh` gives `announce <exe>` and `run_test <exe> <args>`, which print `BUILD revision=... exe=... sha256=...` before the run, and the hardware tests print `BUILD revision=` themselves. A wrong build is visible in the output instead of being noticed by luck.
 3. **Measure decode time with CUDA events inside one run** (a window of 128 decode steps after warm-up), alternating the configurations being compared in one process; report median with p10 and p90. A difference of two whole-run times has a spread of tens of percent.
 4. For cross-build comparisons that need two processes, alternate the processes (A, B, A, B, ...) and record the SM clock (`nvidia-smi --query-gpu=clocks.sm,temperature.gpu --format=csv -l 1`).
 5. Say in the ledger what was only type-checked, and what ran on which topology.
