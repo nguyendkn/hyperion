@@ -96,3 +96,35 @@ async fn an_overlong_prompt_is_rejected_not_truncated() {
     })
     .await;
 }
+
+/// The engine's regex backend must split text exactly as Hugging Face's does; a difference at
+/// the edge of a lookahead would shift token ids silently. Compares raw encodings (no chat
+/// template) of the shared corpus with the ids Hugging Face produced (scripts/gen-chat-reference.py).
+#[tokio::test]
+async fn corpus_token_ids_equal_huggingface() {
+    for_each_model(|id, dir| async move {
+        let reference = testdata().join("oracle").join(format!("chat-{id}.json"));
+        let Some(reference) = std::fs::read(&reference).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) else {
+            if require() {
+                panic!("{id}: run `python scripts/gen-chat-reference.py {id}`");
+            }
+            eprintln!("SKIPPED {id}: no Hugging Face reference ids (scripts/gen-chat-reference.py)");
+            return;
+        };
+        let Some(corpus) = reference["corpus"].as_array() else {
+            if require() {
+                panic!("{id}: reference has no corpus; rerun `python scripts/gen-chat-reference.py {id}`");
+            }
+            eprintln!("SKIPPED {id}: reference has no corpus; rerun scripts/gen-chat-reference.py");
+            return;
+        };
+        let tok = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json")).expect("tokenizer.json loads");
+        for row in corpus {
+            let text = row["text"].as_str().unwrap();
+            let want: Vec<u32> = row["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            let got = tok.encode(text, false).unwrap().get_ids().to_vec();
+            assert_eq!(got, want, "{id}: ids differ from Hugging Face for {text:?}");
+        }
+    })
+    .await;
+}

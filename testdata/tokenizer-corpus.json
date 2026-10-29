@@ -1,0 +1,23 @@
+{
+ "_note": "Texts every model tokenizer must encode to the same ids as Hugging Face (scripts/gen-chat-reference.py writes the reference ids).",
+ "texts": [
+  "The capital of France is",
+  "Xin chào, 你好, hello! 🙂🚀",
+  "日本語のテキスト、そして émojis 😀😀 ok",
+  "  leading and trailing   spaces   ",
+  "tabs\tand\nnewlines\r\nmixed  nbsp",
+  "fn main() { println!(\"{}\", 1 + 2 * 3); } // comment",
+  "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n",
+  "https://example.com/path?query=1&b=2#frag user@example.org",
+  "1234567890 3.14159 -42 1e-9 0xFF 1_000_000",
+  "I'm you're they've we'll it's don't \"quoted\" 'single'",
+  "ÀÉÎÕÜ ñ ß ø å — – … « » “ ”",
+  "Привет, мир! مرحبا بالعالم שלום עולם नमस्ते दुनिया",
+  "á é combining marks and zero​width",
+  "ALL CAPS and camelCase and snake_case and kebab-case",
+  "",
+  "\n\n\n",
+  "<|im_start|>user\nhi<|im_end|>",
+  "end."
+ ]
+}
