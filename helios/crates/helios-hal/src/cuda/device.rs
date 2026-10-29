@@ -34,6 +34,7 @@ pub struct CudaDevice {
     cap_major: i32,
     cap_minor: i32,
     total_vram: usize,
+    sm_count: u32,
     stream: CUstream,
 }
 
@@ -77,6 +78,12 @@ impl CudaDevice {
                 ),
             )?;
 
+            let mut sm_count: c_int = 0;
+            eval_cuda(
+                "cuDeviceGetAttribute",
+                cuDeviceGetAttribute(&mut sm_count, CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device),
+            )?;
+
             let mut total_vram: usize = 0;
             eval_cuda("cuDeviceTotalMem", cuDeviceTotalMem_v2(&mut total_vram, device))?;
 
@@ -99,6 +106,7 @@ impl CudaDevice {
                 cap_major,
                 cap_minor,
                 total_vram,
+                sm_count: sm_count.max(1) as u32,
                 stream,
             })
         }
@@ -108,6 +116,11 @@ impl CudaDevice {
     /// manifest's `target_arch` convention.
     pub fn compute_capability_string(&self) -> String {
         format!("sm_{}{}", self.cap_major, self.cap_minor)
+    }
+
+    /// Number of streaming multiprocessors, used to size grids that should fill the GPU.
+    pub fn multiprocessor_count(&self) -> u32 {
+        self.sm_count
     }
 
     pub fn total_vram_bytes(&self) -> u64 {

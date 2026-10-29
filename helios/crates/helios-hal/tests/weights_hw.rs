@@ -715,3 +715,92 @@ fn decode_time_vs_context() {
     }
     backend.shutdown().unwrap();
 }
+
+/// Deterministic pseudo-random bf16 data in `[-range, range]` (a 32-bit LCG, so no two caches
+/// share a periodic pattern).
+fn noise(n: usize, seed: u32, range: f32) -> Vec<u16> {
+    use helios_hal::reference::f32_to_bf16;
+    let mut state = seed.wrapping_mul(2_654_435_761).wrapping_add(12345);
+    (0..n)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f32_to_bf16(((state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * range)
+        })
+        .collect()
+}
+
+/// The split-K decode attention against a float64 reference, with the old untiled kernel as the
+/// quality yardstick, at context lengths from 1 to 32768 (the old kernel stops at 8192).
+///
+/// Criteria, declared before the first run: let `ulp` be one bf16 step at the largest reference
+/// output (`max|ref| / 128`; the outputs are rounded to bf16, so a 1-ulp flip is ordinary rounding
+/// noise). The old kernel's worst error over all outputs is `old_err`. The new kernel passes at a
+/// length when `new_err <= old_err + ulp`, and where the old kernel cannot run when
+/// `new_err <= 2 * ulp`. Independently, five launches on the same input must give identical
+/// bits: the merge order is fixed and nothing uses atomics.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn split_attention_matches_reference_and_is_repeatable() {
+    use helios_hal::reference::{attention, bf16_to_f32};
+    let (_, _, backend) = loaded_backend();
+    // Qwen2.5-0.5B: 14 query heads share 2 KV heads of 64 dims.
+    let (heads, kv_heads, d) = (14usize, 2usize, 64usize);
+    let worst = |a: &[u16], b: &[u16]| a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((bf16_to_f32(*x) - bf16_to_f32(*y)).abs()));
+    for len in [1usize, 5, 129, 1024, 4096, 8000, 32768] {
+        let q = noise(heads * d, len as u32 + 1, 2.0);
+        let k = noise(len * kv_heads * d, len as u32 + 2, 2.0);
+        let v = noise(len * kv_heads * d, len as u32 + 3, 3.0);
+        let reference = attention(&q, &k, &v, 1, len, heads, kv_heads, d, len - 1);
+        let ulp = reference.iter().map(|x| bf16_to_f32(*x).abs()).fold(0.0f32, f32::max) / 128.0;
+
+        let new = backend.attention_decode_split_bf16(&q, &k, &v, len, heads, kv_heads, d).expect("split kernel");
+        let new_err = worst(&new, &reference);
+        for run in 1..5 {
+            let again = backend.attention_decode_split_bf16(&q, &k, &v, len, heads, kv_heads, d).unwrap();
+            assert!(again == new, "len {len}: launch {run} differs from the first, bit for bit");
+        }
+        if len <= 8192 {
+            let old = backend.attention_bf16(&q, &k, &v, 1, len, heads, kv_heads, d, len - 1).expect("old kernel");
+            let old_err = worst(&old, &reference);
+            println!("len {len:>5}: new err {new_err:.5}, old err {old_err:.5}, 1 ulp {ulp:.5}; 5 launches identical");
+            assert!(new_err <= old_err + ulp, "len {len}: new {new_err} vs old {old_err} + ulp {ulp}");
+        } else {
+            println!("len {len:>5}: new err {new_err:.5}, 2 ulp {:.5}; 5 launches identical (old kernel cannot run here)", 2.0 * ulp);
+            assert!(new_err <= 2.0 * ulp, "len {len}: new {new_err} exceeds 2 ulp {}", 2.0 * ulp);
+        }
+    }
+    backend.shutdown().unwrap();
+}
+
+/// End to end at long context: the logits of a decode step (split-K attention, position from the
+/// device) against the logits of the same token run through prefill (the untiled kernel), over
+/// the same tokens. Bound declared before the first run: max absolute logit difference <= 0.5.
+/// The prompt is the oracle prompt repeated, so only the difference matters, not the text.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn long_context_decode_logits_match_prefill_logits() {
+    use helios_hal::{DecodeMode, SamplingConfig};
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (_, _, backend) = loaded_backend();
+    let bound = 0.5f32;
+    for context in [5usize, 1024, 4096, 8000] {
+        let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
+        // trace[0]: prefill logits of the prompt; trace[1]: logits of one decode step that feeds the greedy token.
+        let mut trace = Vec::new();
+        backend.generate_traced(&dims, &prompt, 2, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut trace)).unwrap();
+        let first = trace[0].iter().enumerate().fold(0, |b, (i, v)| if *v > trace[0][b] { i } else { b }) as u32;
+        let mut extended = prompt.clone();
+        extended.push(first);
+        let prefill = backend.forward_prefill_logits_device(&dims, &extended).expect("prefill of the extended prompt");
+        let diff = trace[1].iter().zip(&prefill).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        let argmax = |v: &[f32]| v.iter().enumerate().fold(0, |b, (i, x)| if *x > v[b] { i } else { b });
+        println!("context {context:>5}: max |decode - prefill| logit diff {diff:.4} (bound {bound}); argmax decode {} prefill {}", argmax(&trace[1]), argmax(&prefill));
+        assert!(diff <= bound, "context {context}: logit difference {diff} exceeds the declared bound {bound}");
+    }
+    backend.shutdown().unwrap();
+}

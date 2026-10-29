@@ -9,6 +9,7 @@ Protocol: per-token time = (136-token run minus 8-token run) / 128, median of 3 
 | (earlier, debug build: not a valid performance number) | 9.51 | 10.27 | `cargo test` without `--release`; host work in a debug build is far slower |
 | 0. baseline, release | 2.980 | 2.288 (1.30x) | graph is faster than direct |
 | 2. greedy token chain on the device (argmax kernel, 4-byte token ids to the host) | 2.417 | 1.797 (1.35x) | 15 of 15 hardware tests pass; tokens identical to the host argmax in both modes |
+| 3. split-K decode attention | 3.103 | 1.979 (1.57x) | 17 of 17 hardware tests pass; slower than step 2 at short context (see below), 6x faster at 8k |
 
 ## Step 0 profile (release, 128 decode steps)
 
@@ -41,3 +42,14 @@ Measured with `weights_hw.rs::decode_time_vs_context` on a prompt made of the or
 | 7900 to 8036 | 19.818 | 20.594 | 86% |
 
 Attention cost grows with the context and dominates from about 1k tokens: the untiled decode kernel runs one block per query head (14 blocks on 132 SMs) and each block walks the whole context. At 8k the graph is not faster than direct launches; the reason has not been investigated (one hypothesis, untested: the graph's attention kernel sizes shared memory for the longest sequence of the run, which lowers occupancy).
+
+## Step 3: split-K decode attention (release, same machine, batch 1, 136 tokens generated after the prompt)
+
+| Context (tokens) | Graph before | Graph after | Direct after | Attention share after |
+|---|---|---|---|---|
+| 5 to 141 | 1.718 | 2.355 | 3.104 | 18% |
+| 1024 to 1160 | 4.049 | 2.736 | 3.289 | 21% |
+| 4096 to 4232 | 10.870 | 2.935 | 3.639 | 27% |
+| 7900 to 8036 | 20.594 | 3.407 | 3.540 | 33% |
+
+At 8k the step is 6x faster. At short context it is slower than before (the protocol run says 1.797 to 1.979 ms for the graph, this table says 1.718 to 2.355 for nearly the same context; the two graph figures disagree and the cause was not found, so treat the short-context graph number as 2.0 to 2.4 ms). Attention at 8k still takes 1.66 ms per step against a bandwidth bound of about 0.03 ms for the 97 MB of K and V it reads, so the kernel has room left. Correctness: see the ledger (error against a float64 reference, bit-identical repeats, logits within the declared bound).

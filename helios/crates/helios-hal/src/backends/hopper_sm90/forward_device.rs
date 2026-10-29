@@ -26,6 +26,8 @@ const ATTENTION_BLOCK: u32 = 128;
 const ELEMENT_BLOCK: u32 = 256;
 const ROPE_BLOCK: u32 = 64;
 const ARGMAX_BLOCK: u32 = 1024;
+/// Threads of the split-K decode attention block (the kernel's tile size).
+const SPLIT_BLOCK: u32 = 128;
 /// Longest sequence the untiled attention kernel's shared memory allows.
 const MAX_SEQ: usize = 8192;
 
@@ -79,7 +81,8 @@ struct Kernels {
     swiglu: Kernel,
     rope: Kernel,
     attention: Kernel,
-    attention_decode: Kernel,
+    attention_split: Kernel,
+    attention_combine: Kernel,
     kv_append: Kernel,
     argmax: Kernel,
     bias_cast: Kernel,
@@ -122,6 +125,8 @@ struct Buffers {
     logits: u64,
     /// Greedy tokens in the order they were chosen, written by the argmax kernel.
     ring: u64,
+    /// Per query head and split: (max, sum of exp, weighted V) of the split-K decode attention.
+    attn_ws: u64,
     cos: u64,
     sin: u64,
     /// Per layer: (K cache, V cache), `[cap_seq, kv_heads, head_dim]` bf16 each.
@@ -240,7 +245,8 @@ impl HopperBackend {
             swiglu: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "swiglu_bf16")?,
             rope: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "rope_bf16")?,
             attention: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_bf16")?,
-            attention_decode: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_decode_bf16")?,
+            attention_split: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_split_bf16")?,
+            attention_combine: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_combine_bf16")?,
             kv_append: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "kv_append_bf16")?,
             argmax: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "argmax_chain_bf16")?,
             bias_cast: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "bias_cast_bf16")?,
@@ -301,6 +307,13 @@ impl HopperBackend {
         let (hidden, heads, kv_heads, hd) = (d.hidden, d.heads, d.kv_heads, d.head_dim);
         let (q_dim, kv_dim) = (heads * hd, kv_heads * hd);
         let t_max = prompt.len();
+        // The split-K decode attention serves head dimensions that divide its 128-thread block
+        // and at most 8 query heads per KV head; anything else is refused, never mis-computed.
+        if !matches!(hd, 32 | 64 | 128) || kv_heads == 0 || heads % kv_heads != 0 || heads / kv_heads > 8 {
+            return Err(anyhow!("decode attention supports head_dim 32/64/128 and at most 8 query heads per KV head; got head_dim {hd}, {heads} heads, {kv_heads} KV heads"));
+        }
+        // One block per (KV head, split): enough splits to give every SM a block, whatever the context.
+        let splits = super::ops_split_attention::split_count(dev.multiprocessor_count(), kv_heads);
         let widest = d.intermediate.max(hidden).max(q_dim).max(kv_dim);
 
         let bf = 2usize;
@@ -321,6 +334,7 @@ impl HopperBackend {
             y_f32: arena.alloc(dev, t_max * widest * 4)?,
             logits: arena.alloc(dev, d.vocab * 4)?,
             ring: arena.alloc(dev, max_new.max(1) * 4)?,
+            attn_ws: arena.alloc(dev, heads * splits * (hd + 2) * 4)?,
             cos: arena.alloc(dev, cap_seq * hd * bf)?,
             sin: arena.alloc(dev, cap_seq * hd * bf)?,
             kv: {
@@ -386,13 +400,15 @@ impl HopperBackend {
                     mark("kv_append")?;
                     launch(
                         dev,
-                        k.attention_decode,
-                        u32::try_from(heads)?,
-                        ATTENTION_BLOCK,
-                        u32::try_from((cap_seq + ATTENTION_BLOCK as usize) * 4)?,
-                        &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(i32::try_from(cap_seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
+                        k.attention_split,
+                        u32::try_from(kv_heads * splits)?,
+                        SPLIT_BLOCK,
+                        0,
+                        &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn_ws), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)],
                     )?;
                     mark("attention")?;
+                    launch(dev, k.attention_combine, u32::try_from(heads)?, u32::try_from(hd)?, 0, &[Arg::Ptr(b.attn_ws), Arg::Ptr(b.attn), Arg::Int(heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)])?;
+                    mark("attention_combine")?;
                 } else {
                     let offset = (start * kv_dim * bf) as u64;
                     dev.dtod_async(k_cache + offset, b.k, t * kv_dim * bf)?;
@@ -451,7 +467,8 @@ impl HopperBackend {
         };
         let step = |dev: &CudaDevice, ids: &[u32], start: usize| -> Result<Vec<f32>> {
             upload(dev, ids, start)?;
-            launches(dev, ids.len(), start, false, None)?;
+            // A step after the first token is a decode step: the split-K kernels, position on the device.
+            launches(dev, ids.len(), start, start > 0, None)?;
             download(dev)
         };
 
@@ -553,7 +570,7 @@ impl HopperBackend {
                         graph.as_ref().expect("captured above").launch(dev)?;
                     }
                 } else {
-                    launches(dev, 1, position, false, marks.as_ref())?;
+                    launches(dev, 1, position, true, marks.as_ref())?;
                 }
                 let t2 = Instant::now();
                 dev.synchronize()?;

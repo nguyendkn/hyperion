@@ -17,6 +17,7 @@ mod forward;
 mod decode_profile;
 mod forward_device;
 mod ops;
+mod ops_split_attention;
 
 pub use backend::HopperBackend;
 pub use forward::{KvCache, Qwen2Dims};
