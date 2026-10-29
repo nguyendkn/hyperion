@@ -71,7 +71,16 @@ static DRIVER: OnceLock<Result<Driver, LoadError>> = OnceLock::new();
 /// Load the driver library and resolve every function (once per process). The error says which
 /// library names were tried, or which function the driver lacks.
 pub fn load_driver() -> Result<(), LoadError> {
-    match DRIVER.get_or_init(|| Driver::load(&Library::open(DRIVER_LIBRARIES)?)) {
+    let loaded = DRIVER.get_or_init(|| {
+        let library = Library::open(DRIVER_LIBRARIES)?;
+        let driver = Driver::load(&library)?;
+        let mut version: c_int = 0;
+        // Safety: the signature is that of the C function; the pointer is a local.
+        let status = unsafe { (driver.cuDriverGetVersion)(&mut version) };
+        tracing::info!(library = library.name(), cuda_driver_version = if status == CUDA_SUCCESS { version } else { -1 }, "CUDA driver library loaded");
+        Ok(driver)
+    });
+    match loaded {
         Ok(_) => Ok(()),
         Err(error) => Err(error.clone()),
     }
@@ -79,6 +88,7 @@ pub fn load_driver() -> Result<(), LoadError> {
 
 driver_api! {
     cuInit(flags: c_uint);
+    cuDriverGetVersion(version: *mut c_int);
     cuGetErrorString(error: CUresult, text: *mut *const c_char);
     cuDeviceGetCount(count: *mut c_int);
     cuDeviceGet(device: *mut CUdevice, ordinal: c_int);

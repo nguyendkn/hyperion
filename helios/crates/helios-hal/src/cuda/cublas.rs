@@ -1,6 +1,6 @@
 //! cuBLAS for the matrix multiplies (ADR 0001: cuBLAS first, custom kernels later).
 //! A minimal hand-written binding of the four entry points we need, loaded at run time
-//! like the driver (`libcublas.so.12` / `cublas64_12.dll`): there is no mock, and a host
+//! like the driver (`libcublas.so.13`, then `.so.12`; `cublas64_13.dll`, then `cublas64_12.dll`): there is no mock, and a host
 //! without cuBLAS gets a typed `LoadError` when the handle is created.
 //!
 //! Layout note: cuBLAS is column-major, our tensors are row-major. A row-major
@@ -27,9 +27,9 @@ const COMPUTE_32F: c_int = 68;
 const GEMM_DEFAULT: c_int = -1;
 
 #[cfg(windows)]
-const CUBLAS_LIBRARIES: &[&str] = &["cublas64_12.dll", "cublas64_13.dll"];
+const CUBLAS_LIBRARIES: &[&str] = &["cublas64_13.dll", "cublas64_12.dll"];
 #[cfg(not(windows))]
-const CUBLAS_LIBRARIES: &[&str] = &["libcublas.so.12", "libcublas.so.13", "libcublas.so"];
+const CUBLAS_LIBRARIES: &[&str] = &["libcublas.so.13", "libcublas.so.12", "libcublas.so"];
 
 type GemmEx = unsafe extern "C" fn(
     Handle,
@@ -65,7 +65,9 @@ static API: OnceLock<std::result::Result<Api, LoadError>> = OnceLock::new();
 
 fn api() -> std::result::Result<&'static Api, LoadError> {
     let loaded = API.get_or_init(|| {
+        // The newest major version first: a CUDA 13 toolkit ships `libcublas.so.13`, a 12 one `.so.12`.
         let library = Library::open(CUBLAS_LIBRARIES)?;
+        tracing::info!(library = library.name(), "cuBLAS library loaded");
         // Safety: each type is the exact C signature of the function named.
         unsafe {
             Ok(Api {
