@@ -407,7 +407,7 @@ impl HopperBackend {
                         &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn_ws), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)],
                     )?;
                     mark("attention")?;
-                    launch(dev, k.attention_combine, u32::try_from(heads)?, u32::try_from(hd)?, 0, &[Arg::Ptr(b.attn_ws), Arg::Ptr(b.attn), Arg::Int(heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)])?;
+                    launch(dev, k.attention_combine, u32::try_from(heads)?, u32::try_from(hd)?, 0, &[Arg::Ptr(b.attn_ws), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)])?;
                     mark("attention_combine")?;
                 } else {
                     let offset = (start * kv_dim * bf) as u64;

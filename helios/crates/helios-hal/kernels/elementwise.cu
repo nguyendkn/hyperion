@@ -202,6 +202,9 @@ extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, i
 // writes (max, sum of exp, unnormalised weighted V) to the workspace; attention_combine_bf16 merges
 // them in split order, so results are identical from run to run (no atomics).
 #define SPLIT_TILE 128
+// A split gets at least this many positions, so a short context uses only as many blocks as it has
+// work for (the others return at once) and the combine kernel merges only those.
+#define SPLIT_MIN_CHUNK 64
 #define MAX_GROUP 8  // query heads per KV head
 
 extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
@@ -220,7 +223,8 @@ extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, cons
     const int s = blockIdx.x % splits;
     const int group = heads / kv_heads;
     const int len = *pos + 1;
-    const int chunk = (len + splits - 1) / splits;
+    const int chunk = max(SPLIT_MIN_CHUNK, (len + splits - 1) / splits);
+    if (s * chunk >= len) return;  // no positions for this split (uniform across the block)
     const int lo = s * chunk;
     const int hi = min(len, lo + chunk);
     const float scale = 1.f / sqrtf((float)head_dim);
@@ -313,17 +317,20 @@ extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, cons
 // Merge the splits of every query head: out = sum_s exp(m_s - M) acc_s / sum_s exp(m_s - M) l_s, in
 // split order. One block per query head, one thread per dimension.
 extern "C" __global__ void attention_combine_bf16(const float* __restrict__ ws, bf16* __restrict__ out,
-                                                  int heads, int head_dim, int splits) {
+                                                  const int* __restrict__ pos, int heads, int head_dim,
+                                                  int splits) {
+    const int len = *pos + 1;
+    const int chunk = max(SPLIT_MIN_CHUNK, (len + splits - 1) / splits);
+    const int active = (len + chunk - 1) / chunk;  // splits that had work, the only ones that wrote
     const int h = blockIdx.x;
     const int d = threadIdx.x;
     const int stride = head_dim + 2;
     const float* base = ws + (size_t)h * splits * stride;
     float top = -INFINITY;
-    for (int s = 0; s < splits; ++s) top = fmaxf(top, base[(size_t)s * stride]);
+    for (int s = 0; s < active; ++s) top = fmaxf(top, base[(size_t)s * stride]);
     float total = 0.f, acc = 0.f;
-    for (int s = 0; s < splits; ++s) {
+    for (int s = 0; s < active; ++s) {
         const float m = base[(size_t)s * stride];
-        if (m == -INFINITY) continue;  // an empty split
         const float w = expf(m - top);
         total += base[(size_t)s * stride + 1] * w;
         acc += base[(size_t)s * stride + 2 + d] * w;

@@ -74,6 +74,7 @@ impl HopperBackend {
             let mut combine_args: Vec<*mut c_void> = vec![
                 &ws_ptr as *const u64 as *mut c_void,
                 &out_ptr as *const u64 as *mut c_void,
+                &pos_ptr as *const u64 as *mut c_void,
                 &h as *const i32 as *mut c_void,
                 &hd as *const i32 as *mut c_void,
                 &sp as *const i32 as *mut c_void,

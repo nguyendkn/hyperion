@@ -45,11 +45,13 @@ Attention cost grows with the context and dominates from about 1k tokens: the un
 
 ## Step 3: split-K decode attention (release, same machine, batch 1, 136 tokens generated after the prompt)
 
-| Context (tokens) | Graph before | Graph after | Direct after | Attention share after |
-|---|---|---|---|---|
-| 5 to 141 | 1.718 | 2.355 | 3.104 | 18% |
-| 1024 to 1160 | 4.049 | 2.736 | 3.289 | 21% |
-| 4096 to 4232 | 10.870 | 2.935 | 3.639 | 27% |
-| 7900 to 8036 | 20.594 | 3.407 | 3.540 | 33% |
+Measured with single-sample processes alternated between builds in one pod (`measure_decode_sample`, 8 to 10 rounds), SM clock 1980 MHz throughout, median [min to max], ms per token.
 
-At 8k the step is 6x faster. At short context it is slower than before (the protocol run says 1.797 to 1.979 ms for the graph, this table says 1.718 to 2.355 for nearly the same context; the two graph figures disagree and the cause was not found, so treat the short-context graph number as 2.0 to 2.4 ms). Attention at 8k still takes 1.66 ms per step against a bandwidth bound of about 0.03 ms for the 97 MB of K and V it reads, so the kernel has room left. Correctness: see the ledger (error against a float64 reference, bit-identical repeats, logits within the declared bound).
+| Context (tokens) | Graph, split-K | Graph, one block per head (step 2) | Notes |
+|---|---|---|---|
+| 5 to 141 | 2.37 [1.83 to 3.16] | 1.72 [0.98 to 1.73] | split-K is slower at short context |
+| 1024 to 1160 | 2.57 [2.41 to 2.97] | 4.04 [2.25 to 5.13] | split-K faster |
+| 4096 to 4232 | 3.11 [2.78 to 5.20] | 10.87 (single earlier run) | |
+| 7900 to 8036 | 3.51 [2.46 to 4.53] | 20.59 (single earlier run) | 6x faster |
+
+At short context the split-K step is about 0.64 ms slower than before. Register spills were ruled out (`ptxas -v`: no spill, 66 registers). Letting idle splits exit early changed nothing measurable. Attention at 8k still takes about 1.7 ms per step for 97 MB of K and V (bandwidth bound about 0.03 ms), so the kernel is far from the memory system's limit. Correctness: see the ledger. The spread between single processes is large, so treat differences under about 10% as noise.
