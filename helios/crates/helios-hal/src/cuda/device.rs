@@ -1,20 +1,21 @@
-//! CUDA Driver FFI surface shared by every NVIDIA backend — device probing, memory
-//! allocation, host/device copies, stream handle. All calls go through `cuda-driver-sys`, which
-//! binds the real CUDA Driver headers. There is **no mock here**: on a host
-//! without the CUDA Driver library present, *this module will not link*, and
-//! a build with `--features sm120` will fail at the link step. That is
-//! intended — CI and dev hosts use `--features stub` instead.
+//! CUDA Driver surface shared by every NVIDIA backend — device probing, memory
+//! allocation, host/device copies, stream handle. All calls go through `super::sys`, which loads
+//! the real driver at run time. There is **no mock here**: on a host without the driver the
+//! probe fails with a typed `LoadError` (the build itself needs no CUDA), and the backend
+//! factory falls back to the next backend.
 //!
 //! We use the **driver** API (not runtime) because CUDA Graph capture lives
 //! in the driver. Going straight to the driver matches the zero-overhead
 //! posture and avoids the runtime's global state.
 
 use anyhow::Result;
-use cuda_driver_sys::{
-    cuCtxSetCurrent, cuDeviceGet, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRetain,
-    cuCtxSynchronize, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoDAsync_v2, cuMemcpyDtoH_v2, cuMemcpyHtoD_v2,
-    cuStreamCreate, cuStreamDestroy_v2,
-    CUcontext, CUdevice, CUdeviceptr, CUstream, CUdevice_attribute,
+
+use super::sys::{
+    cuCtxSetCurrent, cuCtxSynchronize, cuDeviceGet, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRelease_v2,
+    cuDevicePrimaryCtxRetain, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoDAsync_v2,
+    cuMemcpyDtoH_v2, cuMemcpyHtoD_v2, cuStreamCreate, cuStreamDestroy_v2, load_driver, CUcontext, CUdevice, CUdeviceptr,
+    CUstream, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+    CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
 };
 use std::os::raw::{c_int, c_void};
 
@@ -47,6 +48,9 @@ impl CudaDevice {
     /// Probe the first available device, create a primary context, read its
     /// properties, and stand up a non-blocking capture stream.
     pub fn probe() -> Result<Self> {
+        // The driver library is loaded here, at the first probe: a host without one gets a typed
+        // `LoadError` (downcast the error to tell it from a CUDA failure), never a link failure.
+        load_driver()?;
         unsafe {
             eval_cuda("cuInit", cuInit(0))?;
 
@@ -65,7 +69,7 @@ impl CudaDevice {
                 "cuDeviceGetAttribute",
                 cuDeviceGetAttribute(
                     &mut cap_major,
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
                     device,
                 ),
             )?;
@@ -73,7 +77,7 @@ impl CudaDevice {
                 "cuDeviceGetAttribute",
                 cuDeviceGetAttribute(
                     &mut cap_minor,
-                    CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
                     device,
                 ),
             )?;
@@ -81,7 +85,7 @@ impl CudaDevice {
             let mut sm_count: c_int = 0;
             eval_cuda(
                 "cuDeviceGetAttribute",
-                cuDeviceGetAttribute(&mut sm_count, CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device),
+                cuDeviceGetAttribute(&mut sm_count, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device),
             )?;
 
             let mut total_vram: usize = 0;
@@ -221,7 +225,7 @@ impl CudaDevice {
             eval_cuda("cuStreamDestroy", cuStreamDestroy_v2(self.stream))?;
             eval_cuda(
                 "cuDevicePrimaryCtxRelease",
-                cuda_driver_sys::cuDevicePrimaryCtxRelease(self.device),
+                cuDevicePrimaryCtxRelease_v2(self.device),
             )?;
             self.stream = std::ptr::null_mut();
             self.ctx = std::ptr::null_mut();

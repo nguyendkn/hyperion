@@ -138,7 +138,7 @@ Handler flow: status gate -> tokenizer (501 if none) -> encode (422 on error or 
 
 ## 9. SM120 CUDA Graph path
 
-`helios-hal/src/backends/blackwell_sm120/`. Real FFI via `cuda-driver-sys` under `feature = "sm120"`; no mocks. Linking needs CUDA; this host can only typecheck.
+`helios-hal/src/backends/blackwell_sm120/`. Real FFI through the shared run-time-loaded CUDA core (`helios-hal/src/cuda/`), under `feature = "cuda"`; no mocks. No link-time CUDA dependency; a host without a driver gets a typed error from the probe.
 
 ```mermaid
 flowchart LR
@@ -158,7 +158,7 @@ flowchart LR
 ## 10. Build matrix
 
 - `cargo build --workspace` (stub): builds and tests pass (1 warning in `api.rs`).
-- `helios-hal --features sm120` and `--features sm90`: type-check on this host; link + run verified on an H100 pod (CUDA toolkit needed to link).
+- `helios-hal --features sm120` and `--features sm90`: build, link and run the driver-free tests on this host (no toolkit needed); run on a GPU verified on an H100 pod for sm90 only.
 - `helios-cli --features sm90/sm120`: fails, helios-cli declares no features (Taskfile `build:sm90`/`build:sm120` broken).
 
 ## 11. Decided vs implemented (CLAUDE.md)

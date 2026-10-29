@@ -1,7 +1,7 @@
 //! cuBLAS for the matrix multiplies (ADR 0001: cuBLAS first, custom kernels later).
-//! A minimal hand-written binding of the four entry points we need: there is no
-//! mock, so without `libcublas` a build that enables the `cuda` feature fails at
-//! link time, like the driver itself.
+//! A minimal hand-written binding of the four entry points we need, loaded at run time
+//! like the driver (`libcublas.so.12` / `cublas64_12.dll`): there is no mock, and a host
+//! without cuBLAS gets a typed `LoadError` when the handle is created.
 //!
 //! Layout note: cuBLAS is column-major, our tensors are row-major. A row-major
 //! `[rows, cols]` matrix is the column-major `[cols, rows]` transpose, so the
@@ -9,10 +9,12 @@
 //! column-major product `y^T[out,T] = op(W)[out,in] * x^T[in,T]` with `op(W) = T`.
 
 use std::os::raw::{c_int, c_void};
+use std::sync::OnceLock;
 
 use anyhow::{anyhow, Result};
 
 use super::device::CudaDevice;
+use super::loader::{Library, LoadError};
 
 type Handle = *mut c_void;
 
@@ -24,33 +26,57 @@ const CUDA_R_16BF: c_int = 14;
 const COMPUTE_32F: c_int = 68;
 const GEMM_DEFAULT: c_int = -1;
 
-#[link(name = "cublas")]
-extern "C" {
-    fn cublasCreate_v2(handle: *mut Handle) -> c_int;
-    fn cublasDestroy_v2(handle: Handle) -> c_int;
-    fn cublasSetStream_v2(handle: Handle, stream: *mut c_void) -> c_int;
-    #[allow(clippy::too_many_arguments)]
-    fn cublasGemmEx(
-        handle: Handle,
-        transa: c_int,
-        transb: c_int,
-        m: c_int,
-        n: c_int,
-        k: c_int,
-        alpha: *const c_void,
-        a: *const c_void,
-        a_type: c_int,
-        lda: c_int,
-        b: *const c_void,
-        b_type: c_int,
-        ldb: c_int,
-        beta: *const c_void,
-        c: *mut c_void,
-        c_type: c_int,
-        ldc: c_int,
-        compute_type: c_int,
-        algo: c_int,
-    ) -> c_int;
+#[cfg(windows)]
+const CUBLAS_LIBRARIES: &[&str] = &["cublas64_12.dll", "cublas64_13.dll"];
+#[cfg(not(windows))]
+const CUBLAS_LIBRARIES: &[&str] = &["libcublas.so.12", "libcublas.so.13", "libcublas.so"];
+
+type GemmEx = unsafe extern "C" fn(
+    Handle,
+    c_int,
+    c_int,
+    c_int,
+    c_int,
+    c_int,
+    *const c_void,
+    *const c_void,
+    c_int,
+    c_int,
+    *const c_void,
+    c_int,
+    c_int,
+    *const c_void,
+    *mut c_void,
+    c_int,
+    c_int,
+    c_int,
+    c_int,
+) -> c_int;
+
+/// The cuBLAS entry points we use, resolved once under their explicit names.
+struct Api {
+    create: unsafe extern "C" fn(*mut Handle) -> c_int,
+    destroy: unsafe extern "C" fn(Handle) -> c_int,
+    set_stream: unsafe extern "C" fn(Handle, *mut c_void) -> c_int,
+    gemm_ex: GemmEx,
+}
+
+static API: OnceLock<std::result::Result<Api, LoadError>> = OnceLock::new();
+
+fn api() -> std::result::Result<&'static Api, LoadError> {
+    let loaded = API.get_or_init(|| {
+        let library = Library::open(CUBLAS_LIBRARIES)?;
+        // Safety: each type is the exact C signature of the function named.
+        unsafe {
+            Ok(Api {
+                create: library.symbol("cublasCreate_v2")?,
+                destroy: library.symbol("cublasDestroy_v2")?,
+                set_stream: library.symbol("cublasSetStream_v2")?,
+                gemm_ex: library.symbol("cublasGemmEx")?,
+            })
+        }
+    });
+    loaded.as_ref().map_err(Clone::clone)
 }
 
 fn check(call: &str, status: c_int) -> Result<()> {
@@ -65,6 +91,7 @@ fn check(call: &str, status: c_int) -> Result<()> {
 /// device releases its context (declare it before the device in a struct).
 pub struct Cublas {
     handle: Handle,
+    api: &'static Api,
 }
 
 // Safety: the handle is only used behind the backend's mutex.
@@ -72,16 +99,18 @@ unsafe impl Send for Cublas {}
 
 impl Cublas {
     pub fn new(dev: &CudaDevice) -> Result<Self> {
+        // A host without cuBLAS gets a typed `LoadError` here (downcast to tell it from a cuBLAS failure).
+        let api = api()?;
         dev.set_current()?;
         let mut handle: Handle = std::ptr::null_mut();
         unsafe {
-            check("cublasCreate", cublasCreate_v2(&mut handle))?;
-            if let Err(e) = check("cublasSetStream", cublasSetStream_v2(handle, dev.stream() as *mut c_void)) {
-                cublasDestroy_v2(handle);
+            check("cublasCreate", (api.create)(&mut handle))?;
+            if let Err(e) = check("cublasSetStream", (api.set_stream)(handle, dev.stream() as *mut c_void)) {
+                (api.destroy)(handle);
                 return Err(e);
             }
         }
-        Ok(Self { handle })
+        Ok(Self { handle, api })
     }
 
     /// `y[tokens, out] = x[tokens, in] * W[out, in]^T` with bf16 `W` and `x` and f32
@@ -93,7 +122,7 @@ impl Cublas {
         unsafe {
             check(
                 "cublasGemmEx",
-                cublasGemmEx(
+                (self.api.gemm_ex)(
                     self.handle,
                     OP_T,
                     OP_N,
@@ -123,7 +152,7 @@ impl Drop for Cublas {
     fn drop(&mut self) {
         if !self.handle.is_null() {
             unsafe {
-                cublasDestroy_v2(self.handle);
+                (self.api.destroy)(self.handle);
             }
         }
     }

@@ -42,7 +42,7 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 | `src/backends/mod.rs` | cfg-gated module list |
 | `src/backends/stub.rs` | `StubBackend`: reports `sm_0`, returns placeholder Ok values |
 | `src/backends/hopper_sm90/` | `HopperBackend` on the shared `cuda/` core: real probe, real weight upload from `model.safetensors` beside the package; KV cache, kernels and forward pass return "not wired" errors |
-| `src/backends/blackwell_sm120/device.rs` | `CudaDevice`: `probe`, `alloc`, `free`, `teardown_ref` via cuda-driver-sys |
+| `src/cuda/{loader,sys,device}.rs` | run-time loading of the driver; `CudaDevice`: `probe`, `alloc`, `free`, `teardown_ref` |
 | `.../blackwell_sm120/graph.rs` | `StaticCudaGraph`: begin/end capture, instantiate, launch, destroy |
 | `.../blackwell_sm120/kernels.rs` | `prefill_launch` (empty-graph capture + logits alloc), `decode_replay` (argmax over raw u16 lanes), `VOCAB_SIZE = 128_256` |
 | `.../blackwell_sm120/ffi.rs` | `eval_cuda`: `CUresult` -> `anyhow::Result` |
@@ -79,8 +79,8 @@ ignition/                    Python build-time compiler (package hyperion_igniti
 |---|---|---|
 | helios-hal | `default` = `stub` | stub backend only |
 | helios-hal | `stub` | nothing extra |
-| helios-hal | `cuda` / `sm90` / `sm120` | `cuda` = `dep:cuda-driver-sys` (shared core); `sm90` and `sm120` both enable it |
-| helios-hal | `sm120` | `dep:cuda-driver-sys`; `BlackwellSm120` candidate |
+| helios-hal | `cuda` / `sm90` / `sm120` | `cuda` = shared core (driver and cuBLAS loaded at run time, no dependency); `sm90` and `sm120` both enable it |
+| helios-hal | `sm120` | enables `cuda`; `BlackwellSm120` candidate |
 | helios-hal | `multi` | `sm90` + `sm120` |
 | helios-core | none | |
 | helios-cli | none [v] | no `[features]` table; does not forward HAL features |
@@ -125,7 +125,7 @@ Status: **implemented** (works as designed, reachable) / **partial** (some paths
 | hal/backend_factory | partial | First candidate only; no sm120 -> sm90 -> stub fallthrough [v] |
 | hal/stub | implemented as fake | Reports `sm_0`, placeholder tensors. Conflicts with "no fakes on main" rule (see Q4) [v] |
 | hal/hopper_sm90 | partial | Real probe + weight upload verified on an H100 (byte-identical, 290 tensors); no KV cache, kernels or forward pass [v] |
-| hal/blackwell device + ffi | smoke | Real cuda-driver-sys calls; compiled only under sm120; never run (no CUDA host) [x] |
+| hal/blackwell device + ffi | smoke | Real driver calls through the shared `cuda` core; never run on a GPU (no Blackwell host) [x] |
 | hal/blackwell graph | smoke | Real capture/instantiate/launch calls; never run [x] |
 | hal/blackwell kernels | smoke | Prefill captures empty graph; decode argmax compares raw bf16 bits [v] |
 | hal/blackwell backend | partial | `load_model_weights` returns error, so `Loaded` never reached [v] |

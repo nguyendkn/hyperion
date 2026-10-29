@@ -7,12 +7,11 @@
 //! doc requires.
 //!
 //! Submodules:
-//! - the CUDA device/memory layer is the shared core in `crate::cuda`.
-//! - [`graph`]   — `StaticCudaGraph` lifecycle wrapper (capture / replay).
+//! - the CUDA device/memory/graph layer is the shared core in `crate::cuda` (the same
+//!   `GraphExec` the SM90 backend uses).
 //! - [`kernels`] — kernel-launch surface; stands in for FlashInfer's
-//!   attention/matmul kernels via the package's PTX until those are vendored.
+//!   attention/matmul kernels until those are vendored.
 
-pub mod graph;
 pub mod kernels;
 
 mod backend;

@@ -61,8 +61,11 @@ cargo build --workspace
 cargo test --workspace             # 9 tests: tokenizer unit + tokenizer smoke fixture
 ```
 
-Blackwell SM120 type-check only. Linking needs the CUDA toolkit, so this does not produce a runnable binary:
+The `sm90` and `sm120` features build without the CUDA toolkit (the driver and cuBLAS are loaded at run time); a host without an NVIDIA driver falls back to the stub:
 
+```sh
+cargo build -p helios-cli --features sm90
+cargo build -p helios-cli --features sm120
 ```sh
 cargo check -p helios-hal --features sm120
 ```

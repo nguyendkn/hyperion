@@ -4,7 +4,7 @@
 use std::os::raw::c_uint;
 
 use anyhow::Result;
-use cuda_driver_sys::{cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuEventSynchronize, CUevent};
+use super::sys::{cuEventCreate, cuEventDestroy_v2, cuEventElapsedTime, cuEventRecord, cuEventSynchronize, CUevent};
 
 use super::device::CudaDevice;
 use super::ffi::eval_cuda;

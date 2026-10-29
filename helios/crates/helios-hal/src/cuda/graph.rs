@@ -1,25 +1,18 @@
 //! CUDA graph capture of the device's stream: record the launches made by a closure once, then
 //! replay them with a single launch call.
 //!
-//! `cuda-driver-sys` 0.3 binds `cuGraphInstantiate` with its pre-CUDA-12 five-argument form
-//! (error node, log buffer, size), while CUDA 12 and later export it with a flags argument.
-//! `cuGraphInstantiateWithFlags` has had one signature since CUDA 11.4, so it is declared here
-//! instead of trusting the generated binding.
-
-use std::os::raw::c_ulonglong;
+//! The graph is instantiated with `cuGraphInstantiateWithFlags`, the one entry point whose signature
+//! has not changed since CUDA 11.4 (the older `cuGraphInstantiate` takes an error node and a log
+//! buffer, and CUDA 12 gave the same name a flags argument).
 
 use anyhow::{anyhow, Result};
-use cuda_driver_sys::{
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphLaunch, cuStreamBeginCapture_v2, cuStreamEndCapture, CUgraph,
-    CUgraphExec, CUresult, CUstreamCaptureMode,
-};
 
 use super::device::CudaDevice;
 use super::ffi::eval_cuda;
-
-extern "C" {
-    fn cuGraphInstantiateWithFlags(exec: *mut CUgraphExec, graph: CUgraph, flags: c_ulonglong) -> CUresult;
-}
+use super::sys::{
+    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch, cuStreamBeginCapture_v2,
+    cuStreamEndCapture, CUgraph, CUgraphExec, CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
+};
 
 /// An instantiated graph, destroyed on drop. It must be dropped before the device is torn down.
 pub struct GraphExec {
@@ -39,7 +32,7 @@ impl GraphExec {
         unsafe {
             eval_cuda(
                 "cuStreamBeginCapture",
-                cuStreamBeginCapture_v2(stream, CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL),
+                cuStreamBeginCapture_v2(stream, CU_STREAM_CAPTURE_MODE_THREAD_LOCAL),
             )?;
         }
         let recorded = record();

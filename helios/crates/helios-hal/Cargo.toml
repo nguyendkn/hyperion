@@ -21,9 +21,10 @@ default = ["stub"]
 # contract and lets `helios-core` link against the trait without a GPU.
 stub = []
 # Shared CUDA Driver-API core (ADR 0001): context, memory, copies, weight upload.
-# Links the CUDA driver via cuda-driver-sys; without the driver library a build
-# with this feature fails at link time (intended: no emulation).
-cuda = ["dep:cuda-driver-sys"]
+# The driver and cuBLAS are loaded at run time, so this builds without the CUDA
+# toolkit or a GPU; a host without the libraries gets a typed error at probe time
+# (still no emulation).
+cuda = []
 # Hopper SM90 (H100/H200): shared core + Hopper kernels (no TensorRT-LLM shim).
 sm90 = ["cuda"]
 # Blackwell SM120 (RTX PRO 6000 / DGX Spark): shared core + native CUDA Graph capture.
@@ -38,11 +39,6 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }
-
-# CUDA Driver FFI. Only pulled in under the `cuda` feature (`sm90`, `sm120`, `multi`). Driver-only: the
-# graph-capture API the backend relies on lives in the CUDA Driver, not the
-# runtime, so we bind the driver directly.
-cuda-driver-sys = { workspace = true, optional = true }
 
 [lib]
 name = "helios_hal"

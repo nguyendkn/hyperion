@@ -20,7 +20,7 @@ Status tags: **[enforced]** code matches · **[pending]** decided, code not ther
 |---|---|
 | State machine: `AtomicU8` + CAS loop, 6 states, exhaustive transition table, lock-free read path | [enforced] `helios-core/src/state.rs` |
 | RadixCache: in-process, 256-token chunks, owns index + block IDs only, memory via HAL `allocate_kv_cache` | [enforced] chunk const in `cache.rs`; ownership not audited |
-| CUDA FFI: `cuda-driver-sys` v0.3, Driver API, behind `#[cfg(feature = "sm120")]`, real FFI | [enforced] `helios-hal/src/backends/blackwell_sm120/` |
+| CUDA FFI: Driver API and cuBLAS loaded at run time (`helios-hal/src/cuda/`), behind `#[cfg(feature = "cuda")]`, real FFI | [enforced] `helios-hal/src/backends/blackwell_sm120/` |
 | Tokenizer: HF `tokenizers` 0.22 with `fancy-regex` (pure Rust; identical ids to `onig` on a varied corpus, see `helios-core/Cargo.toml`) | [enforced] Hugging Face reference tests: `helios-core/tests/{chat_template,stream_decoder,model_tokenizers}.rs` |
 | HTTP status: 501 when no tokenizer; 503 only for `Uninitialized`/`Stopped` | [drift] `api.rs` also returns 503 for queue-full/send-failure; `scheduler.rs` docs mention 429 |
 | Triage: exact `target_arch` match only; PTX fallback only as explicit manifest field | [done] `triage.rs` is exact-match + backend arch + format table; 14 matrix tests |

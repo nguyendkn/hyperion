@@ -6,12 +6,9 @@
 use std::ffi::{c_void, CString};
 
 use anyhow::{anyhow, Result};
-use cuda_driver_sys::{
-    cuLaunchKernel, cuModuleGetFunction, cuModuleLoadData, cuModuleUnload, CUfunction, CUmodule,
-};
-
 use super::device::CudaDevice;
 use super::ffi::eval_cuda;
+use super::sys::{cuLaunchKernel, cuModuleGetFunction, cuModuleLoadData, cuModuleUnload, CUfunction, CUmodule};
 
 /// A loaded kernel module. Unloaded on drop; drop it before the device releases its context
 /// (declare it before the device in a struct).

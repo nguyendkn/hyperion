@@ -88,7 +88,7 @@ Authoritative source: `CLAUDE.md`. "Code state" is from reading the repomix snap
 | Backend selection order: sm120 -> sm90 -> stub | Implemented in `backend_factory::create_backend` |
 | Hopper (SM90) does not run FP4. sm90 recipe forces FP8/BF16 | Recipes list `supported_formats` (sm_90 has no fp4); a Python test checks it. Not enforced at runtime yet; triage (items 8/9) will compare `tensor_format` with each backend's supported formats |
 | RadixCache: in-process, 256-token chunks, index only; device memory via HAL | Index struct exists (`insert`/`lookup`); no eviction, no tiers, not used by scheduler |
-| CUDA FFI: `cuda-driver-sys` 0.3, only under `sm120` | Matches. `sm90` path uses no CUDA FFI yet (see §8) |
+| CUDA FFI: Driver API and cuBLAS loaded at run time, shared by `sm90` and `sm120` | Updated 2026-10-29: `cuda-driver-sys` dropped; no link-time CUDA dependency |
 | Tokenizer: HF `tokenizers` 0.22 with `fancy-regex` | Updated: 0.19 could not parse the current Qwen3 tokenizer.json; `onig` dropped (identical ids, no C build) |
 
 ## 7. Success criteria
@@ -116,7 +116,7 @@ Ordering follows the critical path in the code. Dates are not set.
 - **M5: Hopper.** TensorRT-LLM C++ shim + `bindgen` per `build.rs` plan. Unblocks SC-7.
 - **M6: release.** `specification/v1` freeze, signature enforcement in release loader.
 
-Hardware note: no GPU or CUDA toolkit on the build host. SM120 can only be type-checked here. Hopper has no FFI yet. Runtime results need a GPU host.
+Hardware note: no GPU or CUDA toolkit on the build host. `sm90` and `sm120` build and link here (the driver and cuBLAS are loaded at run time) but run only on a GPU host; runtime results need one.
 
 ## 9. Known gaps and mismatches
 

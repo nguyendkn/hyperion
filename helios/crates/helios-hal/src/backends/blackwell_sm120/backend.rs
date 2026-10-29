@@ -10,8 +10,7 @@ use anyhow::Result;
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, TensorData};
 
 use crate::cuda::CudaDevice;
-use super::graph::StaticCudaGraph;
-use super::kernels;
+use super::kernels::{self, DecodeState};
 
 /// One Blackwell backend instance = one CUDA device + the captured graph.
 ///
@@ -21,16 +20,15 @@ use super::kernels;
 /// of a driver call, never across an `await`.
 pub struct BlackwellBackend {
     device: Mutex<CudaDevice>,
-    graph: Mutex<StaticCudaGraph>,
+    decode: Mutex<DecodeState>,
 }
 
 impl BlackwellBackend {
     pub fn new() -> Result<Self> {
         let device = CudaDevice::probe()?;
-        let graph = StaticCudaGraph::empty();
         Ok(Self {
             device: Mutex::new(device),
-            graph: Mutex::new(graph),
+            decode: Mutex::new(DecodeState::default()),
         })
     }
 }
@@ -90,9 +88,9 @@ impl ComputeBackend for BlackwellBackend {
         input_tokens: &[u32],
         _cache_pointers: &[DevicePointer],
     ) -> Result<TensorData> {
-        let dev = self.device.lock().expect("device mutex poisoned");
-        let mut g = self.graph.lock().expect("graph mutex poisoned");
-        let logits_ptr = kernels::prefill_launch(&dev, &mut g, input_tokens)?;
+        let mut dev = self.device.lock().expect("device mutex poisoned");
+        let mut state = self.decode.lock().expect("decode mutex poisoned");
+        let logits_ptr = kernels::prefill_launch(&mut dev, &mut state, input_tokens)?;
         Ok(TensorData {
             dtype: "bf16".into(),
             shape: vec![input_tokens.len(), kernels::VOCAB_SIZE],
@@ -105,10 +103,10 @@ impl ComputeBackend for BlackwellBackend {
 
     fn execute_decode_step(&self, _current_step: usize, _active_slots: &[u32]) -> Result<u32> {
         let dev = self.device.lock().expect("device mutex poisoned");
-        let g = self.graph.lock().expect("graph mutex poisoned");
+        let state = self.decode.lock().expect("decode mutex poisoned");
         // Decode: *replay* the captured graph — one cudaGraphLaunch instead of
         // hundreds of per-op launches. This is the SM120 payoff.
-        kernels::decode_replay(&dev, &g)
+        kernels::decode_replay(&dev, &state)
     }
 
     fn shutdown(&self) -> Result<()> {
@@ -117,6 +115,7 @@ impl ComputeBackend for BlackwellBackend {
         // `teardown(self)` variant can't run here. `teardown_ref` does the
         // same driver cleanup without taking ownership.
         let mut dev = self.device.lock().expect("device mutex poisoned");
+        self.decode.lock().expect("decode mutex poisoned").release(&mut dev);
         dev.teardown_ref()
     }
 }

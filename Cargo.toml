@@ -49,13 +49,6 @@ schemars = "1"
 sha2 = "0.10"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 
-# CUDA Driver FFI for the SM120 backend (feature-gated). cuda-driver-sys binds
-# the CUDA Driver only — the graph-capture API + device probing the backend
-# needs live in the driver, and going straight to it (vs. the runtime wrapper
-# in cuda-sys) matches the zero-overhead posture. Hosts without CUDA must not
-# enable sm120 — they build with the `stub` default instead.
-cuda-driver-sys = "0.3"
-
 # HuggingFace tokenizers (Rust core, Apache-2.0) for runtime prompt encoding.
 # Used by helios-core's API+scheduler path. Apache-2.0, pure Rust, no Python.
 tokenizers = { version = "0.22", default-features = false }
