@@ -18,6 +18,25 @@ use std::path::PathBuf;
 use helios_hal::{weights_plan, ComputeBackend, HopperBackend};
 use hyperion_specification::Manifest;
 
+/// The model dimensions, read from the `config.json` beside the compiled package.
+fn qwen2_dims(package: &std::path::Path) -> helios_hal::Qwen2Dims {
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
+    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
+    let heads = int("num_attention_heads");
+    helios_hal::Qwen2Dims {
+        layers: int("num_hidden_layers"),
+        hidden: int("hidden_size"),
+        intermediate: int("intermediate_size"),
+        heads,
+        kv_heads: int("num_key_value_heads"),
+        head_dim: int("hidden_size") / heads,
+        vocab: int("vocab_size"),
+        rope_theta: config["rope_theta"].as_f64().unwrap(),
+        rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
+    }
+}
+
 fn package() -> PathBuf {
     PathBuf::from(std::env::var("HYPERION_WEIGHTS_PACKAGE").expect("set HYPERION_WEIGHTS_PACKAGE to the .hyperion path"))
 }
@@ -499,3 +518,55 @@ fn device_pipeline_is_bit_identical_to_the_host_path() {
     backend.shutdown().unwrap();
 }
 
+
+/// A decode step replayed from a CUDA graph must produce the same logits, bit for bit, as the same
+/// step launched kernel by kernel (and as the path verified against Hugging Face), at every
+/// position of a generation. Also measures time per token for both modes: one machine, batch 1,
+/// the whole step including the host round trip (token upload, logits download).
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn graph_decode_is_bit_identical_to_direct_launches() {
+    use helios_hal::{DecodeMode, SamplingConfig};
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let dims = qwen2_dims(&package);
+    let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (_, _, backend) = loaded_backend();
+
+    // Bit-identity over 40 steps (greedy; the same tokens feed both runs while they agree).
+    let steps = 40;
+    let (mut direct, mut graph) = (Vec::new(), Vec::new());
+    backend
+        .generate_traced(&dims, &prompt, steps, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut direct))
+        .expect("direct generation");
+    backend
+        .generate_traced(&dims, &prompt, steps, None, &SamplingConfig::greedy(), DecodeMode::Graph, Some(&mut graph))
+        .expect("graph generation");
+    assert_eq!(direct.len(), steps);
+    assert_eq!(direct.len(), graph.len());
+    for (i, (a, b)) in direct.iter().zip(&graph).enumerate() {
+        let differing = a.iter().zip(b).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        assert_eq!(differing, 0, "step {i}: {differing} of {} logits differ between direct launches and the graph", a.len());
+    }
+    println!("graph vs direct: all {steps} steps bit-identical ({} logits each)", direct[0].len());
+
+    // Time per token = (long run - short run) / extra tokens, which cancels the prompt and the
+    // one-off capture. Median of 3 runs per mode.
+    let (short, long) = (8usize, 136usize);
+    let time = |mode: DecodeMode, n: usize| {
+        let started = std::time::Instant::now();
+        backend.generate_traced(&dims, &prompt, n, None, &SamplingConfig::greedy(), mode, None).expect("generation");
+        started.elapsed().as_secs_f64() * 1000.0
+    };
+    let per_token = |mode: DecodeMode| {
+        time(mode, long); // warm-up
+        let mut runs: Vec<f64> = (0..3).map(|_| (time(mode, long) - time(mode, short)) / (long - short) as f64).collect();
+        runs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        runs[1]
+    };
+    let (direct_ms, graph_ms) = (per_token(DecodeMode::Direct), per_token(DecodeMode::Graph));
+    println!("decode per token (batch 1, one machine): direct launches {direct_ms:.3} ms, CUDA graph {graph_ms:.3} ms ({:.2}x)", direct_ms / graph_ms);
+    backend.shutdown().unwrap();
+}

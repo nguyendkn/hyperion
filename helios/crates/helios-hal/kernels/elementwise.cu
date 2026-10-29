@@ -61,12 +61,14 @@ extern "C" __global__ void rope_bf16(const bf16* __restrict__ x, const bf16* __r
 // prefill (q_start = 0) and decode (one token at q_start = seq - 1). Scores, softmax and the
 // weighted sum are accumulated in f32 and the output is rounded to bf16 once.
 // Dynamic shared memory: (seq + blockDim.x) floats. Not yet tiled: seq is limited by it.
-extern "C" __global__ void attention_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k,
-                                          const bf16* __restrict__ v, bf16* __restrict__ out,
-                                          int seq, int heads, int kv_heads, int head_dim, int q_start) {
+// `red_at` is where the block-wide reduction scratch starts in shared memory: the prefill kernel
+// puts it right after the scores, the graph-friendly decode kernel at a fixed offset.
+static __device__ __forceinline__ void attention_body(const bf16* __restrict__ q, const bf16* __restrict__ k,
+                                                      const bf16* __restrict__ v, bf16* __restrict__ out,
+                                                      int red_at, int heads, int kv_heads, int head_dim, int q_start) {
     extern __shared__ float shared[];
-    float* scores = shared;     // [seq]
-    float* red = shared + seq;  // [blockDim.x]
+    float* scores = shared;       // [positions]
+    float* red = shared + red_at;  // [blockDim.x]
     const int t = blockIdx.x / heads;
     const int h = blockIdx.x % heads;
     const int kvh = h / (heads / kv_heads);
@@ -114,6 +116,36 @@ extern "C" __global__ void attention_bf16(const bf16* __restrict__ q, const bf16
         }
         out[(size_t)blockIdx.x * head_dim + d] = __float2bfloat16(acc / total);
     }
+}
+
+extern "C" __global__ void attention_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k,
+                                          const bf16* __restrict__ v, bf16* __restrict__ out,
+                                          int seq, int heads, int kv_heads, int head_dim, int q_start) {
+    attention_body(q, k, v, out, seq, heads, kv_heads, head_dim, q_start);
+}
+
+// Decode step (one query token) whose position is read from device memory, so one captured CUDA
+// graph serves every step: nothing that changes per token is a launch argument. The key range is
+// 0..=*pos, `red_at` and the dynamic shared size are fixed for the whole generation
+// (`red_at` = the longest sequence), and the result equals attention_bf16 with
+// q_start = *pos, seq = *pos + 1.
+extern "C" __global__ void attention_decode_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k,
+                                                 const bf16* __restrict__ v, bf16* __restrict__ out,
+                                                 const int* __restrict__ pos, int red_at, int heads,
+                                                 int kv_heads, int head_dim) {
+    attention_body(q, k, v, out, red_at, heads, kv_heads, head_dim, *pos);
+}
+
+// Append this step's K and V rows to the cache at row *pos (position read from device memory
+// for the same reason as above).
+extern "C" __global__ void kv_append_bf16(bf16* __restrict__ k_cache, bf16* __restrict__ v_cache,
+                                          const bf16* __restrict__ k, const bf16* __restrict__ v,
+                                          const int* __restrict__ pos, int kv_dim) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= kv_dim) return;
+    const size_t at = (size_t)(*pos) * kv_dim + i;
+    k_cache[at] = k[i];
+    v_cache[at] = v[i];
 }
 
 // out[i] = bf16(y[i] + bias[i % width]) where y is the f32 output of a matrix multiply. A null

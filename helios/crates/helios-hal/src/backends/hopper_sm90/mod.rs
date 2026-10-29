@@ -19,3 +19,4 @@ mod ops;
 
 pub use backend::HopperBackend;
 pub use forward::{KvCache, Qwen2Dims};
+pub use forward_device::DecodeMode;

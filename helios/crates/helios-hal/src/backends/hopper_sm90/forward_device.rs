@@ -12,7 +12,7 @@ use anyhow::{anyhow, Result};
 use super::backend::{HopperBackend, ROW_BLOCK, RMSNORM_PTX};
 use super::forward::Qwen2Dims;
 use super::ops::ELEMENTWISE_PTX;
-use crate::cuda::{CudaDevice, Kernel};
+use crate::cuda::{CudaDevice, GraphExec, Kernel};
 use crate::reference::{bf16_to_f32, f32_to_bf16, rope_tables};
 use crate::sampling::{sample, Rng, SamplingConfig};
 use crate::traits::StopReason;
@@ -73,6 +73,8 @@ struct Kernels {
     swiglu: Kernel,
     rope: Kernel,
     attention: Kernel,
+    attention_decode: Kernel,
+    kv_append: Kernel,
     bias_cast: Kernel,
 }
 
@@ -117,9 +119,20 @@ struct Buffers {
     kv: Vec<(u64, u64)>,
 }
 
+/// How decode steps (one token after the prompt) are issued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeMode {
+    /// Every step launches its kernels one by one, the arguments carrying the sequence length.
+    Direct,
+    /// The first decode step runs directly (it also warms cuBLAS up); the next one is captured
+    /// into a CUDA graph, and every later step replays that graph. The per-token values (token
+    /// id, position) live in device memory, so the same graph is valid for every step.
+    Graph,
+}
+
 impl HopperBackend {
     /// Greedy or sampled generation entirely on the device; see the module docs. Same contract as
-    /// [`HopperBackend::generate_streaming_host`].
+    /// [`HopperBackend::generate_streaming_host`]. Decode steps are launched one by one.
     pub fn generate_streaming(
         &self,
         d: &Qwen2Dims,
@@ -129,15 +142,31 @@ impl HopperBackend {
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, on_token, &mut None)
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None)
+    }
+
+    /// Like [`Self::generate_streaming`] with an explicit decode mode; when `trace` is given, the
+    /// logits of every step (prompt first) are appended to it. For verification and measurement.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_traced(
+        &self,
+        d: &Qwen2Dims,
+        prompt: &[u32],
+        max_new: usize,
+        eos: Option<u32>,
+        sampling: &SamplingConfig,
+        mode: DecodeMode,
+        trace: Option<&mut Vec<Vec<f32>>>,
+    ) -> Result<StopReason> {
+        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, trace)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
     /// verification entry point that is compared bit for bit with the host path.
     pub fn forward_prefill_logits_device(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
-        let mut captured = None;
-        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, &mut captured)?;
-        captured.ok_or_else(|| anyhow!("no logits produced"))
+        let mut trace = Vec::new();
+        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, Some(&mut trace))?;
+        trace.into_iter().next().ok_or_else(|| anyhow!("no logits produced"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -149,7 +178,8 @@ impl HopperBackend {
         eos: Option<u32>,
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
-        capture: &mut Option<Vec<f32>>,
+        mode: DecodeMode,
+        trace: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<StopReason> {
         if prompt.is_empty() {
             return Err(anyhow!("no prompt tokens"));
@@ -173,6 +203,8 @@ impl HopperBackend {
             swiglu: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "swiglu_bf16")?,
             rope: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "rope_bf16")?,
             attention: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_bf16")?,
+            attention_decode: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_decode_bf16")?,
+            kv_append: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "kv_append_bf16")?,
             bias_cast: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "bias_cast_bf16")?,
         };
         let (embed, final_norm, layers) = {
@@ -203,7 +235,7 @@ impl HopperBackend {
         };
 
         let mut arena = Arena { allocated: Vec::new() };
-        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, capture);
+        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace);
         arena.free(&mut dev);
         result
     }
@@ -224,7 +256,8 @@ impl HopperBackend {
         eos: Option<u32>,
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
-        capture: &mut Option<Vec<f32>>,
+        mode: DecodeMode,
+        mut trace: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<StopReason> {
         let (hidden, heads, kv_heads, hd) = (d.hidden, d.heads, d.kv_heads, d.head_dim);
         let (q_dim, kv_dim) = (heads * hd, kv_heads * hd);
@@ -266,14 +299,13 @@ impl HopperBackend {
         let cublas_guard = self.cublas.lock().expect("cublas mutex poisoned");
         let cublas = cublas_guard.as_ref().expect("created above");
 
-        // One forward step over `ids` placed at `start..start + ids.len()`; returns the logits.
-        let mut step = |dev: &CudaDevice, ids: &[u32], start: usize| -> Result<Vec<f32>> {
-            let t = ids.len();
+        // The launches of one forward step over `t` tokens placed at `start..start + t`, with the
+        // token ids and positions already in `b.ids` / `b.positions`. Nothing here allocates,
+        // synchronises or reads back, so it can be recorded into a CUDA graph. With `dynamic`
+        // (decode only, `t == 1`) the cache row and the attention range come from `b.positions`
+        // instead of from launch arguments, so one recording stays valid for every position.
+        let launches = |dev: &CudaDevice, t: usize, start: usize, dynamic: bool| -> Result<()> {
             let seq = start + t;
-            let positions: Vec<u32> = (start as u32..seq as u32).collect();
-            dev.htod(b.ids, &ids.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
-            dev.htod(b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
-
             let (hidden_i, hd_i, heads_i, kv_heads_i) =
                 (i32::try_from(hidden)?, i32::try_from(hd)?, i32::try_from(heads)?, i32::try_from(kv_heads)?);
             let ti = u32::try_from(t)?;
@@ -297,19 +329,31 @@ impl HopperBackend {
                 // the same buffer is safe.
                 launch(dev, k.rope, ti * u32::try_from(heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(b.q), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(b.q), Arg::Int(heads_i), Arg::Int(hd_i)])?;
                 launch(dev, k.rope, ti * u32::try_from(kv_heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(b.k), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(b.k), Arg::Int(kv_heads_i), Arg::Int(hd_i)])?;
-                // Append this step's K and V to the layer's cache.
+                // Append this step's K and V to the layer's cache, then attend over it.
                 let (k_cache, v_cache) = b.kv[l];
-                let offset = (start * kv_dim * bf) as u64;
-                dev.dtod_async(k_cache + offset, b.k, t * kv_dim * bf)?;
-                dev.dtod_async(v_cache + offset, b.v, t * kv_dim * bf)?;
-                launch(
-                    dev,
-                    k.attention,
-                    ti * u32::try_from(heads)?,
-                    ATTENTION_BLOCK,
-                    u32::try_from((seq + ATTENTION_BLOCK as usize) * 4)?,
-                    &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Int(i32::try_from(seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(start)?)],
-                )?;
+                if dynamic {
+                    launch(dev, k.kv_append, grid_for(kv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.k), Arg::Ptr(b.v), Arg::Ptr(b.positions), Arg::Int(i32::try_from(kv_dim)?)])?;
+                    launch(
+                        dev,
+                        k.attention_decode,
+                        u32::try_from(heads)?,
+                        ATTENTION_BLOCK,
+                        u32::try_from((cap_seq + ATTENTION_BLOCK as usize) * 4)?,
+                        &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(i32::try_from(cap_seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
+                    )?;
+                } else {
+                    let offset = (start * kv_dim * bf) as u64;
+                    dev.dtod_async(k_cache + offset, b.k, t * kv_dim * bf)?;
+                    dev.dtod_async(v_cache + offset, b.v, t * kv_dim * bf)?;
+                    launch(
+                        dev,
+                        k.attention,
+                        ti * u32::try_from(heads)?,
+                        ATTENTION_BLOCK,
+                        u32::try_from((seq + ATTENTION_BLOCK as usize) * 4)?,
+                        &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Int(i32::try_from(seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(start)?)],
+                    )?;
+                }
                 linear(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
                 launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.o), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
 
@@ -324,17 +368,35 @@ impl HopperBackend {
             // Final norm of the last row only, then the tied output head.
             let last_row = b.h + ((t - 1) * hidden * bf) as u64;
             norm(last_row, final_norm, b.x, 1)?;
-            cublas.linear_bf16_f32(embed, b.x, b.logits, 1, d.vocab, hidden)?;
+            cublas.linear_bf16_f32(embed, b.x, b.logits, 1, d.vocab, hidden)
+        };
+        // Host to device: the token ids and their positions (the only per-step inputs).
+        let upload = |dev: &CudaDevice, ids: &[u32], start: usize| -> Result<()> {
+            let positions: Vec<u32> = (start as u32..(start + ids.len()) as u32).collect();
+            dev.htod(b.ids, &ids.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+            dev.htod(b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
+        };
+        // Wait for the queued step and read its logits back, rounded to bf16 like the host path.
+        let download = |dev: &CudaDevice| -> Result<Vec<f32>> {
             dev.synchronize()?;
             let mut raw = vec![0u8; d.vocab * 4];
             dev.dtoh(&mut raw, b.logits)?;
             Ok(raw.chunks_exact(4).map(|c| bf16_to_f32(f32_to_bf16(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))).collect())
         };
+        let step = |dev: &CudaDevice, ids: &[u32], start: usize| -> Result<Vec<f32>> {
+            upload(dev, ids, start)?;
+            launches(dev, ids.len(), start, false)?;
+            download(dev)
+        };
 
         let mut rng = Rng::new(sampling.seed);
         let mut logits = step(dev, prompt, 0)?;
-        *capture = Some(logits.clone());
+        if let Some(trace) = trace.as_mut() {
+            trace.push(logits.clone());
+        }
         let mut position = prompt.len();
+        let mut graph: Option<GraphExec> = None;
+        let mut warmed_up = false;
         for produced in 0..max_new {
             let next = sample(&logits, sampling, &mut rng);
             on_token(next);
@@ -342,7 +404,26 @@ impl HopperBackend {
                 return Ok(StopReason::EndOfSequence);
             }
             if produced + 1 < max_new {
-                logits = step(dev, &[next], position)?;
+                logits = if mode == DecodeMode::Graph {
+                    upload(dev, &[next], position)?;
+                    if !warmed_up {
+                        // Launched directly: cuBLAS may allocate its workspace for the one-token
+                        // shapes on first use, which is not allowed while a capture is open.
+                        launches(dev, 1, position, true)?;
+                        warmed_up = true;
+                    } else {
+                        if graph.is_none() {
+                            graph = Some(GraphExec::capture(dev, || launches(dev, 1, position, true))?);
+                        }
+                        graph.as_ref().expect("captured above").launch(dev)?;
+                    }
+                    download(dev)?
+                } else {
+                    step(dev, &[next], position)?
+                };
+                if let Some(trace) = trace.as_mut() {
+                    trace.push(logits.clone());
+                }
                 position += 1;
             }
         }
