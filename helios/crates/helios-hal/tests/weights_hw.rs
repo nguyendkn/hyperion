@@ -552,22 +552,11 @@ fn graph_decode_is_bit_identical_to_direct_launches() {
     }
     println!("graph vs direct: all {steps} steps bit-identical ({} logits each)", direct[0].len());
 
-    // Time per token = (long run - short run) / extra tokens, which cancels the prompt and the
-    // one-off capture. Median of 3 runs per mode.
-    let (short, long) = (8usize, 136usize);
-    let time = |mode: DecodeMode, n: usize| {
-        let started = std::time::Instant::now();
-        backend.generate_traced(&dims, &prompt, n, None, &SamplingConfig::greedy(), mode, None).expect("generation");
-        started.elapsed().as_secs_f64() * 1000.0
-    };
-    let per_token = |mode: DecodeMode| {
-        time(mode, long); // warm-up
-        let mut runs: Vec<f64> = (0..3).map(|_| (time(mode, long) - time(mode, short)) / (long - short) as f64).collect();
-        runs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        runs[1]
-    };
-    let (direct_ms, graph_ms) = (per_token(DecodeMode::Direct), per_token(DecodeMode::Graph));
-    println!("decode per token (batch 1, one machine): direct launches {direct_ms:.3} ms, CUDA graph {graph_ms:.3} ms ({:.2}x)", direct_ms / graph_ms);
+    let (direct, graph) = measure_modes(&backend, &dims, &prompt, 10);
+    println!(
+        "decode per token (batch 1, one machine; {SAMPLES} interleaved samples after a warm-up, median [min to max]): direct launches {direct}, CUDA graph {graph} ({:.2}x by medians)",
+        direct.median / graph.median
+    );
     backend.shutdown().unwrap();
 }
 
@@ -677,7 +666,7 @@ fn device_token_chain_matches_host_argmax() {
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
 fn decode_time_vs_context() {
-    use helios_hal::{DecodeMode, SamplingConfig};
+    use helios_hal::DecodeMode;
 
     let package = package();
     let oracle: serde_json::Value =
@@ -685,34 +674,91 @@ fn decode_time_vs_context() {
     let dims = qwen2_dims(&package);
     let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
     let (_, _, backend) = loaded_backend();
-    let greedy = SamplingConfig::greedy();
-    let (short, long) = (8usize, 136usize);
     for context in [5usize, 1024, 4096, 7900] {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
-        let time = |mode: DecodeMode, n: usize| {
-            let started = std::time::Instant::now();
-            backend.generate_mode(&dims, &prompt, n, None, &greedy, mode, &mut |_| {}).expect("generation");
-            started.elapsed().as_secs_f64() * 1000.0
-        };
-        let per_token = |mode: DecodeMode| {
-            time(mode, long);
-            let mut runs: Vec<f64> = (0..3).map(|_| (time(mode, long) - time(mode, short)) / (long - short) as f64).collect();
-            runs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            runs[1]
-        };
-        let (direct, graph) = (per_token(DecodeMode::Direct), per_token(DecodeMode::Graph));
+        let (direct, graph) = measure_modes(&backend, &dims, &prompt, SAMPLES);
         // GPU time per group over 32 steps at this context (direct, logits path).
         let profile = backend.generate_profiled(&dims, &prompt, 33, DecodeMode::Direct).expect("profile");
         let n = profile.steps as f64;
         let total: f64 = profile.gpu_ms_by_group.iter().map(|(_, ms)| ms / n).sum();
         let attention = profile.gpu_ms_by_group.iter().find(|(g, _)| *g == "attention").map(|(_, ms)| ms / n).unwrap_or(0.0);
         println!(
-            "context {:>5}..{:>5}: direct {direct:.3} ms/token, graph {graph:.3} ms/token; attention {attention:.3} of {total:.3} ms/step ({:.0}%) in the profiled direct path",
+            "context {:>5}..{:>5}: direct {direct} ms/token, graph {graph} ms/token (median [min to max] of {SAMPLES}); attention {attention:.3} of {total:.3} ms/step ({:.0}%) in the profiled direct path",
             prompt.len(),
-            prompt.len() + long,
+            prompt.len() + LONG_RUN,
             100.0 * attention / total
         );
     }
+    backend.shutdown().unwrap();
+}
+
+const SHORT_RUN: usize = 8;
+const LONG_RUN: usize = 136;
+const SAMPLES: usize = 10;
+
+/// Spread of repeated measurements, in milliseconds.
+struct Spread {
+    median: f64,
+    min: f64,
+    max: f64,
+}
+
+impl std::fmt::Display for Spread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:.3} [{:.3} to {:.3}]", self.median, self.min, self.max)
+    }
+}
+
+fn spread(mut values: Vec<f64>) -> Spread {
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    Spread { median: values[values.len() / 2], min: values[0], max: values[values.len() - 1] }
+}
+
+/// One per-token estimate in ms: (a long run minus a short run) / the extra tokens, which cancels
+/// the prompt and the one-off graph capture.
+fn per_token_sample(backend: &helios_hal::HopperBackend, dims: &helios_hal::Qwen2Dims, prompt: &[u32], mode: helios_hal::DecodeMode) -> f64 {
+    let greedy = helios_hal::SamplingConfig::greedy();
+    let time = |n: usize| {
+        let started = std::time::Instant::now();
+        backend.generate_mode(dims, prompt, n, None, &greedy, mode, &mut |_| {}).expect("generation");
+        started.elapsed().as_secs_f64() * 1000.0
+    };
+    (time(LONG_RUN) - time(SHORT_RUN)) / (LONG_RUN - SHORT_RUN) as f64
+}
+
+/// Direct launches and graph replay measured alternately, `samples` each after one warm-up run
+/// each, so drift of the GPU clock or load from neighbours on the node touches both alike.
+fn measure_modes(backend: &helios_hal::HopperBackend, dims: &helios_hal::Qwen2Dims, prompt: &[u32], samples: usize) -> (Spread, Spread) {
+    use helios_hal::DecodeMode::{Direct, Graph};
+    let _ = (per_token_sample(backend, dims, prompt, Direct), per_token_sample(backend, dims, prompt, Graph));
+    let (mut direct, mut graph) = (Vec::new(), Vec::new());
+    for _ in 0..samples {
+        direct.push(per_token_sample(backend, dims, prompt, Direct));
+        graph.push(per_token_sample(backend, dims, prompt, Graph));
+    }
+    (spread(direct), spread(graph))
+}
+
+/// One per-token sample per mode at `HYPERION_MEASURE_CONTEXT` tokens of context (default 5),
+/// printed as `SAMPLE context=N direct=x graph=y`. A script runs it many times, alternating
+/// between two builds, to compare them under the same node conditions.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn measure_decode_sample() {
+    use helios_hal::DecodeMode::{Direct, Graph};
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let context: usize = std::env::var("HYPERION_MEASURE_CONTEXT").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
+    let (_, _, backend) = loaded_backend();
+    let _ = (per_token_sample(&backend, &dims, &prompt, Direct), per_token_sample(&backend, &dims, &prompt, Graph));
+    let direct = per_token_sample(&backend, &dims, &prompt, Direct);
+    let graph = per_token_sample(&backend, &dims, &prompt, Graph);
+    println!("SAMPLE context={context} direct={direct:.4} graph={graph:.4}");
     backend.shutdown().unwrap();
 }
 
