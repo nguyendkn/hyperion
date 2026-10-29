@@ -217,7 +217,14 @@ fn loaded_backend() -> (PathBuf, hyperion_specification::v1::Manifest, HopperBac
     let Manifest::V1(manifest) =
         serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
     let backend = HopperBackend::new().expect("an H100 must be present");
+    let started = std::time::Instant::now();
     backend.load_model_weights(&package, &manifest).expect("upload");
+    println!(
+        "LOADED in {:.2?}; {}; decode session capacity {:?} tokens",
+        started.elapsed(),
+        helios_hal::cuda::loaded_libraries(),
+        backend.context_capacity()
+    );
     (package, manifest, backend)
 }
 
@@ -1007,4 +1014,31 @@ fn forward_matches_the_compact_oracle() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The rule "after the model is loaded, nothing is built while serving": a device that is told to forbid
+/// new GPU work refuses a cuBLAS handle, a graph capture, a kernel module and an allocation, and allows
+/// them again afterwards. (The generation path itself runs under that restriction, so every hardware test
+/// that generates after loading also shows that a generation needs none of these.)
+#[test]
+#[ignore = "needs an H100 (no weights)"]
+fn new_gpu_work_is_refused_while_forbidden_and_allowed_after() {
+    use helios_hal::cuda::{Cublas, CudaDevice, GraphExec, KernelModule};
+
+    let mut dev = CudaDevice::probe().expect("an H100 must be present");
+    {
+        let _serving = dev.forbid_new_gpu_work();
+        let refused = |what: &str, error: anyhow::Error| {
+            let text = error.to_string();
+            assert!(text.contains(what) && text.contains("not allowed while serving"), "{what}: {text}");
+        };
+        refused("cuBLAS handle creation", Cublas::new(&dev).err().expect("must be refused"));
+        refused("graph capture", GraphExec::capture(&dev, || Ok(())).err().expect("must be refused"));
+        refused("kernel module load", KernelModule::load(&dev, &[0u8; 16]).err().expect("must be refused"));
+        refused("device memory allocation", dev.alloc(16).err().expect("must be refused"));
+    }
+    let pointer = dev.alloc(1024).expect("allocation is allowed again once the guard is dropped");
+    dev.free(pointer).unwrap();
+    let _handle = Cublas::new(&dev).expect("so is a cuBLAS handle");
+    dev.teardown_ref().unwrap();
 }

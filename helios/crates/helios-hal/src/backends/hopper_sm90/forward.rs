@@ -18,7 +18,7 @@ use crate::traits::StopReason;
 /// Dimensions of a Qwen2-style model that the forward pass needs. `ModelConfig` in the manifest
 /// does not carry `hidden`, `intermediate`, `rope_theta` or `rms_eps` yet, so the caller supplies
 /// them (read from the model's `config.json`); moving them into the manifest is a spec change.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Qwen2Dims {
     pub layers: usize,
     pub hidden: usize,

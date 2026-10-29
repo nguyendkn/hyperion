@@ -29,6 +29,7 @@ impl KernelModule {
     /// Load a fat binary (or cubin) on the device's context. The driver picks the machine code
     /// that matches the GPU and only compiles the embedded PTX when none does.
     pub fn load(dev: &CudaDevice, image: &[u8]) -> Result<Self> {
+        dev.check_new_gpu_work("kernel module load")?;
         dev.set_current()?;
         let mut module: CUmodule = std::ptr::null_mut();
         unsafe {

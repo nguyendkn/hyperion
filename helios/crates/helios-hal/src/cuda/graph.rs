@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use super::device::CudaDevice;
 use super::ffi::eval_cuda;
 use super::sys::{
-    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch, cuStreamBeginCapture_v2,
+    cuGraphDestroy, cuGraphExecDestroy, cuGraphInstantiateWithFlags, cuGraphLaunch, cuGraphUpload, cuStreamBeginCapture_v2,
     cuStreamEndCapture, CUgraph, CUgraphExec, CU_STREAM_CAPTURE_MODE_THREAD_LOCAL,
 };
 
@@ -27,6 +27,7 @@ impl GraphExec {
     /// not executed. `record` must not allocate or free device memory, synchronise, or use the
     /// legacy default stream, or the driver rejects the capture (and this returns its error).
     pub fn capture(dev: &CudaDevice, record: impl FnOnce() -> Result<()>) -> Result<Self> {
+        dev.check_new_gpu_work("graph capture")?;
         dev.set_current()?;
         let stream = dev.stream();
         unsafe {
@@ -51,6 +52,13 @@ impl GraphExec {
         }
         instantiated?;
         Ok(Self { exec })
+    }
+
+    /// Move the instantiated graph's resources to the device now, so the first replay does not pay for it
+    /// (`cuGraphUpload`). Asynchronous on the device's stream; call it at load time.
+    pub fn upload(&self, dev: &CudaDevice) -> Result<()> {
+        dev.set_current()?;
+        unsafe { eval_cuda("cuGraphUpload", cuGraphUpload(self.exec, dev.stream())) }
     }
 
     /// Replay the recorded launches on the device's stream (asynchronous, like any launch).

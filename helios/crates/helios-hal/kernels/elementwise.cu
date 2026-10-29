@@ -145,9 +145,10 @@ extern "C" __global__ void bias_cast_bf16(const float* __restrict__ y, const bf1
 // rounded to bf16 (the precision logits are defined at, and what the host path compares), the
 // highest wins, the lowest index on ties, and a value that is NaN never wins. The winner is then
 // written as the next step's input id, the position advances by one, and the token is stored at
-// ring[position - ring_base] for the host to read later. One block of 1024 threads.
+// ring[position - *ring_base] for the host to read later. `ring_base` is read from device memory, like
+// the position, so a graph captured once at load time serves every generation. One block of 1024 threads.
 extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, int n, unsigned int* ids,
-                                             int* pos, unsigned int* ring, int ring_base) {
+                                             int* pos, unsigned int* ring, const int* ring_base) {
     __shared__ float warp_value[32];
     __shared__ int warp_index[32];
     float best = -INFINITY;
@@ -186,7 +187,7 @@ extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, i
         if (threadIdx.x == 0) {
             const unsigned int token = best_at == 0x7fffffff ? 0u : (unsigned int)best_at;
             const int p = *pos;
-            ring[p - ring_base] = token;
+            ring[p - *ring_base] = token;
             ids[0] = token;
             *pos = p + 1;
         }

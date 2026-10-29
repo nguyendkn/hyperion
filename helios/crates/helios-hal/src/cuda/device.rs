@@ -20,6 +20,7 @@ use super::sys::{
 use std::os::raw::{c_int, c_void};
 
 use super::ffi::eval_cuda;
+use super::work_guard::{RestrictionGuard, WorkRestriction};
 
 /// `CU_STREAM_NON_BLOCKING = 1` — the driver's `cuStreamCreate` takes the
 /// flags as a raw `c_uint`, not the `CUstream_flags` enum, so we pass the
@@ -37,6 +38,7 @@ pub struct CudaDevice {
     total_vram: usize,
     sm_count: u32,
     stream: CUstream,
+    restriction: WorkRestriction,
 }
 
 // Safety: the device handle and context are owned by this struct and only
@@ -112,6 +114,7 @@ impl CudaDevice {
                 total_vram,
                 sm_count: sm_count.max(1) as u32,
                 stream,
+                restriction: WorkRestriction::default(),
             })
         }
     }
@@ -167,11 +170,24 @@ impl CudaDevice {
 
     /// Allocate `bytes` of device memory, returning the raw device pointer.
     pub fn alloc(&mut self, bytes: usize) -> Result<u64> {
+        self.check_new_gpu_work("device memory allocation")?;
         let mut ptr: CUdeviceptr = 0;
         unsafe {
             eval_cuda("cuMemAlloc", cuMemAlloc_v2(&mut ptr, bytes))?;
         }
         Ok(ptr)
+    }
+
+    /// Forbid device allocation, kernel module loading, graph capture and cuBLAS handle creation until the
+    /// guard is dropped: the serving path runs under it, so anything it would have to build at request
+    /// time is a typed error instead (see `work_guard`).
+    pub fn forbid_new_gpu_work(&self) -> RestrictionGuard {
+        self.restriction.forbid()
+    }
+
+    /// `Ok` unless new GPU work is forbidden; `what` names the attempted work.
+    pub fn check_new_gpu_work(&self, what: &'static str) -> Result<()> {
+        Ok(self.restriction.check(what)?)
     }
 
     /// Block until all work queued on the context has finished.

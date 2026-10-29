@@ -67,6 +67,13 @@ macro_rules! driver_api {
 }
 
 static DRIVER: OnceLock<Result<Driver, LoadError>> = OnceLock::new();
+/// The driver library that was loaded and its CUDA driver version (for logs and test output).
+static DRIVER_INFO: OnceLock<(String, i32)> = OnceLock::new();
+
+/// `(library name, CUDA driver version)` of the driver library, once it has been loaded.
+pub fn loaded_driver() -> Option<(String, i32)> {
+    DRIVER_INFO.get().cloned()
+}
 
 /// Load the driver library and resolve every function (once per process). The error says which
 /// library names were tried, or which function the driver lacks.
@@ -77,7 +84,9 @@ pub fn load_driver() -> Result<(), LoadError> {
         let mut version: c_int = 0;
         // Safety: the signature is that of the C function; the pointer is a local.
         let status = unsafe { (driver.cuDriverGetVersion)(&mut version) };
-        tracing::info!(library = library.name(), cuda_driver_version = if status == CUDA_SUCCESS { version } else { -1 }, "CUDA driver library loaded");
+        let version = if status == CUDA_SUCCESS { version } else { -1 };
+        let _ = DRIVER_INFO.set((library.name().to_string(), version));
+        tracing::info!(library = library.name(), cuda_driver_version = version, "CUDA driver library loaded");
         Ok(driver)
     });
     match loaded {
@@ -119,6 +128,7 @@ driver_api! {
     cuEventSynchronize(event: CUevent);
     cuEventElapsedTime(milliseconds: *mut f32, start: CUevent, end: CUevent);
     cuGraphInstantiateWithFlags(exec: *mut CUgraphExec, graph: CUgraph, flags: c_ulonglong);
+    cuGraphUpload(exec: CUgraphExec, stream: CUstream);
     cuGraphLaunch(exec: CUgraphExec, stream: CUstream);
     cuGraphExecDestroy(exec: CUgraphExec);
     cuGraphDestroy(graph: CUgraph);

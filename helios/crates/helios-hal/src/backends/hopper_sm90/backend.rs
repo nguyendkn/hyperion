@@ -16,6 +16,7 @@ use std::ffi::c_void;
 
 use crate::cuda::{Cublas, CudaDevice, DeviceWeights, KernelModule};
 use super::forward::Qwen2Dims;
+use super::session::Session;
 use crate::sampling::SamplingConfig;
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, TensorData};
 use crate::weights_plan::{self, PayloadFile};
@@ -26,9 +27,10 @@ pub(super) const RMSNORM_IMAGE: &[u8] = include_bytes!("../../../kernels/rmsnorm
 /// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
 pub(super) const ROW_BLOCK: u32 = 256;
 
-/// Field order is drop order: cuBLAS handle first, then the weights' owner, then the
-/// device (which releases the context they all live in).
+/// Field order is drop order: the decode session (graphs, events) first, then the cuBLAS handle,
+/// then the weights' owner, then the device (which releases the context they all live in).
 pub struct HopperBackend {
+    pub(super) session: Mutex<Option<Session>>,
     pub(super) cublas: Mutex<Option<Cublas>>,
     pub(super) modules: Mutex<HashMap<&'static str, KernelModule>>,
     pub(super) weights: Mutex<Option<DeviceWeights>>,
@@ -41,7 +43,7 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
     }
 
     /// Copy one uploaded tensor back to the host. A verification aid for hardware
@@ -208,12 +210,22 @@ impl ComputeBackend for HopperBackend {
         let runtime = Qwen2Dims::from_config_json(&config, &manifest.model)?;
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        let uploaded = DeviceWeights::upload(&mut dev, &files, &plans)?;
-        *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
-        let mut slot = self.weights.lock().expect("weights mutex poisoned");
-        if let Some(mut old) = slot.replace(uploaded) {
-            let _ = old.free(&mut dev);
+        // A model loaded before is released first (its session refers to its weights).
+        if let Some(mut old) = self.session.lock().expect("session mutex poisoned").take() {
+            old.free(&mut dev);
         }
+        let uploaded = DeviceWeights::upload(&mut dev, &files, &plans)?;
+        {
+            let mut slot = self.weights.lock().expect("weights mutex poisoned");
+            if let Some(mut old) = slot.replace(uploaded) {
+                let _ = old.free(&mut dev);
+            }
+        }
+        // Everything a generation needs (buffers, K/V cache, kernels, cuBLAS workspace, decode graphs) is
+        // built now, sized from the device memory left after the weights; serving builds nothing.
+        let session = Session::build(self, &mut dev, runtime.0.clone(), manifest.model.max_seq_len as usize)?;
+        *self.session.lock().expect("session mutex poisoned") = Some(session);
+        *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
         Ok(())
     }
 
@@ -254,10 +266,13 @@ impl ComputeBackend for HopperBackend {
     }
 
     fn shutdown(&self) -> Result<()> {
-        // cuBLAS handle and weights first, then the context they live in.
+        // The session (graphs, buffers), the cuBLAS handle and the weights first, then the context they live in.
+        let mut dev = self.device.lock().expect("device mutex poisoned");
+        if let Some(mut session) = self.session.lock().expect("session mutex poisoned").take() {
+            session.free(&mut dev);
+        }
         self.cublas.lock().expect("cublas mutex poisoned").take();
         self.modules.lock().expect("modules mutex poisoned").clear();
-        let mut dev = self.device.lock().expect("device mutex poisoned");
         if let Some(mut weights) = self.weights.lock().expect("weights mutex poisoned").take() {
             weights.free(&mut dev)?;
         }

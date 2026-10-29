@@ -59,14 +59,23 @@ struct Api {
     destroy: unsafe extern "C" fn(Handle) -> c_int,
     set_stream: unsafe extern "C" fn(Handle, *mut c_void) -> c_int,
     gemm_ex: GemmEx,
+    /// `cublasSetWorkspace_v2`, optional: a library without it just keeps its own workspace policy.
+    set_workspace: Option<unsafe extern "C" fn(Handle, *mut c_void, usize) -> c_int>,
 }
 
 static API: OnceLock<std::result::Result<Api, LoadError>> = OnceLock::new();
+static LIBRARY_NAME: OnceLock<String> = OnceLock::new();
+
+/// The cuBLAS library that was loaded, once it has been.
+pub fn loaded_library() -> Option<String> {
+    LIBRARY_NAME.get().cloned()
+}
 
 fn api() -> std::result::Result<&'static Api, LoadError> {
     let loaded = API.get_or_init(|| {
         // The newest major version first: a CUDA 13 toolkit ships `libcublas.so.13`, a 12 one `.so.12`.
         let library = Library::open(CUBLAS_LIBRARIES)?;
+        let _ = LIBRARY_NAME.set(library.name().to_string());
         tracing::info!(library = library.name(), "cuBLAS library loaded");
         // Safety: each type is the exact C signature of the function named.
         unsafe {
@@ -75,6 +84,7 @@ fn api() -> std::result::Result<&'static Api, LoadError> {
                 destroy: library.symbol("cublasDestroy_v2")?,
                 set_stream: library.symbol("cublasSetStream_v2")?,
                 gemm_ex: library.symbol("cublasGemmEx")?,
+                set_workspace: library.symbol("cublasSetWorkspace_v2").ok(),
             })
         }
     });
@@ -101,6 +111,7 @@ unsafe impl Send for Cublas {}
 
 impl Cublas {
     pub fn new(dev: &CudaDevice) -> Result<Self> {
+        dev.check_new_gpu_work("cuBLAS handle creation")?;
         // A host without cuBLAS gets a typed `LoadError` here (downcast to tell it from a cuBLAS failure).
         let api = api()?;
         dev.set_current()?;
@@ -113,6 +124,14 @@ impl Cublas {
             }
         }
         Ok(Self { handle, api })
+    }
+
+    /// Give the handle a fixed, preallocated workspace of `bytes` at device address `ptr`, so no cuBLAS
+    /// call allocates (which is not allowed while a graph is being captured, nor after the engine is ready).
+    /// An error if the cuBLAS library has no `cublasSetWorkspace_v2`.
+    pub fn set_workspace(&self, ptr: u64, bytes: usize) -> Result<()> {
+        let set = self.api.set_workspace.ok_or_else(|| anyhow!("this cuBLAS library has no cublasSetWorkspace_v2"))?;
+        unsafe { check("cublasSetWorkspace", set(self.handle, ptr as *mut c_void, bytes)) }
     }
 
     /// `y[tokens, out] = x[tokens, in] * W[out, in]^T` with bf16 `W` and `x` and f32

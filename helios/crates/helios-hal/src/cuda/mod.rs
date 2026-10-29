@@ -15,9 +15,17 @@ pub mod loader;
 pub mod module;
 pub mod profile;
 pub mod sys;
+pub mod work_guard;
 pub mod weights;
 
 pub use cublas::Cublas;
+
+/// One line naming the driver and cuBLAS libraries that were actually loaded and the driver version.
+pub fn loaded_libraries() -> String {
+    let driver = sys::loaded_driver().map_or_else(|| "driver library not loaded".to_string(), |(name, version)| format!("driver library {name} (CUDA driver version {version})"));
+    let cublas = cublas::loaded_library().map_or_else(|| "cuBLAS library not loaded".to_string(), |name| format!("cuBLAS library {name}"));
+    format!("{driver}; {cublas}")
+}
 pub use device::CudaDevice;
 pub use module::{Kernel, KernelModule};
 pub use ffi::eval_cuda;
