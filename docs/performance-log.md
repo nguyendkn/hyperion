@@ -84,3 +84,16 @@ The spread inside a configuration is under 1%, against tens of percent with the 
 ## Start-up cost (single H100, driver JIT cache disabled, 3 alternated runs of a fresh process)
 
 The first generation of a process loads the kernel modules. With the kernels as PTX the driver compiled them at that moment: 867, 1000 and 852 ms. With fat binaries carrying sm_90 machine code (`scripts/build-kernels.sh`): 102, 157 and 150 ms. Later generations take about 21 ms either way. The remaining 100 to 160 ms include creating the cuBLAS handle. Weight upload (about 1 GB) took 0.8 to 2.8 s and varied between runs of the same build.
+
+## Decode session at load, Qwen2.5-0.5B and Qwen2.5-7B (revision 6d1b976, tag pod-20261029-2241)
+
+Single H100 80GB HBM3 (sm_90), driver 580.126.20 (CUDA 13.0), libcuda.so.1 and libcublas.so.12, SM clock 1980 MHz and memory clock 2619 MHz throughout (608 samples), temperature 33 to 48 C. Release build, batch 1, GPU ms per token between CUDA events around 128 chained steps after 3 warm-ups, median [p10, p90] of 10 windows. The session (buffers, K/V, workspace, kernel modules, both graphs) is built at load; a generation allocates and captures nothing. Graph replay is bit-identical to direct launches (0.5B, 40 steps).
+
+| Context | 0.5B direct | 0.5B graph | 7B direct | 7B graph | 7B graph wall |
+|---|---|---|---|---|---|
+| 5 | 2.443 | 1.746 | 8.555 [8.554, 8.555] | 7.707 [7.706, 7.708] | 7.825 |
+| 1024 | 2.533 | 1.808 | 8.620 [8.613, 8.621] | 7.786 [7.781, 7.789] | 7.906 |
+| 4096 | 2.654 | 1.926 | 8.863 [8.860, 8.867] | 7.994 [7.986, 7.996] | 8.117 |
+| 8000 | 2.758 | 2.017 | 9.459 [9.454, 9.462] | 8.548 [8.537, 8.549] | 8.680 |
+
+0.5B against the earlier event-based figures (graph 1.755 / 1.816 / 1.929 / 2.017): unchanged within 0.5%, so moving the work to load time costs nothing per token. Graph is 1.10x to 1.11x faster than direct on 7B (1.40x on 0.5B): the 7B step is dominated by GEMV weight reads, so launch overhead is a smaller share. 7B at 8000 tokens: attention is 1.35 of 10.37 ms in the profiled direct step (13%), against 5% at context 5. Weight load 12.2 to 13.4 s for 14.19 GiB (4 shards); 58.27 GiB free after load. Weight bandwidth bound for reference: 14.19 GiB at 3.35 TB/s is about 4.5 ms, the graph step at context 5 is 7.7 ms, so decode runs at roughly 59% of the memory-bandwidth floor (inference from the datasheet bandwidth, not measured).
