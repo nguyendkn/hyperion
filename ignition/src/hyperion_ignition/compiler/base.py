@@ -39,6 +39,18 @@ class LayerMap:
     byte_length: int
     dtype: str
     shape: tuple[int, ...]
+    # Index into the manifest's payload table of the file holding the tensor; the offset counts
+    # from the start of that file's data section.
+    payload: int = 0
+
+
+@dataclass
+class PayloadFile:
+    """One weights file of the package; mirrors `hyperion_specification::v1::Payload`."""
+
+    file: str
+    byte_length: int
+    sha256: str
 
 
 @dataclass
@@ -51,12 +63,13 @@ class CompiledManifest:
     model: ModelConfig
     tokenizer: dict[str, Any]
     layers: list[LayerMap] = field(default_factory=list)
+    payloads: list[PayloadFile] = field(default_factory=list)
     hardware_recipe: dict[str, str] = field(default_factory=dict)
     signature: list[int] | None = None
 
     def to_json_dict(self) -> dict[str, Any]:
         """Serialize to the on-disk JSON form the runtime deserializes."""
-        return {
+        manifest = {
             "manifest_version": "V1",
             "model_id": self.model_id,
             "target_arch": self.target_arch,
@@ -67,6 +80,8 @@ class CompiledManifest:
                 {
                     "index": l.index,
                     "name": l.name,
+                    # payload 0 is the default and is not written, like an absent payload table.
+                    **({"payload": l.payload} if l.payload else {}),
                     "byte_offset": l.byte_offset,
                     "byte_length": l.byte_length,
                     "tensor": {"dtype": l.dtype, "shape": list(l.shape)},
@@ -76,6 +91,9 @@ class CompiledManifest:
             "hardware_recipe": self.hardware_recipe,
             "signature": self.signature,
         }
+        if self.payloads:
+            manifest["payloads"] = [{"file": p.file, "byte_length": p.byte_length, "sha256": p.sha256} for p in self.payloads]
+        return manifest
 
 
 class ModelCompiler(Protocol):

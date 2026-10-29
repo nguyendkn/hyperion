@@ -23,6 +23,33 @@
         "tokenizer_config.json": "c91efca15ceff6e9ee9424db58a6f59cd41294e550a86cbd07e3c1fb500b34f9"
       },
       "compiler": "qwen2"
+    },
+    "qwen2.5-7b": {
+      "repo": "Qwen/Qwen2.5-7B",
+      "revision": "d149729398750b98c0af14eb82c78cfe92750796",
+      "files": {
+        "config.json": "267ce68584c5f24c3b267d934db2de68dd21d1ca677fb78ed809eb60067f7642",
+        "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+        "tokenizer_config.json": "c91efca15ceff6e9ee9424db58a6f59cd41294e550a86cbd07e3c1fb500b34f9",
+        "model.safetensors.index.json": "624bf7c47cd12468fdc16e38a47cf4f19e0415b859a223ba3c027eed2f0e1028",
+        "model-00001-of-00004.safetensors.header": {
+          "sha256": "24ce65896dba011b065dd8fcbf877559a6701fe80516f7d4d039d082147cb2e8",
+          "header_of": "model-00001-of-00004.safetensors"
+        },
+        "model-00002-of-00004.safetensors.header": {
+          "sha256": "69f0c2c87ae06b271181d6964cf235aa9ce7931f64cde7a1a5511ba16070c739",
+          "header_of": "model-00002-of-00004.safetensors"
+        },
+        "model-00003-of-00004.safetensors.header": {
+          "sha256": "a859e7527f6cf5f144667f65c356c01374f95ed56f40cbe6dca4cb7752164066",
+          "header_of": "model-00003-of-00004.safetensors"
+        },
+        "model-00004-of-00004.safetensors.header": {
+          "sha256": "181209f962ac9f71cb2bf72adbd5727cf4fbbd646cf80558576ccb5c13e75b71",
+          "header_of": "model-00004-of-00004.safetensors"
+        }
+      },
+      "compiler": "qwen2"
     }
   }
 }

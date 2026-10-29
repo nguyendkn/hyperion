@@ -1,0 +1,414 @@
+{
+  "manifest_version": "V1",
+  "model_id": "qwen2",
+  "target_arch": "sm_90",
+  "tensor_format": "bf16",
+  "model": {
+    "num_layers": 2,
+    "attention": "gqa",
+    "num_attention_heads": 4,
+    "num_kv_heads": 2,
+    "head_dim": 16,
+    "vocab_size": 128,
+    "max_seq_len": 256
+  },
+  "tokenizer": {
+    "family": "bpe",
+    "asset_path": "tokenizer.json"
+  },
+  "layers": [
+    {
+      "index": 0,
+      "name": "embed_tokens.weight",
+      "byte_offset": 0,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          128,
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.input_layernorm.weight",
+      "payload": 2,
+      "byte_offset": 0,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.mlp.down_proj.weight",
+      "payload": 2,
+      "byte_offset": 128,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64,
+          128
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.mlp.gate_proj.weight",
+      "payload": 1,
+      "byte_offset": 0,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          128,
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.mlp.up_proj.weight",
+      "payload": 1,
+      "byte_offset": 16384,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          128,
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.post_attention_layernorm.weight",
+      "payload": 2,
+      "byte_offset": 16512,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.k_proj.bias",
+      "byte_offset": 16384,
+      "byte_length": 64,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.k_proj.weight",
+      "byte_offset": 16448,
+      "byte_length": 4096,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32,
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.o_proj.weight",
+      "byte_offset": 20544,
+      "byte_length": 8192,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64,
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.q_proj.bias",
+      "byte_offset": 28736,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.q_proj.weight",
+      "byte_offset": 28864,
+      "byte_length": 8192,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64,
+          64
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.v_proj.bias",
+      "byte_offset": 37056,
+      "byte_length": 64,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32
+        ]
+      }
+    },
+    {
+      "index": 1,
+      "name": "layers.0.self_attn.v_proj.weight",
+      "byte_offset": 37120,
+      "byte_length": 4096,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32,
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.input_layernorm.weight",
+      "payload": 4,
+      "byte_offset": 16384,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.mlp.down_proj.weight",
+      "payload": 4,
+      "byte_offset": 16512,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64,
+          128
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.mlp.gate_proj.weight",
+      "payload": 3,
+      "byte_offset": 0,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          128,
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.mlp.up_proj.weight",
+      "payload": 3,
+      "byte_offset": 16384,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          128,
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.post_attention_layernorm.weight",
+      "payload": 4,
+      "byte_offset": 32896,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.k_proj.bias",
+      "payload": 2,
+      "byte_offset": 16640,
+      "byte_length": 64,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.k_proj.weight",
+      "payload": 2,
+      "byte_offset": 16704,
+      "byte_length": 4096,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32,
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.o_proj.weight",
+      "payload": 2,
+      "byte_offset": 20800,
+      "byte_length": 8192,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64,
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.q_proj.bias",
+      "payload": 2,
+      "byte_offset": 28992,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.q_proj.weight",
+      "payload": 2,
+      "byte_offset": 29120,
+      "byte_length": 8192,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64,
+          64
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.v_proj.bias",
+      "payload": 2,
+      "byte_offset": 37312,
+      "byte_length": 64,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32
+        ]
+      }
+    },
+    {
+      "index": 2,
+      "name": "layers.1.self_attn.v_proj.weight",
+      "payload": 2,
+      "byte_offset": 37376,
+      "byte_length": 4096,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          32,
+          64
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "name": "lm_head.weight",
+      "payload": 4,
+      "byte_offset": 0,
+      "byte_length": 16384,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          128,
+          64
+        ]
+      }
+    },
+    {
+      "index": 3,
+      "name": "norm.weight",
+      "payload": 4,
+      "byte_offset": 33024,
+      "byte_length": 128,
+      "tensor": {
+        "dtype": "bf16",
+        "shape": [
+          64
+        ]
+      }
+    }
+  ],
+  "hardware_recipe": {
+    "fp4": "disabled",
+    "fp8": "enabled",
+    "bf16": "enabled",
+    "cuda_graphs": "disabled"
+  },
+  "signature": null,
+  "payloads": [
+    {
+      "file": "model-00001-of-00005.safetensors",
+      "byte_length": 42056,
+      "sha256": "6cb357d4cf641444cbc91a9f354c08ba543d6b467766e36985d59bbf1baccd20"
+    },
+    {
+      "file": "model-00002-of-00005.safetensors",
+      "byte_length": 33008,
+      "sha256": "c9e0083643cfa99f43c12dea94068fea895e70da4ff10f4a003fc8c844159331"
+    },
+    {
+      "file": "model-00003-of-00005.safetensors",
+      "byte_length": 42520,
+      "sha256": "0f0db5d118f0314e4c70c53618fc390bdc1a48f5e8398429ea5b4bb6506e0af4"
+    },
+    {
+      "file": "model-00004-of-00005.safetensors",
+      "byte_length": 33008,
+      "sha256": "12517151af2ad4f3ae70ff5f3315da0be645fdd6db37bf8799ea5720da252081"
+    },
+    {
+      "file": "model-00005-of-00005.safetensors",
+      "byte_length": 33656,
+      "sha256": "2b2b440718e522022411bd3821f6aaa9bb0f9a8a0aabe1bacd33b9972d1222bf"
+    }
+  ]
+}

@@ -1,0 +1,164 @@
+{
+ "lm_head.weight": {
+  "first16": "b33b3ebdb1bb943c11bc5cbc61baf73b",
+  "last16": "4f3ce2bc9c3a963cc3bc463b863c32bb",
+  "length": 16384,
+  "shard": "model-00005-of-00005.safetensors"
+ },
+ "model.embed_tokens.weight": {
+  "first16": "97bcdd3b7f3c17bccabcb1bb423cf73c",
+  "last16": "0ebdc53be0ba843b9abcdc3c483c95bc",
+  "length": 16384,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.input_layernorm.weight": {
+  "first16": "803f803f803f803f803f803f803f803f",
+  "last16": "803f803f803f803f803f803f803f803f",
+  "length": 128,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.0.mlp.down_proj.weight": {
+  "first16": "843cfa3a163d233c1e3c92bca3bc303c",
+  "last16": "e83b803cdcbcb3bcd2ba963c0ebd093c",
+  "length": 16384,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.0.mlp.gate_proj.weight": {
+  "first16": "85bc9cbce23a3e3b943c24bdc3bc9dbc",
+  "last16": "d03c2c3ce53b19bc113d15bd933c95bc",
+  "length": 16384,
+  "shard": "model-00002-of-00005.safetensors"
+ },
+ "model.layers.0.mlp.up_proj.weight": {
+  "first16": "1dbc613cde3cb73b55bc0a3df8bb733d",
+  "last16": "b43c6abc0a3d26bba2bb9c3cde3c9a3c",
+  "length": 16384,
+  "shard": "model-00002-of-00005.safetensors"
+ },
+ "model.layers.0.post_attention_layernorm.weight": {
+  "first16": "803f803f803f803f803f803f803f803f",
+  "last16": "803f803f803f803f803f803f803f803f",
+  "length": 128,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.k_proj.bias": {
+  "first16": "00000000000000000000000000000000",
+  "last16": "00000000000000000000000000000000",
+  "length": 64,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.k_proj.weight": {
+  "first16": "243db7bcb6bcbabc1ebcb73c4bbc3c3b",
+  "last16": "163c94b9e0bc713c00bdf0bb2a3b84bc",
+  "length": 4096,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.o_proj.weight": {
+  "first16": "29bc183c833c0ebc713cee3b5dbc243d",
+  "last16": "12bb8abca2bc903c813c54bd233d1a3d",
+  "length": 8192,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.q_proj.bias": {
+  "first16": "00000000000000000000000000000000",
+  "last16": "00000000000000000000000000000000",
+  "length": 128,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.q_proj.weight": {
+  "first16": "09bdadbbe4bb9dbc30bd96bcb33b163c",
+  "last16": "84bb90bc933c90bc51bc873c96ba70bc",
+  "length": 8192,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.v_proj.bias": {
+  "first16": "00000000000000000000000000000000",
+  "last16": "00000000000000000000000000000000",
+  "length": 64,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.0.self_attn.v_proj.weight": {
+  "first16": "363c07bc22bcf0bb89bcf03c8c3c43bc",
+  "last16": "17bb9339ffbcdc3cb1bb37bc2e3dd3bc",
+  "length": 4096,
+  "shard": "model-00001-of-00005.safetensors"
+ },
+ "model.layers.1.input_layernorm.weight": {
+  "first16": "803f803f803f803f803f803f803f803f",
+  "last16": "803f803f803f803f803f803f803f803f",
+  "length": 128,
+  "shard": "model-00005-of-00005.safetensors"
+ },
+ "model.layers.1.mlp.down_proj.weight": {
+  "first16": "8c39913bfb3c783c49bca2bb24bd523c",
+  "last16": "633cc1bc22bd683bc0bc423b063df23b",
+  "length": 16384,
+  "shard": "model-00005-of-00005.safetensors"
+ },
+ "model.layers.1.mlp.gate_proj.weight": {
+  "first16": "15bda0bbadbc993c9ebc243bdfbcf63c",
+  "last16": "793ca53b473b91bcc23ce4bc84bc2abc",
+  "length": 16384,
+  "shard": "model-00004-of-00005.safetensors"
+ },
+ "model.layers.1.mlp.up_proj.weight": {
+  "first16": "c7bcbd3ccb3bc73c2a3d193d8a3cd7bc",
+  "last16": "d43b53bc94bc9abcca3ac3bc76bc58bc",
+  "length": 16384,
+  "shard": "model-00004-of-00005.safetensors"
+ },
+ "model.layers.1.post_attention_layernorm.weight": {
+  "first16": "803f803f803f803f803f803f803f803f",
+  "last16": "803f803f803f803f803f803f803f803f",
+  "length": 128,
+  "shard": "model-00005-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.k_proj.bias": {
+  "first16": "00000000000000000000000000000000",
+  "last16": "00000000000000000000000000000000",
+  "length": 64,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.k_proj.weight": {
+  "first16": "e53aa6bcad3c5e3c12bd6fbb763d243d",
+  "last16": "7abc903adabb46bd8a3b8bbceabcbd3b",
+  "length": 4096,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.o_proj.weight": {
+  "first16": "82bc99bb5fbbfbbc683c913cf6bb203c",
+  "last16": "0b3df5bb45bc45bbea3b7e3bdb3c24bc",
+  "length": 8192,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.q_proj.bias": {
+  "first16": "00000000000000000000000000000000",
+  "last16": "00000000000000000000000000000000",
+  "length": 128,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.q_proj.weight": {
+  "first16": "19bcb83c6d3cce3c923b78bc2bbc073a",
+  "last16": "333ccdbc2bbc14bc8e3cab3abfbb0fbb",
+  "length": 8192,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.v_proj.bias": {
+  "first16": "00000000000000000000000000000000",
+  "last16": "00000000000000000000000000000000",
+  "length": 64,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.layers.1.self_attn.v_proj.weight": {
+  "first16": "e3bba2bca13bcc3cab3c033ddcbc20ba",
+  "last16": "b5ba223ce8bc12bd47ba903c113d14bd",
+  "length": 4096,
+  "shard": "model-00003-of-00005.safetensors"
+ },
+ "model.norm.weight": {
+  "first16": "803f803f803f803f803f803f803f803f",
+  "last16": "803f803f803f803f803f803f803f803f",
+  "length": 128,
+  "shard": "model-00005-of-00005.safetensors"
+ }
+}

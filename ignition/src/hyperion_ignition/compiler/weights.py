@@ -13,12 +13,13 @@ model than the manifest describes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .base import LayerMap
+from .base import LayerMap, PayloadFile
 from .model_config import ModelConfig
 
 # A header is a few tens of KB for a model with hundreds of tensors; this bound
@@ -37,6 +38,8 @@ class TensorEntry:
     shape: tuple[int, ...]
     begin: int
     end: int
+    # Which weights file holds the tensor (index into the payload table); 0 for a single file.
+    payload: int = 0
 
 
 def read_safetensors_header(path: Path) -> dict[str, TensorEntry]:
@@ -74,6 +77,84 @@ def read_safetensors_header(path: Path) -> dict[str, TensorEntry]:
         if after.begin < before.end:
             raise ValueError(f"tensor ranges overlap: {before.name} and {after.name}")
     return entries
+
+
+SINGLE_FILE = "model.safetensors"
+SHARD_INDEX = "model.safetensors.index.json"
+HEADER_SUFFIX = ".header"
+
+
+def is_bare_file_name(name: str) -> bool:
+    """A plain file name that cannot leave the package directory (the rule of the Rust spec crate)."""
+    return bool(name) and len(name.encode()) <= 255 and name not in (".", "..") and not any(c in name for c in "/\\:\0")
+
+
+@dataclass(frozen=True)
+class Checkpoint:
+    """The tensors of a source checkpoint and the weights files they live in."""
+
+    entries: dict[str, TensorEntry]
+    # Empty for a header-only source: the package then has the default single file and nothing is
+    # recorded about it, because there are no bytes to size and hash.
+    payloads: list[PayloadFile]
+
+
+def _describe(path: Path) -> PayloadFile:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return PayloadFile(file=path.name, byte_length=path.stat().st_size, sha256=digest.hexdigest())
+
+
+def read_checkpoint(source: Path, *, hash_payloads: bool = True) -> Checkpoint | None:
+    """Read the tensors of the checkpoint in `source`: a single `model.safetensors` (or a header-only
+    `model.safetensors.header`), or shards listed by `model.safetensors.index.json`. Returns None when
+    there are no weights at all. With real files the payload table (name, size, sha256) is filled in;
+    `hash_payloads=False` skips the hashing and also accepts header-only shards (`<shard>.header`),
+    for checking how tensors map onto shards without the weights."""
+    single = source / SINGLE_FILE
+    header_only = source / (SINGLE_FILE + HEADER_SUFFIX)
+    index = source / SHARD_INDEX
+    if index.is_file() and (single.is_file() or header_only.is_file()):
+        raise ValueError(f"{source.name}: both {SHARD_INDEX} and a single weights file are present; keep one")
+    if index.is_file():
+        return _read_sharded(source, index, hash_payloads)
+    if single.is_file():
+        return Checkpoint(read_safetensors_header(single), [_describe(single)] if hash_payloads else [])
+    if header_only.is_file():
+        return Checkpoint(read_safetensors_header(header_only), [])
+    return None
+
+
+def _read_sharded(source: Path, index: Path, hash_payloads: bool) -> Checkpoint:
+    document = json.loads(index.read_text(encoding="utf-8"))
+    weight_map = document.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map or not all(isinstance(v, str) for v in weight_map.values()):
+        raise ValueError(f"{index.name}: `weight_map` must map tensor names to shard file names")
+    shards = sorted(set(weight_map.values()))
+    for shard in shards:
+        if not is_bare_file_name(shard):
+            raise ValueError(f"{index.name}: shard name {shard!r} is not a bare file name")
+    entries: dict[str, TensorEntry] = {}
+    payloads: list[PayloadFile] = []
+    for number, shard in enumerate(shards):
+        path = source / shard
+        if path.is_file():
+            header = read_safetensors_header(path)
+            if hash_payloads:
+                payloads.append(_describe(path))
+        elif not hash_payloads and (source / (shard + HEADER_SUFFIX)).is_file():
+            header = read_safetensors_header(source / (shard + HEADER_SUFFIX))
+        else:
+            raise ValueError(f"{source.name}: shard {shard} listed in {index.name} is missing")
+        listed = {name for name, file in weight_map.items() if file == shard}
+        if set(header) != listed:
+            extra, missing = sorted(set(header) - listed), sorted(listed - set(header))
+            raise ValueError(f"{shard}: its header and {index.name} disagree (in the file only: {extra[:3]}; in the index only: {missing[:3]})")
+        for name, entry in header.items():
+            entries[name] = replace(entry, payload=number)
+    return Checkpoint(entries, payloads)
 
 
 def _qwen2_expected(cfg: ModelConfig, tie_word_embeddings: bool) -> dict[str, tuple[int | None, ...]]:
@@ -134,6 +215,7 @@ def map_qwen2_layers(entries: dict[str, TensorEntry], cfg: ModelConfig, *, tie_w
             byte_length=entries[name].end - entries[name].begin,
             dtype=entries[name].dtype,
             shape=entries[name].shape,
+            payload=entries[name].payload,
         )
         for name in ordered
     ]
