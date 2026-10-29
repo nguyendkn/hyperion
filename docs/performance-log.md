@@ -10,6 +10,7 @@ Protocol: per-token time = (136-token run minus 8-token run) / 128, median of 3 
 | 0. baseline, release | 2.980 | 2.288 (1.30x) | graph is faster than direct |
 | 2. greedy token chain on the device (argmax kernel, 4-byte token ids to the host) | 2.417 | 1.797 (1.35x) | 15 of 15 hardware tests pass; tokens identical to the host argmax in both modes |
 | 3. split-K decode attention | 3.103 | 1.979 (1.57x) | 17 of 17 hardware tests pass; slower than step 2 at short context (see below), 6x faster at 8k |
+| 3b. vectorised split-K attention (see below) | 2.39 (context 5) | 1.75 (context 5) | 18 of 18 hardware tests pass; no short-context loss; graph 1.93 ms at 4096 and 2.85 at 7900 |
 
 ## Step 0 profile (release, 128 decode steps)
 
@@ -55,3 +56,14 @@ Measured with single-sample processes alternated between builds in one pod (`mea
 | 7900 to 8036 | 3.51 [2.46 to 4.53] | 20.59 (single earlier run) | 6x faster |
 
 At short context the split-K step is about 0.64 ms slower than before. Register spills were ruled out (`ptxas -v`: no spill, 66 registers). Letting idle splits exit early changed nothing measurable. Attention at 8k still takes about 1.7 ms per step for 97 MB of K and V (bandwidth bound about 0.03 ms), so the kernel is far from the memory system's limit. Correctness: see the ledger. The spread between single processes is large, so treat differences under about 10% as noise.
+
+## Step 3b: vectorised split-K attention (same machine, 8 alternated single-sample processes per build, graph ms/token, median [min to max])
+
+| Context | Split-K (3) | Vectorised split-K (3b) | One block per head (2) |
+|---|---|---|---|
+| 5 | 2.363 [2.095 to 2.573] | 1.752 [1.317 to 1.755] | 1.721 [1.419 to 1.832] |
+| 1024 | 2.567 [2.276 to 2.646] | 1.806 [0.819 to 3.144] | 4.199 [2.734 to 6.040] |
+| 4096 | 2.964 [2.940 to 6.014] | 1.928 [1.901 to 1.939] | not run |
+| 7900 | 3.379 [1.461 to 5.066] | 2.850 [0.699 to 4.542] | not run |
+
+The short-context loss of step 3 is gone and the long-context steps are 25% to 35% faster than step 3 by medians. Register spills were not the problem (none before or after); the change is the loop structure: head_dim known at compile time, 16-byte loads, independent loads issued back to back. The spread at 1024 and 7900 is too wide to read more into the medians; the 4096 figure is tight. Open: the PTX file grew about ten times, which makes the driver's load-time JIT slower (not measured; step 5 replaces PTX by a prebuilt binary).

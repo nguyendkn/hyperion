@@ -195,25 +195,42 @@ extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, i
 
 // ---- Decode attention, split over the context ---------------------------------------------
 // One query token (position *pos) attends to keys 0..=*pos. The work is cut into `splits`
-// pieces of ceil(len / splits) positions, one block per (KV head, split), so the grid does not
-// depend on the context length and a captured graph stays valid for every step; shared memory
-// is fixed too (positions are processed in tiles of SPLIT_TILE with an online softmax). A block
-// reads each K and V row once and serves every query head that shares the KV head. Each split
-// writes (max, sum of exp, unnormalised weighted V) to the workspace; attention_combine_bf16 merges
-// them in split order, so results are identical from run to run (no atomics).
+// pieces of at least SPLIT_MIN_CHUNK positions, one block per (KV head, split), so the grid does
+// not depend on the context length and a captured graph stays valid for every step; blocks without
+// positions return at once. Shared memory is fixed too: positions go through in tiles of
+// SPLIT_TILE with an online softmax. A block reads each K and V row once, with 16-byte loads, and
+// serves every query head that shares the KV head. Each split writes (max, sum of exp,
+// unnormalised weighted V) to the workspace; attention_combine_bf16 merges them in split order, so
+// results are identical from run to run (no atomics). head_dim is a template parameter so the
+// row loops unroll and the loads can be issued back to back.
 #define SPLIT_TILE 128
 // A split gets at least this many positions, so a short context uses only as many blocks as it has
-// work for (the others return at once) and the combine kernel merges only those.
+// work for and the combine kernel merges only those.
 #define SPLIT_MIN_CHUNK 64
 #define MAX_GROUP 8  // query heads per KV head
 
-extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
-                                                const bf16* __restrict__ v_cache, float* __restrict__ ws,
-                                                const int* __restrict__ pos, int heads, int kv_heads,
-                                                int head_dim, int splits) {
-    __shared__ float q_s[MAX_GROUP][128];
+// Eight bf16 values of a 16-byte load as floats.
+static __device__ __forceinline__ void unpack8(const uint4 raw, float out[8]) {
+    const __nv_bfloat162* pair = reinterpret_cast<const __nv_bfloat162*>(&raw);
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        const float2 f = __bfloat1622float2(pair[i]);
+        out[2 * i] = f.x;
+        out[2 * i + 1] = f.y;
+    }
+}
+
+template <int HD>
+static __device__ __forceinline__ void attention_split_impl(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
+                                                            const bf16* __restrict__ v_cache, float* __restrict__ ws,
+                                                            const int* __restrict__ pos, int heads, int kv_heads,
+                                                            int splits) {
+    constexpr int NV = HD / 8;            // 16-byte pieces per row
+    constexpr int TPR = HD / 8;           // threads that together read one V row
+    constexpr int ROWS = SPLIT_TILE / TPR;  // V rows read at the same time by the block
+    __shared__ float q_s[MAX_GROUP][HD];
     __shared__ float sc[MAX_GROUP][SPLIT_TILE];
-    __shared__ float part[MAX_GROUP][128];
+    __shared__ float part[4][MAX_GROUP][HD];
     __shared__ float wmax[MAX_GROUP][SPLIT_TILE / 32];
     __shared__ float wsum[MAX_GROUP][SPLIT_TILE / 32];
     __shared__ float m_run[MAX_GROUP];
@@ -227,36 +244,49 @@ extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, cons
     if (s * chunk >= len) return;  // no positions for this split (uniform across the block)
     const int lo = s * chunk;
     const int hi = min(len, lo + chunk);
-    const float scale = 1.f / sqrtf((float)head_dim);
+    const float scale = 1.f / sqrtf((float)HD);
     const int lane = threadIdx.x & 31;
     const int warp = threadIdx.x >> 5;
-    const int d = threadIdx.x % head_dim;       // this thread's output dimension
-    const int jg = threadIdx.x / head_dim;      // which interleaved share of the tile's positions
-    const int jgroups = blockDim.x / head_dim;
+    const int col = threadIdx.x % TPR;  // which 8 dimensions of a V row this thread owns
+    const int row = threadIdx.x / TPR;  // which of the rows read together
 
-    for (int i = threadIdx.x; i < group * head_dim; i += blockDim.x)
-        q_s[i / head_dim][i % head_dim] = rd(q[(size_t)(g * group + i / head_dim) * head_dim + i % head_dim]);
+    for (int i = threadIdx.x; i < group * HD; i += SPLIT_TILE) q_s[i / HD][i % HD] = rd(q[(size_t)(g * group + i / HD) * HD + i % HD]);
     if (threadIdx.x < group) {
         m_run[threadIdx.x] = -INFINITY;
         l_run[threadIdx.x] = 0.f;
     }
-    float acc[MAX_GROUP];
-    for (int h = 0; h < MAX_GROUP; ++h) acc[h] = 0.f;
+    float acc[MAX_GROUP][8];
+#pragma unroll
+    for (int h = 0; h < MAX_GROUP; ++h)
+#pragma unroll
+        for (int e = 0; e < 8; ++e) acc[h][e] = 0.f;
     __syncthreads();
 
     for (int base = lo; base < hi; base += SPLIT_TILE) {
         const int n = min(SPLIT_TILE, hi - base);
         // Scores of this thread's position for every query head of the group.
         float dots[MAX_GROUP];
+#pragma unroll
         for (int h = 0; h < MAX_GROUP; ++h) dots[h] = 0.f;
         if (threadIdx.x < n) {
-            const bf16* krow = k_cache + ((size_t)(base + threadIdx.x) * kv_heads + g) * head_dim;
-            for (int dd = 0; dd < head_dim; ++dd) {
-                const float kv = rd(krow[dd]);
-                for (int h = 0; h < group; ++h) dots[h] += q_s[h][dd] * kv;
+            const uint4* krow = reinterpret_cast<const uint4*>(k_cache + ((size_t)(base + threadIdx.x) * kv_heads + g) * HD);
+            uint4 raw[NV];
+#pragma unroll
+            for (int v = 0; v < NV; ++v) raw[v] = krow[v];
+#pragma unroll
+            for (int v = 0; v < NV; ++v) {
+                float f[8];
+                unpack8(raw[v], f);
+#pragma unroll
+                for (int h = 0; h < MAX_GROUP; ++h)
+                    if (h < group)
+#pragma unroll
+                        for (int e = 0; e < 8; ++e) dots[h] += q_s[h][v * 8 + e] * f[e];
             }
         }
-        for (int h = 0; h < group; ++h) {
+#pragma unroll
+        for (int h = 0; h < MAX_GROUP; ++h) {
+            if (h >= group) continue;
             const float sv = threadIdx.x < n ? dots[h] * scale : -INFINITY;
             sc[h][threadIdx.x] = sv;
             float w = sv;
@@ -265,7 +295,10 @@ extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, cons
         }
         __syncthreads();
         float corr[MAX_GROUP];
-        for (int h = 0; h < group; ++h) {
+#pragma unroll
+        for (int h = 0; h < MAX_GROUP; ++h) {
+            corr[h] = 1.f;
+            if (h >= group) continue;
             float tile_max = wmax[h][0];
             for (int w = 1; w < SPLIT_TILE / 32; ++w) tile_max = fmaxf(tile_max, wmax[h][w]);
             const float m_new = fmaxf(m_run[h], tile_max);
@@ -275,7 +308,8 @@ extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, cons
             float w = p;
             for (int off = 16; off > 0; off >>= 1) w += __shfl_xor_sync(0xffffffffu, w, off);
             if (lane == 0) wsum[h][warp] = w;
-            acc[h] *= corr[h];
+#pragma unroll
+            for (int e = 0; e < 8; ++e) acc[h][e] *= corr[h];
         }
         __syncthreads();
         if (threadIdx.x < group) {
@@ -289,36 +323,75 @@ extern "C" __global__ void attention_split_bf16(const bf16* __restrict__ q, cons
             l_run[h] = l_run[h] * corr[h] + tile_sum;
             m_run[h] = fmaxf(m_run[h], tile_max);
         }
-        // Weighted sum of V: each thread owns one dimension and every jgroups-th position.
-        for (int j = jg; j < n; j += jgroups) {
-            const float vv = rd(v_cache[((size_t)(base + j) * kv_heads + g) * head_dim + d]);
-            for (int h = 0; h < group; ++h) acc[h] += sc[h][j] * vv;
+        // Weighted sum of V: each thread owns 8 dimensions of every ROWS-th position.
+        for (int j = row; j < n; j += ROWS) {
+            float f[8];
+            unpack8(*reinterpret_cast<const uint4*>(v_cache + ((size_t)(base + j) * kv_heads + g) * HD + col * 8), f);
+#pragma unroll
+            for (int h = 0; h < MAX_GROUP; ++h)
+                if (h < group) {
+                    const float p = sc[h][j];
+#pragma unroll
+                    for (int e = 0; e < 8; ++e) acc[h][e] += p * f[e];
+                }
         }
         __syncthreads();
     }
 
-    for (int h = 0; h < group; ++h) part[h][jg * head_dim + d] = acc[h];
+    // Add up the threads that read different rows: first inside the warp (fixed xor order),
+    // then across the four warps in warp order.
+#pragma unroll
+    for (int h = 0; h < MAX_GROUP; ++h)
+#pragma unroll
+        for (int e = 0; e < 8; ++e)
+            for (int off = TPR; off < 32; off <<= 1) acc[h][e] += __shfl_xor_sync(0xffffffffu, acc[h][e], off);
+    if (lane < TPR) {
+#pragma unroll
+        for (int h = 0; h < MAX_GROUP; ++h)
+            if (h < group)
+#pragma unroll
+                for (int e = 0; e < 8; ++e) part[warp][h][col * 8 + e] = acc[h][e];
+    }
     __syncthreads();
-    const int stride = head_dim + 2;
-    for (int h = 0; h < group; ++h) {
+    const int stride = HD + 2;
+    for (int i = threadIdx.x; i < group * HD; i += SPLIT_TILE) {
+        const int h = i / HD, d = i % HD;
         float* dst = ws + ((size_t)(g * group + h) * splits + s) * stride;
-        for (int dd = threadIdx.x; dd < head_dim; dd += blockDim.x) {
-            float total = 0.f;
-            for (int j = 0; j < jgroups; ++j) total += part[h][j * head_dim + dd];
-            dst[2 + dd] = total;
-        }
-        if (threadIdx.x == 0) {
+        dst[2 + d] = ((part[0][h][d] + part[1][h][d]) + part[2][h][d]) + part[3][h][d];
+        if (d == 0) {
             dst[0] = m_run[h];
             dst[1] = l_run[h];
         }
     }
 }
 
+// One entry point per head dimension, so each kernel's static shared memory is only its own.
+extern "C" __global__ void attention_split_32_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
+                                                    const bf16* __restrict__ v_cache, float* __restrict__ ws,
+                                                    const int* __restrict__ pos, int heads, int kv_heads, int splits) {
+    attention_split_impl<32>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits);
+}
+
+extern "C" __global__ void attention_split_64_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
+                                                    const bf16* __restrict__ v_cache, float* __restrict__ ws,
+                                                    const int* __restrict__ pos, int heads, int kv_heads, int splits) {
+    attention_split_impl<64>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits);
+}
+
+extern "C" __global__ void attention_split_128_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
+                                                    const bf16* __restrict__ v_cache, float* __restrict__ ws,
+                                                    const int* __restrict__ pos, int heads, int kv_heads, int splits) {
+    attention_split_impl<128>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits);
+}
+
 // Merge the splits of every query head: out = sum_s exp(m_s - M) acc_s / sum_s exp(m_s - M) l_s, in
-// split order. One block per query head, one thread per dimension.
+// split order. One block per query head, one thread per dimension; the per-split weights are
+// computed once per block, in parallel, and shared.
 extern "C" __global__ void attention_combine_bf16(const float* __restrict__ ws, bf16* __restrict__ out,
                                                   const int* __restrict__ pos, int heads, int head_dim,
                                                   int splits) {
+    __shared__ float split_max[256];
+    __shared__ float split_weight[256];
     const int len = *pos + 1;
     const int chunk = max(SPLIT_MIN_CHUNK, (len + splits - 1) / splits);
     const int active = (len + chunk - 1) / chunk;  // splits that had work, the only ones that wrote
@@ -326,12 +399,16 @@ extern "C" __global__ void attention_combine_bf16(const float* __restrict__ ws, 
     const int d = threadIdx.x;
     const int stride = head_dim + 2;
     const float* base = ws + (size_t)h * splits * stride;
+    for (int s = threadIdx.x; s < active; s += blockDim.x) split_max[s] = base[(size_t)s * stride];
+    __syncthreads();
     float top = -INFINITY;
-    for (int s = 0; s < active; ++s) top = fmaxf(top, base[(size_t)s * stride]);
+    for (int s = 0; s < active; ++s) top = fmaxf(top, split_max[s]);
+    for (int s = threadIdx.x; s < active; s += blockDim.x) split_weight[s] = expf(split_max[s] - top);
+    __syncthreads();
     float total = 0.f, acc = 0.f;
+#pragma unroll 4
     for (int s = 0; s < active; ++s) {
-        const float m = base[(size_t)s * stride];
-        const float w = expf(m - top);
+        const float w = split_weight[s];
         total += base[(size_t)s * stride + 1] * w;
         acc += base[(size_t)s * stride + 2 + d] * w;
     }

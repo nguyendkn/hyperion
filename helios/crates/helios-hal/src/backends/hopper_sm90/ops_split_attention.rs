@@ -38,7 +38,7 @@ impl HopperBackend {
             return Err(anyhow!("attention input sizes do not match the shape"));
         }
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        let split = self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_split_bf16")?;
+        let split = self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, &format!("attention_split_{head_dim}_bf16"))?;
         let combine = self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_combine_bf16")?;
         let splits = split_count(dev.multiprocessor_count(), kv_heads);
         let bytes = |x: &[u16]| -> Vec<u8> { x.iter().flat_map(|v| v.to_le_bytes()).collect() };
@@ -68,7 +68,6 @@ impl HopperBackend {
                 &pos_ptr as *const u64 as *mut c_void,
                 &h as *const i32 as *mut c_void,
                 &kvh as *const i32 as *mut c_void,
-                &hd as *const i32 as *mut c_void,
                 &sp as *const i32 as *mut c_void,
             ];
             let mut combine_args: Vec<*mut c_void> = vec![

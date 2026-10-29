@@ -245,7 +245,7 @@ impl HopperBackend {
             swiglu: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "swiglu_bf16")?,
             rope: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "rope_bf16")?,
             attention: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_bf16")?,
-            attention_split: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_split_bf16")?,
+            attention_split: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, &format!("attention_split_{}_bf16", d.head_dim))?,
             attention_combine: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_combine_bf16")?,
             kv_append: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "kv_append_bf16")?,
             argmax: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "argmax_chain_bf16")?,
@@ -404,7 +404,7 @@ impl HopperBackend {
                         u32::try_from(kv_heads * splits)?,
                         SPLIT_BLOCK,
                         0,
-                        &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn_ws), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)],
+                        &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn_ws), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(i32::try_from(splits)?)],
                     )?;
                     mark("attention")?;
                     launch(dev, k.attention_combine, u32::try_from(heads)?, u32::try_from(hd)?, 0, &[Arg::Ptr(b.attn_ws), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)])?;
