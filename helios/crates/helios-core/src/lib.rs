@@ -13,6 +13,8 @@
 
 pub mod api;
 pub mod cache;
+pub mod error;
+pub mod inflight;
 pub mod scheduler;
 pub mod state;
 pub mod chat_template;

@@ -224,7 +224,9 @@ async fn main() -> Result<()> {
         state: Arc::new(sm.clone()),
         tokenizer,
         ingress_tx: Some(ingress_tx),
+        inflight: helios_core::inflight::InflightTracker::new(),
     };
+    let inflight = app_state.inflight.clone();
     let app = helios_core::api::router().with_state(app_state);
     let listener = tokio::net::TcpListener::bind((cli.bind, cli.port))
         .await
@@ -236,7 +238,7 @@ async fn main() -> Result<()> {
     //    a. engine -> `Draining` (API rejects new work),
     //    b. axum stops accepting and drains in-flight HTTP, bounded by
     //       `HTTP_DRAIN_TIMEOUT` counted from this point, not from startup,
-    //    c. trip `sched_cancel`, wait up to `SCHED_EXIT_TIMEOUT`; on timeout
+    //    c. wait for in-flight requests (`InflightTracker`, same bound), then trip `sched_cancel`, wait up to `SCHED_EXIT_TIMEOUT`; on timeout
     //       abort the scheduler task and confirm it stopped,
     //    d. `backend.shutdown()` only if the scheduler is confirmed stopped;
     //       otherwise skip it and let process exit reclaim device memory,
@@ -281,6 +283,14 @@ async fn main() -> Result<()> {
                 serve_task.abort();
             }
         }
+    }
+
+    // Streams run in tasks of their own that axum's drain does not see; wait for every request
+    // the handlers counted, within the same bound, before the scheduler is told to stop.
+    if inflight.wait_idle(HTTP_DRAIN_TIMEOUT).await {
+        tracing::info!("no requests in flight");
+    } else {
+        tracing::warn!(remaining = inflight.current(), timeout = ?HTTP_DRAIN_TIMEOUT, "requests still in flight at the drain deadline; cancelling them");
     }
 
     sched_cancel.cancel();

@@ -13,6 +13,8 @@ use axum::routing::{get, post};
 use axum::Router;
 use serde::{Deserialize, Serialize};
 
+use crate::error::{ApiError, SchedulerFault};
+use crate::inflight::InflightTracker;
 use crate::scheduler::{InferenceRequest, IngressSender, SamplingParams, StreamEvent};
 use crate::state::StateMachine;
 use crate::tokenizer::{ChatMessageForEncode, PromptTokenizer, StreamDecoder};
@@ -43,6 +45,8 @@ pub struct AppState {
     pub state: Arc<StateMachine>,
     pub tokenizer: Option<PromptTokenizer>,
     pub ingress_tx: Option<IngressSender>,
+    /// Requests being served; the CLI waits on it before it stops the scheduler.
+    pub inflight: InflightTracker,
 }
 
 impl From<Arc<StateMachine>> for AppState {
@@ -54,6 +58,7 @@ impl From<Arc<StateMachine>> for AppState {
             state: sm,
             tokenizer: None,
             ingress_tx: None,
+            inflight: InflightTracker::new(),
         }
     }
 }
@@ -133,6 +138,23 @@ async fn chat_completions(
     axum::extract::State(app): axum::extract::State<AppState>,
     axum::Json(req): axum::Json<ChatCompletionRequest>,
 ) -> axum::response::Response {
+    // Counted from here until the response (or the SSE stream task) is done, so a shutdown drain
+    // waits for it. Dropped with the future if the client disconnects.
+    let guard = app.inflight.enter();
+    match serve_chat(&app, req, guard).await {
+        Ok(response) => response,
+        Err(e) => {
+            tracing::warn!(code = e.code(), status = e.status().as_u16(), "chat request failed");
+            e.into_response()
+        }
+    }
+}
+
+async fn serve_chat(
+    app: &AppState,
+    req: ChatCompletionRequest,
+    guard: crate::inflight::InflightGuard,
+) -> Result<axum::response::Response, ApiError> {
     // Engine must be alive to accept work. `Draining` (in-flight shutdown)
     // and `Stopped` reject new requests.
     let status = app.state.status();
@@ -142,22 +164,11 @@ async fn chat_completions(
             | crate::state::EngineStatus::Draining
             | crate::state::EngineStatus::Stopped
     ) {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            format!("engine not serving (status={status:?})"),
-        )
-            .into_response();
+        return Err(ApiError::EngineNotServing { status: format!("{status:?}") });
     }
 
-    // 1. Tokenize. No tokenizer configured → the package codec hasn't been
-    //    wired yet; return 501 with a clear message rather than a panic.
-    let Some(tok) = app.tokenizer.as_ref() else {
-        return (
-            axum::http::StatusCode::NOT_IMPLEMENTED,
-            "no tokenizer loaded: helios-pkg codec not wired",
-        )
-            .into_response();
-    };
+    // 1. Tokenize. No tokenizer configured -> the capability is not wired: 501.
+    let tok = app.tokenizer.as_ref().ok_or(ApiError::NoTokenizer)?;
 
     let for_encode: Vec<ChatMessageForEncode<'_>> = req
         .messages
@@ -168,42 +179,26 @@ async fn chat_completions(
         })
         .collect();
 
-    let ids = match tok.encode_messages(&for_encode).await {
-        Ok(ids) => ids,
-        Err(e) => {
-            // Too long is the client's to fix (400); anything else is a
-            // tokenizer failure (422).
-            if let Some(too_long) = e.downcast_ref::<crate::tokenizer::PromptTooLong>() {
-                return (axum::http::StatusCode::BAD_REQUEST, too_long.to_string()).into_response();
+    let ids = tok.encode_messages(&for_encode).await.map_err(|e| {
+        // Too long is the client's to fix (400); anything else is a tokenizer failure (422).
+        // The cause goes to the log only: it may quote the prompt or a file path.
+        match e.downcast_ref::<crate::tokenizer::PromptTooLong>() {
+            Some(t) => ApiError::PromptTooLong { tokens: t.tokens, max: t.max },
+            None => {
+                tracing::warn!(error = %e, "tokenize failed");
+                ApiError::TokenizeFailed
             }
-            return (
-                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-                format!("tokenize failed: {e}"),
-            )
-                .into_response();
         }
-    };
+    })?;
 
-    // Context-length guard. The tokenizer rejects over-long prompts (400
-    // above); here we also refuse a degenerate empty encode (token file/empty prompt mismatch).
+    // The tokenizer rejects over-long prompts (400 above); a degenerate empty encode is refused
+    // here too.
     if ids.is_empty() {
-        return (
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
-            "prompt encoded to zero tokens",
-        )
-            .into_response();
+        return Err(ApiError::EmptyPrompt);
     }
 
     // 2. Build the response channel + the request envelope, then enqueue.
-    //    No scheduler wired (ingress_tx is None) → 503 capability error.
-    //    A failed/timeout send → 503 (queue full or scheduler gone).
-    let Some(ingress_tx) = app.ingress_tx.as_ref() else {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "scheduler not wired: ingress channel absent",
-        )
-            .into_response();
-    };
+    let ingress_tx = app.ingress_tx.as_ref().ok_or(ApiError::Scheduler(SchedulerFault::NotWired))?;
 
     let (response_tx, mut response_rx) =
         tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
@@ -221,55 +216,31 @@ async fn chat_completions(
 
     match tokio::time::timeout(INGRESS_SEND_TIMEOUT, ingress_tx.send(request)).await {
         Ok(Ok(())) => { /* enqueued */ }
-        Ok(Err(_send_err)) => {
-            // Scheduler dropped its receiver (task ended) → fail fast.
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "scheduler unavailable: queue closed",
-            )
-                .into_response();
-        }
-        Err(_elapsed) => {
-            // Bounded ingress queue is full — backpressure surfaced as 503.
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "scheduler overloaded: ingress send timed out",
-            )
-                .into_response();
-        }
+        // Scheduler dropped its receiver (task ended).
+        Ok(Err(_send_err)) => return Err(ApiError::Scheduler(SchedulerFault::QueueClosed)),
+        // Bounded ingress queue is full: backpressure surfaced as 503.
+        Err(_elapsed) => return Err(ApiError::Scheduler(SchedulerFault::Overloaded)),
     }
 
     // 3. Drain the response stream. First event gated on a liveness timeout;
     //    subsequent events read without a timeout (decode can run long). We
     //    accumulate token ids until a terminal `Done`/`Error` arrives or the
-    //    sender is dropped (recv → None).
+    //    sender is dropped (recv -> None).
     let first = match tokio::time::timeout(FIRST_EVENT_TIMEOUT, response_rx.recv()).await {
         Ok(Some(ev)) => ev,
-        Ok(None) => {
-            // Scheduler closed the channel before any event — treated as
-            // 503; the scheduler didn't even start this request.
-            return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "scheduler closed stream before first event",
-            )
-                .into_response();
-        }
-        Err(_elapsed) => {
-            return (
-                axum::http::StatusCode::GATEWAY_TIMEOUT,
-                "scheduler first-event timeout",
-            )
-                .into_response();
-        }
+        // Scheduler closed the channel before any event: it never started this request.
+        Ok(None) => return Err(ApiError::Scheduler(SchedulerFault::ClosedEarly)),
+        Err(_elapsed) => return Err(ApiError::FirstEventTimeout),
     };
 
     // Streaming: a failure before the first token is still a normal HTTP error; once text starts
     // flowing the status is already 200 and later errors travel inside the stream.
     if req.stream {
         if let StreamEvent::Error(msg) = &first {
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("scheduler error: {msg}")).into_response();
+            tracing::error!(error = %msg, "scheduler error before the first token");
+            return Err(ApiError::GenerationFailed);
         }
-        return stream_response(tok.clone(), req.model.clone(), first, response_rx).into_response();
+        return Ok(stream_response(tok.clone(), req.model.clone(), first, response_rx, guard).into_response());
     }
 
     let mut generated: Vec<u32> = Vec::new();
@@ -288,15 +259,11 @@ async fn chat_completions(
                 break;
             }
             Some(StreamEvent::Error(msg)) => {
-                return (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("scheduler error: {msg}"),
-                )
-                    .into_response();
+                tracing::error!(error = %msg, "scheduler error during generation");
+                return Err(ApiError::GenerationFailed);
             }
             None => {
-                // Channel closed without a terminal event — treat as
-                // truncated, finish with whatever we have.
+                // Channel closed without a terminal event: finish with whatever we have.
                 finish_reason = "stop".into();
                 break;
             }
@@ -306,16 +273,10 @@ async fn chat_completions(
 
     // 4. Shape the OpenAI response. Decode the generated ids back to text
     //    through the same tokenizer; if decode fails we surface the error.
-    let content = match tok.decode(&generated).await {
-        Ok(text) => text,
-        Err(e) => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("decode generated tokens failed: {e}"),
-            )
-                .into_response();
-        }
-    };
+    let content = tok.decode(&generated).await.map_err(|e| {
+        tracing::error!(error = %e, "decode of generated tokens failed");
+        ApiError::DecodeFailed
+    })?;
 
     let resp = ChatCompletionResponse {
         id: format!("chatcmpl-{}", chrono_like_id()),
@@ -330,7 +291,7 @@ async fn chat_completions(
         }],
     };
 
-    (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+    Ok((axum::http::StatusCode::OK, axum::Json(resp)).into_response())
 }
 
 /// One OpenAI `chat.completion.chunk` as the JSON text of an SSE `data:` line.
@@ -353,10 +314,13 @@ fn stream_response(
     model: String,
     first: StreamEvent,
     mut events: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+    guard: crate::inflight::InflightGuard,
 ) -> impl IntoResponse {
     let (tx, out) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
     let id = format!("chatcmpl-{}", chrono_like_id());
     tokio::spawn(async move {
+        // Held until the stream is finished, so a shutdown drain waits for it.
+        let _guard = guard;
         let send = |data: String| tx.send(Ok(Event::default().data(data))).is_ok();
         if !send(chunk_json(&id, &model, serde_json::json!({ "role": "assistant", "content": "" }), None)) {
             return;
@@ -376,7 +340,8 @@ fn stream_response(
                             }
                             Ok(_) => {}
                             Err(e) => {
-                                send(serde_json::json!({ "error": { "message": format!("decode failed: {e}") } }).to_string());
+                                tracing::error!(error = %e, "incremental decode failed");
+                                send(ApiError::DecodeFailed.body().to_string());
                                 return;
                             }
                         }
@@ -390,7 +355,8 @@ fn stream_response(
                     break;
                 }
                 Some(StreamEvent::Error(message)) => {
-                    send(serde_json::json!({ "error": { "message": message } }).to_string());
+                    tracing::error!(error = %message, "scheduler error mid-stream");
+                    send(ApiError::GenerationFailed.body().to_string());
                     send("[DONE]".into());
                     return;
                 }

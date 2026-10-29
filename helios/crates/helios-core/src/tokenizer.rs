@@ -98,23 +98,38 @@ impl PromptTokenizer {
     /// truncated. `add_special_tokens=true` lets the tokenizer emit BOS/EOS per its
     /// config, which the HAL assumes.
     pub async fn encode_messages(&self, messages: &[ChatMessageForEncode<'_>]) -> Result<Vec<u32>> {
-        // With a chat template the rendered text already contains every special token, so it is
-        // tokenised without adding more (what `apply_chat_template` + `tokenizer(...,
-        // add_special_tokens=False)` does in Hugging Face).
-        let (prompt, add_special_tokens) = match &self.chat_template {
-            Some(template) => (template.render(messages, true)?, false),
-            None => (flatten_messages(messages), true),
-        };
-        let tok = self.get().await?;
-        let enc = tok
-            .encode(prompt.as_str(), add_special_tokens)
-            .map_err(|e| anyhow!("tokenizer encode failed: {e}"))
-            .context("prompt encode")?;
-        let ids = enc.get_ids().to_vec();
-        if ids.len() > self.max_length {
-            return Err(PromptTooLong { tokens: ids.len(), max: self.max_length }.into());
-        }
-        Ok(ids)
+        // Loading the file is the only async part and happens once; rendering and BPE encoding are
+        // CPU-bound (milliseconds for a long prompt), so they run on the blocking pool and never
+        // stall the runtime threads that serve other requests and the health endpoint.
+        self.get().await?;
+        let cell = self.inner.clone();
+        let template = self.chat_template.clone();
+        let max_length = self.max_length;
+        let owned: Vec<(String, String)> =
+            messages.iter().map(|m| (m.role.to_string(), m.content.to_string())).collect();
+        tokio::task::spawn_blocking(move || {
+            let borrowed: Vec<ChatMessageForEncode<'_>> =
+                owned.iter().map(|(role, content)| ChatMessageForEncode { role, content }).collect();
+            // With a chat template the rendered text already contains every special token, so it
+            // is tokenised without adding more (what `apply_chat_template` + `tokenizer(...,
+            // add_special_tokens=False)` does in Hugging Face).
+            let (prompt, add_special_tokens) = match &template {
+                Some(template) => (template.render(&borrowed, true)?, false),
+                None => (flatten_messages(&borrowed), true),
+            };
+            let tok = cell.get().ok_or_else(|| anyhow!("tokenizer not loaded"))?;
+            let enc = tok
+                .encode(prompt.as_str(), add_special_tokens)
+                .map_err(|e| anyhow!("tokenizer encode failed: {e}"))
+                .context("prompt encode")?;
+            let ids = enc.get_ids().to_vec();
+            if ids.len() > max_length {
+                return Err(PromptTooLong { tokens: ids.len(), max: max_length }.into());
+            }
+            Ok(ids)
+        })
+        .await
+        .map_err(|e| anyhow!("tokenization task failed: {e}"))?
     }
 
     /// Decode a token id stream back to text (for streaming responses). Not
