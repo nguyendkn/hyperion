@@ -20,8 +20,8 @@ use crate::sampling::SamplingConfig;
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, TensorData};
 use crate::weights_plan;
 
-/// PTX generated from `kernels/rmsnorm.cu` (rebuild with `scripts/build-ptx.sh`).
-pub(super) const RMSNORM_PTX: &str = include_str!("../../../kernels/rmsnorm.ptx");
+/// Fat binary built from `kernels/rmsnorm.cu` (rebuild with `scripts/build-kernels.sh`).
+pub(super) const RMSNORM_IMAGE: &[u8] = include_bytes!("../../../kernels/rmsnorm.fatbin");
 
 /// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
 pub(super) const ROW_BLOCK: u32 = 256;
@@ -126,7 +126,7 @@ impl HopperBackend {
         if w_len != hidden * 2 {
             return Err(anyhow!("weight {weight} holds {w_len} bytes, bf16 [{hidden}] needs {}", hidden * 2));
         }
-        let kernel = self.kernel(&dev, "rmsnorm", RMSNORM_PTX, "rmsnorm_bf16")?;
+        let kernel = self.kernel(&dev, "rmsnorm", RMSNORM_IMAGE, "rmsnorm_bf16")?;
 
         let bytes: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
         let x_ptr = dev.alloc(bytes.len().max(1))?;

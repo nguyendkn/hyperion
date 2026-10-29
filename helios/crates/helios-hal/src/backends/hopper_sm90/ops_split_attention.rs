@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use anyhow::{anyhow, Result};
 
 use super::backend::HopperBackend;
-use super::ops::ELEMENTWISE_PTX;
+use super::ops::ELEMENTWISE_IMAGE;
 
 /// Threads per block of `attention_split_bf16`; the kernel's tile size.
 const SPLIT_BLOCK: u32 = 128;
@@ -31,15 +31,15 @@ impl HopperBackend {
         kv_heads: usize,
         head_dim: usize,
     ) -> Result<Vec<u16>> {
-        if len == 0 || !matches!(head_dim, 32 | 64 | 128) || kv_heads == 0 || heads % kv_heads != 0 || heads / kv_heads > 8 {
+        if len == 0 || !matches!(head_dim, 64 | 128) || kv_heads == 0 || heads % kv_heads != 0 || heads / kv_heads > 8 {
             return Err(anyhow!("unsupported attention shape: len {len}, {heads} heads, {kv_heads} KV heads, head_dim {head_dim}"));
         }
         if q.len() != heads * head_dim || k.len() != len * kv_heads * head_dim || v.len() != k.len() {
             return Err(anyhow!("attention input sizes do not match the shape"));
         }
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        let split = self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, &format!("attention_split_{head_dim}_bf16"))?;
-        let combine = self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_combine_bf16")?;
+        let split = self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, &format!("attention_split_{head_dim}_bf16"))?;
+        let combine = self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "attention_combine_bf16")?;
         let splits = split_count(dev.multiprocessor_count(), kv_heads);
         let bytes = |x: &[u16]| -> Vec<u8> { x.iter().flat_map(|v| v.to_le_bytes()).collect() };
 

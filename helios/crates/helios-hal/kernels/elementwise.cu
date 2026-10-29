@@ -366,12 +366,6 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
 }
 
 // One entry point per head dimension, so each kernel's static shared memory is only its own.
-extern "C" __global__ void attention_split_32_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
-                                                    const bf16* __restrict__ v_cache, float* __restrict__ ws,
-                                                    const int* __restrict__ pos, int heads, int kv_heads, int splits) {
-    attention_split_impl<32>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits);
-}
-
 extern "C" __global__ void attention_split_64_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
                                                     const bf16* __restrict__ v_cache, float* __restrict__ ws,
                                                     const int* __restrict__ pos, int heads, int kv_heads, int splits) {

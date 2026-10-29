@@ -37,6 +37,7 @@ cargo build --workspace --features stub
 cargo check -p helios-hal --features sm120       # type-check only when CUDA is absent
 python -m compileall ignition/src                # syntax check for Ignition
 pytest ignition/tests                            # Ignition tests (pip install -e "ignition[test]")
+bash scripts/build-kernels.sh                    # rebuild helios-hal/kernels/*.fatbin (needs nvcc, i.e. a GPU host); ignition/tests/test_kernel_binaries.py fails when a source changed without it
 cargo test -p hyperion-specification --features schema   # manifest contract + schema drift (task schema:check)
 cargo run -p hyperion-specification --features schema --bin gen-schema   # regenerate schema (task schema:gen)
 ```

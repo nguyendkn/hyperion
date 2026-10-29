@@ -10,8 +10,8 @@ use anyhow::{anyhow, Result};
 use super::backend::HopperBackend;
 use crate::cuda::{CudaDevice, Kernel, KernelModule};
 
-/// PTX generated from `kernels/elementwise.cu` (rebuild with `scripts/build-ptx.sh`).
-pub(super) const ELEMENTWISE_PTX: &str = include_str!("../../../kernels/elementwise.ptx");
+/// Fat binary built from `kernels/elementwise.cu` (rebuild with `scripts/build-kernels.sh`).
+pub(super) const ELEMENTWISE_IMAGE: &[u8] = include_bytes!("../../../kernels/elementwise.fatbin");
 
 const BLOCK: u32 = 256;
 
@@ -40,11 +40,11 @@ fn bf16_from(raw: &[u8]) -> Vec<u16> {
 }
 
 impl HopperBackend {
-    /// Load (once) the PTX module stored under `key` and look up `name`.
-    pub(super) fn kernel(&self, dev: &CudaDevice, key: &'static str, ptx: &str, name: &str) -> Result<Kernel> {
+    /// Load (once) the kernel module stored under `key` and look up `name`.
+    pub(super) fn kernel(&self, dev: &CudaDevice, key: &'static str, image: &[u8], name: &str) -> Result<Kernel> {
         let mut modules = self.modules.lock().expect("modules mutex poisoned");
         if !modules.contains_key(key) {
-            modules.insert(key, KernelModule::load(dev, ptx)?);
+            modules.insert(key, KernelModule::load(dev, image)?);
         }
         modules[key].function(name)
     }
@@ -54,7 +54,7 @@ impl HopperBackend {
     pub(super) fn run_kernel(
         &self,
         key: &'static str,
-        ptx: &str,
+        image: &[u8],
         name: &str,
         args: &[Arg],
         out_bytes: usize,
@@ -63,7 +63,7 @@ impl HopperBackend {
         shared: u32,
     ) -> Result<Vec<u8>> {
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        let kernel = self.kernel(&dev, key, ptx, name)?;
+        let kernel = self.kernel(&dev, key, image, name)?;
 
         // Pass 1: allocate and upload; values are final before any pointer to them is taken.
         let mut allocated: Vec<u64> = Vec::new();
@@ -147,7 +147,7 @@ impl HopperBackend {
         let id_bytes: Vec<u8> = ids.iter().flat_map(|v| v.to_le_bytes()).collect();
         let raw = self.run_kernel(
             "elementwise",
-            ELEMENTWISE_PTX,
+            ELEMENTWISE_IMAGE,
             "embedding_gather_bf16",
             &[Arg::Host(&id_bytes), Arg::Dev(ptr), Arg::Out, Arg::I32(i32::try_from(hidden)?)],
             ids.len() * hidden * 2,
@@ -166,7 +166,7 @@ impl HopperBackend {
         let (ab, bb) = (bytes_of(a), bytes_of(b));
         let raw = self.run_kernel(
             "elementwise",
-            ELEMENTWISE_PTX,
+            ELEMENTWISE_IMAGE,
             name,
             &[Arg::Host(&ab), Arg::Host(&bb), Arg::Out, Arg::I32(n)],
             a.len() * 2,
@@ -212,7 +212,7 @@ impl HopperBackend {
         let pb: Vec<u8> = positions.iter().flat_map(|v| v.to_le_bytes()).collect();
         let raw = self.run_kernel(
             "elementwise",
-            ELEMENTWISE_PTX,
+            ELEMENTWISE_IMAGE,
             "rope_bf16",
             &[
                 Arg::Host(&xb),
@@ -262,7 +262,7 @@ impl HopperBackend {
         let (qb, kb, vb) = (bytes_of(q), bytes_of(k), bytes_of(v));
         let raw = self.run_kernel(
             "elementwise",
-            ELEMENTWISE_PTX,
+            ELEMENTWISE_IMAGE,
             "attention_bf16",
             &[
                 Arg::Host(&qb),

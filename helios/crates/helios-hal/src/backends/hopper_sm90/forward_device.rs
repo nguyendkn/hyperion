@@ -11,9 +11,9 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 
-use super::backend::{HopperBackend, ROW_BLOCK, RMSNORM_PTX};
+use super::backend::{HopperBackend, ROW_BLOCK, RMSNORM_IMAGE};
 use super::forward::Qwen2Dims;
-use super::ops::ELEMENTWISE_PTX;
+use super::ops::ELEMENTWISE_IMAGE;
 use super::decode_profile::{DecodeProfile, DecodeTiming};
 use crate::cuda::event::Event;
 use crate::cuda::profile::StepMarks;
@@ -253,17 +253,17 @@ impl HopperBackend {
             }
         }
         let kernels = Kernels {
-            rmsnorm: self.kernel(&dev, "rmsnorm", RMSNORM_PTX, "rmsnorm_bf16")?,
-            embedding: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "embedding_gather_bf16")?,
-            add: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "add_bf16")?,
-            swiglu: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "swiglu_bf16")?,
-            rope: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "rope_bf16")?,
-            attention: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_bf16")?,
-            attention_split: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, &format!("attention_split_{}_bf16", d.head_dim))?,
-            attention_combine: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "attention_combine_bf16")?,
-            kv_append: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "kv_append_bf16")?,
-            argmax: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "argmax_chain_bf16")?,
-            bias_cast: self.kernel(&dev, "elementwise", ELEMENTWISE_PTX, "bias_cast_bf16")?,
+            rmsnorm: self.kernel(&dev, "rmsnorm", RMSNORM_IMAGE, "rmsnorm_bf16")?,
+            embedding: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "embedding_gather_bf16")?,
+            add: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "add_bf16")?,
+            swiglu: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "swiglu_bf16")?,
+            rope: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "rope_bf16")?,
+            attention: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "attention_bf16")?,
+            attention_split: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, &format!("attention_split_{}_bf16", d.head_dim))?,
+            attention_combine: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "attention_combine_bf16")?,
+            kv_append: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "kv_append_bf16")?,
+            argmax: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "argmax_chain_bf16")?,
+            bias_cast: self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "bias_cast_bf16")?,
         };
         let (embed, final_norm, layers) = {
             let weights = self.weights.lock().expect("weights mutex poisoned");
@@ -322,10 +322,10 @@ impl HopperBackend {
         let (hidden, heads, kv_heads, hd) = (d.hidden, d.heads, d.kv_heads, d.head_dim);
         let (q_dim, kv_dim) = (heads * hd, kv_heads * hd);
         let t_max = prompt.len();
-        // The split-K decode attention serves head dimensions that divide its 128-thread block
-        // and at most 8 query heads per KV head; anything else is refused, never mis-computed.
-        if !matches!(hd, 32 | 64 | 128) || kv_heads == 0 || heads % kv_heads != 0 || heads / kv_heads > 8 {
-            return Err(anyhow!("decode attention supports head_dim 32/64/128 and at most 8 query heads per KV head; got head_dim {hd}, {heads} heads, {kv_heads} KV heads"));
+        // The split-K decode attention has kernels for head dimensions 64 and 128 and serves at most
+        // 8 query heads per KV head; anything else is refused, never mis-computed.
+        if !matches!(hd, 64 | 128) || kv_heads == 0 || heads % kv_heads != 0 || heads / kv_heads > 8 {
+            return Err(anyhow!("decode attention supports head_dim 64 or 128 and at most 8 query heads per KV head; got head_dim {hd}, {heads} heads, {kv_heads} KV heads"));
         }
         // One block per (KV head, split): enough splits to give every SM a block, whatever the context.
         let splits = super::ops_split_attention::split_count(dev.multiprocessor_count(), kv_heads);

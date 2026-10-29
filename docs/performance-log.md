@@ -80,3 +80,7 @@ Single H100 80GB HBM3 (sm_90), driver 580.126.20, SM clock 1980 MHz throughout, 
 | 7900 | 2.761 [2.753, 2.765] | 2.017 [2.013, 2.018] | 2.048 | 12% |
 
 The spread inside a configuration is under 1%, against tens of percent with the earlier method, so the wide ranges seen before (for example 0.70 to 4.54 ms at 7900) were measurement noise. The step is GPU-bound: wall time exceeds GPU time by about 0.03 ms. Graph replay is 1.4x faster than direct launches at every context length. At 7900 tokens the graph step is 2.02 ms, inside the 2 to 2.5 ms target.
+
+## Start-up cost (single H100, driver JIT cache disabled, 3 alternated runs of a fresh process)
+
+The first generation of a process loads the kernel modules. With the kernels as PTX the driver compiled them at that moment: 867, 1000 and 852 ms. With fat binaries carrying sm_90 machine code (`scripts/build-kernels.sh`): 102, 157 and 150 ms. Later generations take about 21 ms either way. The remaining 100 to 160 ms include creating the cuBLAS handle. Weight upload (about 1 GB) took 0.8 to 2.8 s and varied between runs of the same build.

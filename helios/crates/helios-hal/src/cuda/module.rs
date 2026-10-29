@@ -1,11 +1,11 @@
-//! Load PTX and launch kernels through the Driver API. The PTX is generated from the
-//! CUDA sources in `helios-hal/kernels/` (see `scripts/build-ptx.sh`) and embedded in
-//! the binary; the driver JIT-compiles it for the installed GPU when the module is
-//! loaded, so one file serves every generation.
+//! Load kernel binaries and launch kernels through the Driver API. The binaries are fat
+//! binaries built from the CUDA sources in `helios-hal/kernels/` (see `scripts/build-kernels.sh`)
+//! and embedded in the executable: machine code for sm_90, so loading on a Hopper GPU compiles
+//! nothing, plus PTX the driver JIT-compiles for any other generation.
 
 use std::ffi::{c_void, CString};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use cuda_driver_sys::{
     cuLaunchKernel, cuModuleGetFunction, cuModuleLoadData, cuModuleUnload, CUfunction, CUmodule,
 };
@@ -13,7 +13,7 @@ use cuda_driver_sys::{
 use super::device::CudaDevice;
 use super::ffi::eval_cuda;
 
-/// A loaded PTX module. Unloaded on drop; drop it before the device releases its context
+/// A loaded kernel module. Unloaded on drop; drop it before the device releases its context
 /// (declare it before the device in a struct).
 pub struct KernelModule {
     module: CUmodule,
@@ -29,10 +29,10 @@ pub struct Kernel {
 }
 
 impl KernelModule {
-    /// JIT-compile and load `ptx` on the device's context.
-    pub fn load(dev: &CudaDevice, ptx: &str) -> Result<Self> {
+    /// Load a fat binary (or cubin) on the device's context. The driver picks the machine code
+    /// that matches the GPU and only compiles the embedded PTX when none does.
+    pub fn load(dev: &CudaDevice, image: &[u8]) -> Result<Self> {
         dev.set_current()?;
-        let image = CString::new(ptx).context("PTX must not contain NUL bytes")?;
         let mut module: CUmodule = std::ptr::null_mut();
         unsafe {
             eval_cuda("cuModuleLoadData", cuModuleLoadData(&mut module, image.as_ptr() as *const c_void))?;
