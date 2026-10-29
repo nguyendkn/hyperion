@@ -11,7 +11,7 @@
 use anyhow::Result;
 
 use super::sys::{
-    cuCtxSetCurrent, cuCtxSynchronize, cuDeviceGet, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRelease_v2,
+    cuCtxSetCurrent, cuCtxSynchronize, cuDeviceGet, cuMemGetInfo_v2, cuDeviceGetAttribute, cuDeviceGetCount, cuDevicePrimaryCtxRelease_v2,
     cuDevicePrimaryCtxRetain, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoDAsync_v2,
     cuMemcpyDtoH_v2, cuMemcpyHtoD_v2, cuStreamCreate, cuStreamDestroy_v2, load_driver, CUcontext, CUdevice, CUdeviceptr,
     CUstream, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
@@ -120,6 +120,18 @@ impl CudaDevice {
     /// manifest's `target_arch` convention.
     pub fn compute_capability_string(&self) -> String {
         format!("sm_{}{}", self.cap_major, self.cap_minor)
+    }
+
+    /// Free and total device memory in bytes right now, as the driver reports it for this context
+    /// (`cuMemGetInfo`). Unlike [`Self::total_vram_bytes`] this reflects what the weights and the
+    /// driver already use, so it is the number a KV cache can be sized from after the weights load.
+    pub fn memory_info(&self) -> Result<(u64, u64)> {
+        self.set_current()?;
+        let (mut free, mut total) = (0usize, 0usize);
+        unsafe {
+            eval_cuda("cuMemGetInfo", cuMemGetInfo_v2(&mut free, &mut total))?;
+        }
+        Ok((free as u64, total as u64))
     }
 
     /// Number of streaming multiprocessors, used to size grids that should fill the GPU.

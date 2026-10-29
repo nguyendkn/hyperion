@@ -156,6 +156,12 @@ impl HopperBackend {
         result
     }
 
+    /// Free and total device memory in bytes (`cuMemGetInfo`), for example right after the weights
+    /// loaded: what is left is what a KV cache can use.
+    pub fn device_memory(&self) -> Result<(u64, u64)> {
+        self.device.lock().expect("device mutex poisoned").memory_info()
+    }
+
     /// Number of tensors and total bytes currently on the device.
     pub fn loaded_weights(&self) -> (usize, usize) {
         let weights = self.weights.lock().expect("weights mutex poisoned");

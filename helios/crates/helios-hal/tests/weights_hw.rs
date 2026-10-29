@@ -38,6 +38,18 @@ fn qwen2_dims(package: &std::path::Path) -> helios_hal::Qwen2Dims {
     }
 }
 
+/// The prompt ids the timing tests repeat: the first prompt of the compact oracle when
+/// `HYPERION_COMPACT_ORACLE` is set, otherwise the single prompt of the older `HYPERION_ORACLE`.
+fn seed_prompt_ids() -> Vec<u32> {
+    if let Some(path) = std::env::var_os("HYPERION_COMPACT_ORACLE") {
+        let oracle = helios_hal::oracle::CompactOracle::from_json(&std::fs::read(path).unwrap()).expect("compact oracle");
+        return oracle.prompts[0].ids.clone();
+    }
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE or HYPERION_COMPACT_ORACLE")).unwrap()).unwrap();
+    oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect()
+}
+
 fn package() -> PathBuf {
     PathBuf::from(std::env::var("HYPERION_WEIGHTS_PACKAGE").expect("set HYPERION_WEIGHTS_PACKAGE to the .hyperion path"))
 }
@@ -678,10 +690,8 @@ fn decode_time_vs_context() {
     use helios_hal::DecodeMode;
 
     let package = package();
-    let oracle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
     let dims = qwen2_dims(&package);
-    let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
     for context in [5usize, 1024, 4096, 7900] {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
@@ -762,10 +772,8 @@ fn measure_decode_sample() {
     use helios_hal::DecodeMode::{Direct, Graph};
 
     let package = package();
-    let oracle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
     let dims = qwen2_dims(&package);
-    let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let seed: Vec<u32> = seed_prompt_ids();
     let context: usize = std::env::var("HYPERION_MEASURE_CONTEXT").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
     let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
     let (_, _, backend) = loaded_backend();
@@ -879,10 +887,8 @@ fn long_context_decode_logits_match_prefill_logits() {
     use helios_hal::{DecodeMode, SamplingConfig};
 
     let package = package();
-    let oracle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
     let dims = qwen2_dims(&package);
-    let seed: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
     let bound = 0.5f32;
     for context in [5usize, 1024, 4096, 8000] {
@@ -898,6 +904,66 @@ fn long_context_decode_logits_match_prefill_logits() {
         let argmax = |v: &[f32]| v.iter().enumerate().fold(0, |b, (i, x)| if *x > v[b] { i } else { b });
         println!("context {context:>5}: max |decode - prefill| logit diff {diff:.4} (bound {bound}); argmax decode {} prefill {}", argmax(&trace[1]), argmax(&prefill));
         assert!(diff <= bound, "context {context}: logit difference {diff} exceeds the declared bound {bound}");
+    }
+    backend.shutdown().unwrap();
+}
+
+/// A Hyperion forward against the compact oracle (`scripts/gen-oracle-large.py`): for each prompt, the
+/// logits of the prefill and of each greedy decode step are compared with the float32 reference under the
+/// tolerance the oracle file declared before this run (see `helios_hal::oracle` for the rule). Positions are
+/// compared while our greedy tokens equal the reference's; the first 8 generated tokens must agree.
+/// Also prints the device memory left after the weights loaded (`cuMemGetInfo`), for the KV sizing.
+///
+/// Needs `HYPERION_COMPACT_ORACLE=/path/<id>.compact.json` next to the usual package variable.
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn forward_matches_the_compact_oracle() {
+    use helios_hal::oracle::{compare, CompactOracle};
+    use helios_hal::sampling::argmax;
+    use helios_hal::{DecodeMode, SamplingConfig};
+
+    let package = package();
+    let oracle = CompactOracle::from_json(&std::fs::read(std::env::var("HYPERION_COMPACT_ORACLE").expect("set HYPERION_COMPACT_ORACLE")).unwrap()).expect("compact oracle");
+    let dims = qwen2_dims(&package);
+    let (_, _, backend) = loaded_backend();
+    let (tensors, bytes) = backend.loaded_weights();
+    let (free, total) = backend.device_memory().expect("cuMemGetInfo");
+    println!(
+        "VRAM after loading {tensors} tensors ({:.2} GiB): {:.2} GiB free of {:.2} GiB",
+        bytes as f64 / (1u64 << 30) as f64,
+        free as f64 / (1u64 << 30) as f64,
+        total as f64 / (1u64 << 30) as f64
+    );
+    println!("tolerance declared in the oracle: top-k logits {} , logsumexp {}", oracle.tolerance.max_abs_top_logits, oracle.tolerance.max_abs_logsumexp);
+    let required = 8.min(oracle.generated_tokens);
+    for prompt in &oracle.prompts {
+        let mut trace = Vec::new();
+        backend
+            .generate_traced(&dims, &prompt.ids, oracle.generated_tokens, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut trace))
+            .expect("generation");
+        let (mut compared, mut worst_top, mut worst_lse, mut diverged) = (0usize, 0f32, 0f64, None);
+        for (i, (logits, record)) in trace.iter().zip(&prompt.reference).enumerate() {
+            if i > 0 && argmax(&trace[i - 1]) as u32 != prompt.generated_ids[i - 1] {
+                diverged = Some(i);
+                break;
+            }
+            let c = compare(logits, record, &oracle.tolerance).expect("comparison");
+            worst_top = worst_top.max(c.max_abs_top_logits);
+            worst_lse = worst_lse.max(c.abs_logsumexp);
+            assert!(
+                c.within(&oracle.tolerance),
+                "{}: position {} (step {i}): top-k diff {:.4} (tolerance {}), logsumexp diff {:.4} (tolerance {}), argmax {} vs {} (ok: {})",
+                prompt.label, record.position, c.max_abs_top_logits, oracle.tolerance.max_abs_top_logits, c.abs_logsumexp, oracle.tolerance.max_abs_logsumexp, c.argmax, record.argmax, c.argmax_ok
+            );
+            compared += 1;
+        }
+        println!(
+            "ORACLE {}: {} prompt tokens, compared {compared} of {} positions (diverged at {diverged:?}); max top-k logit diff {worst_top:.4}, max logsumexp diff {worst_lse:.4}",
+            prompt.label,
+            prompt.ids.len(),
+            oracle.generated_tokens
+        );
+        assert!(compared >= required, "{}: only {compared} positions agreed with the reference's tokens, {required} are required", prompt.label);
     }
     backend.shutdown().unwrap();
 }

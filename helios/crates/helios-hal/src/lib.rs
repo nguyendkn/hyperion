@@ -17,6 +17,7 @@
 pub mod traits;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+pub mod oracle;
 pub mod reference;
 pub mod sampling;
 pub mod weights_plan;
