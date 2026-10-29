@@ -127,6 +127,8 @@ def release(device: str) -> None:
     if device.startswith("cuda"):
         import torch
 
+        print(f"ORACLE gpu peak allocated by this pass: {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB", flush=True)
+        torch.cuda.reset_peak_memory_stats()
         torch.cuda.empty_cache()
         free, total = torch.cuda.mem_get_info()
         print(f"ORACLE gpu memory after freeing the model: {free / 2**30:.1f} of {total / 2**30:.1f} GiB free", flush=True)

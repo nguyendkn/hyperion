@@ -700,7 +700,7 @@ fn decode_time_vs_context() {
     let dims = qwen2_dims(&package);
     let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
-    for context in [5usize, 1024, 4096, 7900] {
+    for context in [5usize, 1024, 4096, 8000] {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
         let (direct, graph) = measure_modes(&backend, &dims, &prompt, SAMPLES);
         // GPU time per group over 32 steps at this context (direct, logits path).
