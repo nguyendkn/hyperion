@@ -20,6 +20,7 @@ fn manifest(target_arch: &str, tensor_format: TensorFormat) -> Manifest {
         },
         tokenizer: TokenizerConfig::default(),
         layers: vec![],
+        payloads: Vec::new(),
         hardware_recipe: Default::default(),
         signature: None,
     }

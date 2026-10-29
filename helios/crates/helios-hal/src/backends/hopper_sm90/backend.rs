@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
@@ -18,17 +18,13 @@ use crate::cuda::{Cublas, CudaDevice, DeviceWeights, KernelModule};
 use super::forward::Qwen2Dims;
 use crate::sampling::SamplingConfig;
 use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, TensorData};
-use crate::weights_plan;
+use crate::weights_plan::{self, PayloadFile};
 
 /// Fat binary built from `kernels/rmsnorm.cu` (rebuild with `scripts/build-kernels.sh`).
 pub(super) const RMSNORM_IMAGE: &[u8] = include_bytes!("../../../kernels/rmsnorm.fatbin");
 
 /// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
 pub(super) const ROW_BLOCK: u32 = 256;
-
-/// Name of the checkpoint file next to the package, as written by Ignition's
-/// source model (the manifest's layer offsets index its data section).
-const WEIGHTS_FILE: &str = "model.safetensors";
 
 /// Field order is drop order: cuBLAS handle first, then the weights' owner, then the
 /// device (which releases the context they all live in).
@@ -182,11 +178,18 @@ impl ComputeBackend for HopperBackend {
         model_path: &Path,
         manifest: &hyperion_specification::v1::Manifest,
     ) -> Result<()> {
-        let file = model_path.with_file_name(WEIGHTS_FILE);
-        let mut handle = File::open(&file).with_context(|| format!("open weights {}", file.display()))?;
-        let file_len = handle.metadata()?.len();
-        let data_start = weights_plan::data_start(&mut handle)?;
-        let plans = weights_plan::plan(manifest, data_start, file_len)?;
+        // The payload names come from the manifest: refuse any that could leave the package directory
+        // before a path is built from them.
+        manifest.validate_payloads()?;
+        let files: Vec<PathBuf> = manifest.payload_files().into_iter().map(|name| model_path.with_file_name(name)).collect();
+        let mut facts = Vec::with_capacity(files.len());
+        for file in &files {
+            let mut handle = File::open(file).with_context(|| format!("open weights {}", file.display()))?;
+            let file_len = handle.metadata()?.len();
+            let data_start = weights_plan::data_start(&mut handle)?;
+            facts.push(PayloadFile { data_start, file_len });
+        }
+        let plans = weights_plan::plan(manifest, &facts)?;
 
         // The manifest does not carry hidden size, MLP width, RoPE theta or the EOS token yet,
         // so read them from the model's own config.json beside the package (like the weights)
@@ -199,7 +202,7 @@ impl ComputeBackend for HopperBackend {
         let runtime = Qwen2Dims::from_config_json(&config, &manifest.model)?;
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        let uploaded = DeviceWeights::upload(&mut dev, &file, &plans)?;
+        let uploaded = DeviceWeights::upload(&mut dev, &files, &plans)?;
         *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
         let mut slot = self.weights.lock().expect("weights mutex poisoned");
         if let Some(mut old) = slot.replace(uploaded) {

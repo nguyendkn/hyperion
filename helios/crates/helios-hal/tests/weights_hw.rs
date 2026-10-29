@@ -62,7 +62,7 @@ fn device_weights_equal_file_weights() {
     let mut source = std::fs::File::open(&file).unwrap();
     let file_len = source.metadata().unwrap().len();
     let data_start = weights_plan::data_start(&mut source).unwrap();
-    let plans = weights_plan::plan(&manifest, data_start, file_len).unwrap();
+    let plans = weights_plan::plan(&manifest, &[weights_plan::PayloadFile { data_start, file_len }]).unwrap();
     for plan in &plans {
         let mut expected = vec![0u8; plan.len as usize];
         source.seek(SeekFrom::Start(plan.file_offset)).unwrap();

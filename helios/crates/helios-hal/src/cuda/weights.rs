@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 
@@ -23,14 +23,21 @@ pub struct DeviceWeights {
 }
 
 impl DeviceWeights {
-    /// Copy every planned tensor from `file` to the device. If any step fails the
-    /// allocations made so far are freed before the error is returned, so a failed
+    /// Copy every planned tensor from its payload file (`files[plan.payload]`) to the device. If any
+    /// step fails the allocations made so far are freed before the error is returned, so a failed
     /// load leaves no device memory behind.
-    pub fn upload(dev: &mut CudaDevice, file: &Path, plans: &[TensorPlan]) -> Result<Self> {
-        let mut source = File::open(file).with_context(|| format!("open {}", file.display()))?;
+    pub fn upload(dev: &mut CudaDevice, files: &[PathBuf], plans: &[TensorPlan]) -> Result<Self> {
+        let mut sources = Vec::with_capacity(files.len());
+        for file in files {
+            sources.push(File::open(file).with_context(|| format!("open {}", file.display()))?);
+        }
         let mut weights = Self::default();
         for plan in plans {
-            if let Err(e) = weights.upload_one(dev, &mut source, plan) {
+            let Some(source) = sources.get_mut(plan.payload) else {
+                let _ = weights.free(dev);
+                return Err(anyhow!("tensor {} refers to payload {} but only {} file(s) are open", plan.name, plan.payload, files.len()));
+            };
+            if let Err(e) = weights.upload_one(dev, source, plan) {
                 let _ = weights.free(dev);
                 return Err(e.context(format!("uploading tensor {}", plan.name)));
             }
