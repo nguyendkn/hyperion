@@ -135,6 +135,7 @@ def _download(url: str, part: Path, total: int) -> None:
         import hf_transfer  # type: ignore[import-not-found]
     except ImportError:
         hf_transfer = None
+    print(f"FETCH download path for {part.name}: {'hf_transfer (parallel connections)' if hf_transfer is not None else 'single resumable stream (hf_transfer is not installed)'}", flush=True)
     if hf_transfer is not None and not (part.is_file() and part.stat().st_size):
         try:
             hf_transfer.download(url=url, filename=str(part), max_files=16, chunk_size=10 * 1024 * 1024, parallel_failures=3, max_retries=5)
