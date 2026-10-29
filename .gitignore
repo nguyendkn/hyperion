@@ -34,7 +34,7 @@ Thumbs.db
 
 # Generated
 repomix-output.xml
-plans/
+plans/**/*.zip
 
 # Coverage output
 coverage*.xml
@@ -42,3 +42,5 @@ coverage*.xml
 
 # Real third-party model files used by tests (fetched by scripts/fetch-model-fixtures.py)
 testdata/models/
+# written by scripts/package-for-pod.sh into the tarball only
+REVISION
