@@ -570,3 +570,48 @@ fn graph_decode_is_bit_identical_to_direct_launches() {
     println!("decode per token (batch 1, one machine): direct launches {direct_ms:.3} ms, CUDA graph {graph_ms:.3} ms ({:.2}x)", direct_ms / graph_ms);
     backend.shutdown().unwrap();
 }
+
+/// Where a decode step's time goes (single GPU, batch 1): GPU milliseconds per group of kernels
+/// from CUDA events, and host milliseconds per phase. `HYPERION_PROFILE_ONLY=direct|graph` runs
+/// one mode only, so an external profiler (nsys) sees a single loop of decode steps.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn profile_decode_steps() {
+    use helios_hal::DecodeMode;
+
+    let package = package();
+    let oracle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
+    let dims = qwen2_dims(&package);
+    let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    let (_, _, backend) = loaded_backend();
+    let only = std::env::var("HYPERION_PROFILE_ONLY").ok();
+    let steps = 128usize;
+    for (name, mode) in [("direct", DecodeMode::Direct), ("graph", DecodeMode::Graph)] {
+        if only.as_deref().is_some_and(|o| o != name) {
+            continue;
+        }
+        backend.generate_profiled(&dims, &prompt, 16, mode).expect("warm-up");
+        let started = std::time::Instant::now();
+        let profile = backend.generate_profiled(&dims, &prompt, steps + 1, mode).expect("profiled generation");
+        let wall = started.elapsed().as_secs_f64() * 1000.0;
+        let n = profile.steps as f64;
+        println!("== {name}: {} profiled decode steps, context {}..{} tokens", profile.steps, prompt.len(), prompt.len() + steps);
+        let mut gpu_total = 0.0;
+        for (group, ms) in &profile.gpu_ms_by_group {
+            println!("   gpu  {group:<12} {:>8.3} ms/step", ms / n);
+            gpu_total += ms / n;
+        }
+        if !profile.gpu_ms_by_group.is_empty() {
+            println!("   gpu  {:<12} {gpu_total:>8.3} ms/step (sum of marked intervals)", "TOTAL");
+        }
+        let host = |label: &str, ms: f64| println!("   host {label:<12} {:>8.3} ms/step", ms / n);
+        host("upload", profile.host_upload_ms);
+        host("issue", profile.host_issue_ms);
+        host("wait", profile.host_wait_ms);
+        host("read logits", profile.host_read_ms);
+        host("sample", profile.host_sample_ms);
+        println!("   wall (incl. prompt) {:.3} ms for {} tokens", wall, steps + 1);
+    }
+    backend.shutdown().unwrap();
+}

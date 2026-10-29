@@ -9,6 +9,7 @@ pub mod device;
 mod ffi;
 pub mod graph;
 pub mod module;
+pub mod profile;
 pub mod weights;
 
 pub use cublas::Cublas;

@@ -12,7 +12,7 @@ Two-stage architecture:
 ## Environment
 
 - Build host: Windows, no CUDA toolkit or GPU. Project directory: `C:\Users\nguyendk\Documents\Projects\hyperion`.
-- GPU (verified 2026-10-28 on a staging H100 pod, sm_90): driver 580.126.20 / CUDA 13.0, `nvidia/cuda:12.4.1-devel-ubuntu22.04` image (nvcc 12.4); the `sm120` feature links against it with `CUDA_PATH=/usr/local/cuda` and `LIBRARY_PATH=/usr/local/cuda/lib64/stubs`. Minimum toolkit version is not established. Stream capture + `cuGraphInstantiateWithFlags` + launch work on this driver (a decode step replays bit-identical to direct launches), but a graph was not faster than direct launches at batch 1 (see the ledger).
+- GPU (verified 2026-10-28 on a staging H100 pod, sm_90): driver 580.126.20 / CUDA 13.0, `nvidia/cuda:12.4.1-devel-ubuntu22.04` image (nvcc 12.4); the `sm120` feature links against it with `CUDA_PATH=/usr/local/cuda` and `LIBRARY_PATH=/usr/local/cuda/lib64/stubs`. Minimum toolkit version is not established. Stream capture + `cuGraphInstantiateWithFlags` + launch work on this driver (a decode step replays bit-identical to direct launches), and in a release build a graph is 1.30x faster than direct launches at batch 1 (docs/performance-log.md).
 - Default builds use the `stub` feature. Model-specific test data: `python scripts/fetch-model-fixtures.py` (see `testdata/README.md`). The `sm120` cargo feature can only be type-checked on this host; the link step needs the CUDA toolkit.
 
 ## Repository layout

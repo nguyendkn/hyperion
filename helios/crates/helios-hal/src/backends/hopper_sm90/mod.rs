@@ -14,9 +14,11 @@
 
 mod backend;
 mod forward;
+mod decode_profile;
 mod forward_device;
 mod ops;
 
 pub use backend::HopperBackend;
 pub use forward::{KvCache, Qwen2Dims};
+pub use decode_profile::DecodeProfile;
 pub use forward_device::DecodeMode;

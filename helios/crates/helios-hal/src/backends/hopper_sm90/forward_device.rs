@@ -5,13 +5,17 @@
 //! computes, with the same kernels and the same rounding, and a hardware test requires the
 //! logits to be bit-identical to that path.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 
 use super::backend::{HopperBackend, ROW_BLOCK, RMSNORM_PTX};
 use super::forward::Qwen2Dims;
 use super::ops::ELEMENTWISE_PTX;
+use super::decode_profile::DecodeProfile;
+use crate::cuda::profile::StepMarks;
 use crate::cuda::{CudaDevice, GraphExec, Kernel};
 use crate::reference::{bf16_to_f32, f32_to_bf16, rope_tables};
 use crate::sampling::{sample, Rng, SamplingConfig};
@@ -142,7 +146,14 @@ impl HopperBackend {
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None, None)
+    }
+
+    /// Greedy generation of `max_new` tokens with the decode steps profiled; see [`DecodeProfile`].
+    pub fn generate_profiled(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, mode: DecodeMode) -> Result<DecodeProfile> {
+        let mut profile = DecodeProfile::default();
+        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, Some(&mut profile))?;
+        Ok(profile)
     }
 
     /// Like [`Self::generate_streaming`] with an explicit decode mode; when `trace` is given, the
@@ -158,14 +169,14 @@ impl HopperBackend {
         mode: DecodeMode,
         trace: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, trace)
+        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, trace, None)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
     /// verification entry point that is compared bit for bit with the host path.
     pub fn forward_prefill_logits_device(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
         let mut trace = Vec::new();
-        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, Some(&mut trace))?;
+        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, Some(&mut trace), None)?;
         trace.into_iter().next().ok_or_else(|| anyhow!("no logits produced"))
     }
 
@@ -180,6 +191,7 @@ impl HopperBackend {
         on_token: &mut dyn FnMut(u32),
         mode: DecodeMode,
         trace: Option<&mut Vec<Vec<f32>>>,
+        profile: Option<&mut DecodeProfile>,
     ) -> Result<StopReason> {
         if prompt.is_empty() {
             return Err(anyhow!("no prompt tokens"));
@@ -235,7 +247,7 @@ impl HopperBackend {
         };
 
         let mut arena = Arena { allocated: Vec::new() };
-        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace);
+        let result = self.generate_on_device(&mut dev, &mut arena, d, &kernels, embed, final_norm, &layers, prompt, max_new, cap_seq, eos, sampling, on_token, mode, trace, profile);
         arena.free(&mut dev);
         result
     }
@@ -258,6 +270,7 @@ impl HopperBackend {
         on_token: &mut dyn FnMut(u32),
         mode: DecodeMode,
         mut trace: Option<&mut Vec<Vec<f32>>>,
+        mut profile: Option<&mut DecodeProfile>,
     ) -> Result<StopReason> {
         let (hidden, heads, kv_heads, hd) = (d.hidden, d.heads, d.kv_heads, d.head_dim);
         let (q_dim, kv_dim) = (heads * hd, kv_heads * hd);
@@ -304,8 +317,14 @@ impl HopperBackend {
         // synchronises or reads back, so it can be recorded into a CUDA graph. With `dynamic`
         // (decode only, `t == 1`) the cache row and the attention range come from `b.positions`
         // instead of from launch arguments, so one recording stays valid for every position.
-        let launches = |dev: &CudaDevice, t: usize, start: usize, dynamic: bool| -> Result<()> {
+        let launches = |dev: &CudaDevice, t: usize, start: usize, dynamic: bool, marks: Option<&RefCell<StepMarks>>| -> Result<()> {
             let seq = start + t;
+            let mark = |group: &'static str| -> Result<()> {
+                match marks {
+                    Some(m) => m.borrow_mut().mark(dev, group),
+                    None => Ok(()),
+                }
+            };
             let (hidden_i, hd_i, heads_i, kv_heads_i) =
                 (i32::try_from(hidden)?, i32::try_from(hd)?, i32::try_from(heads)?, i32::try_from(kv_heads)?);
             let ti = u32::try_from(t)?;
@@ -320,19 +339,24 @@ impl HopperBackend {
             };
 
             launch(dev, k.embedding, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.ids), Arg::Ptr(embed), Arg::Ptr(b.h), Arg::Int(hidden_i)])?;
+            mark("embedding")?;
             for (l, w) in layers.iter().enumerate() {
                 norm(b.h, w.input_norm, b.x, ti)?;
+                mark("norm")?;
                 linear(w.q_w, w.q_b, b.x, b.q, q_dim, hidden)?;
                 linear(w.k_w, w.k_b, b.x, b.k, kv_dim, hidden)?;
                 linear(w.v_w, w.v_b, b.x, b.v, kv_dim, hidden)?;
+                mark("qkv_proj")?;
                 // RoPE in place: each thread owns a (i, i + half) pair, so reading and writing
                 // the same buffer is safe.
                 launch(dev, k.rope, ti * u32::try_from(heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(b.q), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(b.q), Arg::Int(heads_i), Arg::Int(hd_i)])?;
                 launch(dev, k.rope, ti * u32::try_from(kv_heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(b.k), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(b.k), Arg::Int(kv_heads_i), Arg::Int(hd_i)])?;
+                mark("rope")?;
                 // Append this step's K and V to the layer's cache, then attend over it.
                 let (k_cache, v_cache) = b.kv[l];
                 if dynamic {
                     launch(dev, k.kv_append, grid_for(kv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.k), Arg::Ptr(b.v), Arg::Ptr(b.positions), Arg::Int(i32::try_from(kv_dim)?)])?;
+                    mark("kv_append")?;
                     launch(
                         dev,
                         k.attention_decode,
@@ -341,10 +365,12 @@ impl HopperBackend {
                         u32::try_from((cap_seq + ATTENTION_BLOCK as usize) * 4)?,
                         &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(i32::try_from(cap_seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
                     )?;
+                    mark("attention")?;
                 } else {
                     let offset = (start * kv_dim * bf) as u64;
                     dev.dtod_async(k_cache + offset, b.k, t * kv_dim * bf)?;
                     dev.dtod_async(v_cache + offset, b.v, t * kv_dim * bf)?;
+                    mark("kv_append")?;
                     launch(
                         dev,
                         k.attention,
@@ -353,22 +379,32 @@ impl HopperBackend {
                         u32::try_from((seq + ATTENTION_BLOCK as usize) * 4)?,
                         &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Int(i32::try_from(seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(start)?)],
                     )?;
+                    mark("attention")?;
                 }
                 linear(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
+                mark("o_proj")?;
                 launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.o), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
+                mark("residual")?;
 
                 norm(b.h, w.post_norm, b.x, ti)?;
+                mark("norm")?;
                 linear(w.gate, 0, b.x, b.gate, d.intermediate, hidden)?;
                 linear(w.up, 0, b.x, b.up, d.intermediate, hidden)?;
+                mark("mlp_gate_up")?;
                 launch(dev, k.swiglu, grid_for(t * d.intermediate)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.gate), Arg::Ptr(b.up), Arg::Ptr(b.act), Arg::Int(i32::try_from(t * d.intermediate)?)])?;
+                mark("mlp_act")?;
                 linear(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
+                mark("mlp_down")?;
                 launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.down), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
+                mark("residual")?;
             }
 
             // Final norm of the last row only, then the tied output head.
             let last_row = b.h + ((t - 1) * hidden * bf) as u64;
             norm(last_row, final_norm, b.x, 1)?;
-            cublas.linear_bf16_f32(embed, b.x, b.logits, 1, d.vocab, hidden)
+            mark("norm")?;
+            cublas.linear_bf16_f32(embed, b.x, b.logits, 1, d.vocab, hidden)?;
+            mark("lm_head")
         };
         // Host to device: the token ids and their positions (the only per-step inputs).
         let upload = |dev: &CudaDevice, ids: &[u32], start: usize| -> Result<()> {
@@ -377,15 +413,18 @@ impl HopperBackend {
             dev.htod(b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
         };
         // Wait for the queued step and read its logits back, rounded to bf16 like the host path.
-        let download = |dev: &CudaDevice| -> Result<Vec<f32>> {
-            dev.synchronize()?;
+        let read_logits = |dev: &CudaDevice| -> Result<Vec<f32>> {
             let mut raw = vec![0u8; d.vocab * 4];
             dev.dtoh(&mut raw, b.logits)?;
             Ok(raw.chunks_exact(4).map(|c| bf16_to_f32(f32_to_bf16(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))).collect())
         };
+        let download = |dev: &CudaDevice| -> Result<Vec<f32>> {
+            dev.synchronize()?;
+            read_logits(dev)
+        };
         let step = |dev: &CudaDevice, ids: &[u32], start: usize| -> Result<Vec<f32>> {
             upload(dev, ids, start)?;
-            launches(dev, ids.len(), start, false)?;
+            launches(dev, ids.len(), start, false, None)?;
             download(dev)
         };
 
@@ -398,29 +437,58 @@ impl HopperBackend {
         let mut graph: Option<GraphExec> = None;
         let mut warmed_up = false;
         for produced in 0..max_new {
+            let sampled_at = Instant::now();
             let next = sample(&logits, sampling, &mut rng);
+            if produced > 0 {
+                if let Some(p) = profile.as_mut() {
+                    p.host_sample_ms += sampled_at.elapsed().as_secs_f64() * 1000.0;
+                }
+            }
             on_token(next);
             if Some(next) == eos {
                 return Ok(StopReason::EndOfSequence);
             }
             if produced + 1 < max_new {
-                logits = if mode == DecodeMode::Graph {
-                    upload(dev, &[next], position)?;
+                let timed = profile.is_some() && !(mode == DecodeMode::Graph && !warmed_up);
+                let t0 = Instant::now();
+                upload(dev, &[next], position)?;
+                let t1 = Instant::now();
+                let marks = if timed && mode == DecodeMode::Direct { Some(RefCell::new(StepMarks::start(dev)?)) } else { None };
+                if mode == DecodeMode::Graph {
                     if !warmed_up {
                         // Launched directly: cuBLAS may allocate its workspace for the one-token
                         // shapes on first use, which is not allowed while a capture is open.
-                        launches(dev, 1, position, true)?;
+                        launches(dev, 1, position, true, None)?;
                         warmed_up = true;
                     } else {
                         if graph.is_none() {
-                            graph = Some(GraphExec::capture(dev, || launches(dev, 1, position, true))?);
+                            graph = Some(GraphExec::capture(dev, || launches(dev, 1, position, true, None))?);
                         }
                         graph.as_ref().expect("captured above").launch(dev)?;
                     }
-                    download(dev)?
                 } else {
-                    step(dev, &[next], position)?
-                };
+                    launches(dev, 1, position, false, marks.as_ref())?;
+                }
+                let t2 = Instant::now();
+                dev.synchronize()?;
+                let t3 = Instant::now();
+                logits = read_logits(dev)?;
+                let t4 = Instant::now();
+                if timed {
+                    if let Some(p) = profile.as_mut() {
+                        let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1000.0;
+                        p.steps += 1;
+                        p.host_upload_ms += ms(t0, t1);
+                        p.host_issue_ms += ms(t1, t2);
+                        p.host_wait_ms += ms(t2, t3);
+                        p.host_read_ms += ms(t3, t4);
+                        if let Some(m) = &marks {
+                            for (group, gpu_ms) in m.borrow().read()? {
+                                p.add_gpu(group, gpu_ms);
+                            }
+                        }
+                    }
+                }
                 if let Some(trace) = trace.as_mut() {
                     trace.push(logits.clone());
                 }
