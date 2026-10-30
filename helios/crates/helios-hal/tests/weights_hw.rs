@@ -640,7 +640,7 @@ fn decode_time_vs_context() {
     let dims = qwen2_dims(&package);
     let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
-    for context in [5usize, 1024, 4096, 8000, 16000] {
+    for context in contexts_from_env(&[5, 1024, 4096, 8000, 16000]) {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
         let (direct, graph) = measure_modes(&backend, &dims, &prompt, SAMPLES);
         // GPU time per group over 32 steps at this context (direct, logits path).
@@ -659,6 +659,15 @@ fn decode_time_vs_context() {
         );
     }
     backend.shutdown().unwrap();
+}
+
+/// The context lengths a timing test uses: `HYPERION_CONTEXTS=5,1024,4096` overrides the defaults (a smaller table for an A/B
+/// run of several builds; the measurement protocol itself, windows and warm-up, is not affected).
+fn contexts_from_env(defaults: &[usize]) -> Vec<usize> {
+    match std::env::var("HYPERION_CONTEXTS") {
+        Ok(list) => list.split(',').map(|v| v.trim().parse().unwrap_or_else(|_| panic!("HYPERION_CONTEXTS: `{v}` is not a number"))).collect(),
+        Err(_) => defaults.to_vec(),
+    }
 }
 
 /// Decode steps inside each timed window, and runs per configuration.
