@@ -464,6 +464,10 @@ impl Session {
         for (weight, x, y, bias, out, inn) in jobs {
             if let Some(line) = lt.tune(dev, weight, x, y, bias, 1, out, inn)? {
                 tracing::info!("{line}");
+                // Tests install no log subscriber: this makes the choice visible in their output too.
+                if std::env::var_os("HYPERION_LOG_TUNING").is_some() {
+                    eprintln!("TUNING {line}");
+                }
             }
         }
         dev.synchronize()
