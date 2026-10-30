@@ -1074,6 +1074,10 @@ fn forward_matches_the_compact_oracle() {
         let (mut compared, mut worst_top, mut worst_lse) = (0usize, 0f32, 0f64);
         for (i, (logits, record)) in trace.iter().zip(&prompt.reference).enumerate() {
             let c = compare(logits, record, &oracle.tolerance).expect("comparison");
+            if std::env::var_os("HYPERION_ORACLE_VERBOSE").is_some() {
+                // Per position: Hyperion's differences next to Hugging Face bf16's, for telling a systematic error from one noisy region.
+                println!("   step {i:>2}: top-k {:.4} lse {:.4} | HF bf16 vs fp32 (top-k, lse): {:?}", c.max_abs_top_logits, c.abs_logsumexp, prompt.bf16_deviation.as_ref().map(|d| d[i]));
+            }
             worst_top = worst_top.max(c.max_abs_top_logits);
             worst_lse = worst_lse.max(c.abs_logsumexp);
             if c.max_abs_top_logits > overall_top {
