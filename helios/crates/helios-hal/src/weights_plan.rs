@@ -137,9 +137,11 @@ mod tests {
                     byte_offset: *off,
                     byte_length: *len,
                     tensor: TensorMetadata { dtype: "bf16".into(), shape: vec![*len as usize / 2] },
+                    sharding: None,
                 })
                 .collect(),
             payloads: Vec::new(),
+            parallelism: None,
             hardware_recipe: Default::default(),
             signature: None,
         }

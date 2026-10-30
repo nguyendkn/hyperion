@@ -55,6 +55,17 @@
           "description": "Identifier of the compiled model, e.g. \"llama3\".",
           "type": "string"
         },
+        "parallelism": {
+          "description": "The tensor-parallel sizes the model supports (ADR 0005). Absent means single GPU only.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Parallelism"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "payloads": {
           "description": "The weights files of the package, in the order `layers[].payload` indexes them, each with its\nsize and sha256. Absent (empty) means one file, [`DEFAULT_PAYLOAD_FILE`], with nothing recorded\nabout it, which is what a header-only compile and every older manifest look like.\nA checkpoint split over several files (`model-00001-of-00004.safetensors` ...) needs the table.",
           "type": "array",
@@ -229,6 +240,17 @@
           "format": "uint32",
           "minimum": 0
         },
+        "sharding": {
+          "description": "How the tensor may be split between tensor-parallel ranks (ADR 0005). Absent means it is not split.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShardClass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "tensor": {
           "description": "Tensor metadata describing dtype/shape — see [`TensorMetadata`].",
           "$ref": "#/$defs/TensorMetadata"
@@ -358,6 +380,25 @@
         "activation"
       ]
     },
+    "Parallelism": {
+      "description": "The tensor-parallel sizes a model supports, written by the compiler.",
+      "type": "object",
+      "properties": {
+        "supported_tp_sizes": {
+          "description": "Ascending, starts with 1. A size `t` is listed only when [`tp_size_supported`] holds. Where the KV heads do not divide by `t`\nbut `t` is a multiple of them, each KV head is replicated on `t / num_kv_heads` ranks.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "supported_tp_sizes"
+      ]
+    },
     "Payload": {
       "description": "One weights file of the package. The file sits beside the package under exactly this name; the\nname is part of what is signed, so a swapped or edited file is detectable once the runtime\nchecks `sha256` (planned with package signing; the runtime does not verify it yet).",
       "type": "object",
@@ -453,6 +494,31 @@
         }
       },
       "additionalProperties": false
+    },
+    "ShardClass": {
+      "description": "How the tensor of a layer entry may be split between tensor-parallel ranks.",
+      "oneOf": [
+        {
+          "description": "Split along the output dimension (rows of a `[out, in]` matrix, and a bias with them): Q, K, V, gate, up.",
+          "type": "string",
+          "const": "column"
+        },
+        {
+          "description": "Split along the input dimension (columns): the attention output projection and the MLP down projection. A bias of a row-split\nprojection is added once, after the all-reduce, never per rank.",
+          "type": "string",
+          "const": "row"
+        },
+        {
+          "description": "Every rank holds the whole tensor: norms.",
+          "type": "string",
+          "const": "replicated"
+        },
+        {
+          "description": "Split along the vocabulary rows, which the loader pads to a multiple of `tp * 64`: the embedding and the output head.",
+          "type": "string",
+          "const": "vocab"
+        }
+      ]
     },
     "TensorFormat": {
       "description": "Weight packing format of a package. Per-tensor dtypes live in\n[`TensorMetadata`]; this is the package-level format the recipe selected.",

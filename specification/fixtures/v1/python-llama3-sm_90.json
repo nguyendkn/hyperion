@@ -38,5 +38,13 @@
     "bf16": "enabled",
     "cuda_graphs": "disabled"
   },
-  "signature": null
+  "signature": null,
+  "parallelism": {
+    "supported_tp_sizes": [
+      1,
+      2,
+      4,
+      8
+    ]
+  }
 }

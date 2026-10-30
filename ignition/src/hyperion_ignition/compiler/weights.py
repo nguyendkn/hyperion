@@ -214,6 +214,20 @@ def _graph_index(name: str, num_layers: int) -> int:
     return 0 if name == "model.embed_tokens.weight" else num_layers + 1
 
 
+def _qwen2_sharding(name: str) -> str:
+    """How a tensor of the Qwen2/Qwen3 decoder may be split between tensor-parallel ranks (ADR 0005): Q, K, V, gate and up (and the
+    biases of Q, K, V) by output rows, the attention output and the MLP down projection by input columns, the embedding and the head by
+    vocabulary rows, and the norms (including the per-head Q/K norms) not at all."""
+    if name in ("model.embed_tokens.weight", "lm_head.weight"):
+        return "vocab"
+    for part in ("q_proj", "k_proj", "v_proj", "gate_proj", "up_proj"):
+        if f".{part}." in name:
+            return "column"
+    if ".o_proj." in name or ".down_proj." in name:
+        return "row"
+    return "replicated"
+
+
 def map_qwen2_layers(entries: dict[str, TensorEntry], cfg: ModelConfig, *, tie_word_embeddings: bool) -> list[LayerMap]:
     expected = _qwen2_expected(cfg, tie_word_embeddings)
     if tie_word_embeddings and "lm_head.weight" in entries:
@@ -241,6 +255,7 @@ def map_qwen2_layers(entries: dict[str, TensorEntry], cfg: ModelConfig, *, tie_w
             dtype=entries[name].dtype,
             shape=entries[name].shape,
             payload=entries[name].payload,
+            sharding=_qwen2_sharding(name),
         )
         for name in ordered
     ]

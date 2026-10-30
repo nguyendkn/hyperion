@@ -9,6 +9,9 @@
 //! These structs are the schema source of truth: with the `schema` feature,
 //! `specification/schema/manifest.v1.json` is generated from them.
 
+pub mod parallelism;
+pub use parallelism::{padded_vocab, supported_tp_sizes, tp_size_supported, Parallelism, ShardClass, MAX_TP_SIZE};
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -67,6 +70,10 @@ pub struct Manifest {
     /// Where the weights came from, when they came from a public checkpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualified_checkpoint: Option<QualifiedCheckpoint>,
+
+    /// The tensor-parallel sizes the model supports (ADR 0005). Absent means single GPU only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism: Option<Parallelism>,
 
     /// Hardware recipe applied at compile time (FP8/FP4/BF16, CUDA Graph capture).
     /// Stored as free-form k=v so recipes evolve without a schema change.
@@ -293,6 +300,10 @@ pub struct LayerMapping {
 
     /// Tensor metadata describing dtype/shape — see [`TensorMetadata`].
     pub tensor: TensorMetadata,
+
+    /// How the tensor may be split between tensor-parallel ranks (ADR 0005). Absent means it is not split.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharding: Option<ShardClass>,
 }
 
 fn is_zero(value: &u32) -> bool {
@@ -386,6 +397,14 @@ impl Manifest {
         }
         if self.generation.eos_token_ids.is_empty() {
             return invalid("generation.eos_token_ids must name at least one token".to_string());
+        }
+        if let Some(p) = &self.parallelism {
+            if p.supported_tp_sizes.first() != Some(&1) || p.supported_tp_sizes.windows(2).any(|w| w[0] >= w[1]) {
+                return invalid("parallelism.supported_tp_sizes must be ascending and start with 1".to_string());
+            }
+            if let Some(bad) = p.supported_tp_sizes.iter().find(|&&t| !tp_size_supported(t, m.num_attention_heads, m.num_kv_heads, m.intermediate_size)) {
+                return invalid(format!("parallelism: tensor-parallel size {bad} does not fit {} heads, {} KV heads and an MLP width of {}", m.num_attention_heads, m.num_kv_heads, m.intermediate_size));
+            }
         }
         if let Some(q) = &self.qualified_checkpoint {
             if q.revision.len() != 40 || !q.revision.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {

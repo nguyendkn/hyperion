@@ -61,8 +61,10 @@ fn sample() -> Manifest {
             byte_offset: 0,
             byte_length: 33_554_432,
             tensor: TensorMetadata { dtype: "bf16".into(), shape: vec![4096, 4096] },
+                    sharding: None,
         }],
         payloads: Vec::new(),
+        parallelism: None,
         hardware_recipe: HashMap::from([("fp4".to_string(), "enabled".to_string())]),
         signature: None,
     })
@@ -373,4 +375,50 @@ fn sha256_matches_python_hashlib_for_a_serialised_manifest() {
         let bytes: Vec<u8> = (0..data.len()).step_by(2).map(|i| u8::from_str_radix(&data[i..i + 2], 16).unwrap()).collect();
         assert_eq!(hyperion_specification::sha256::sha256_hex(&bytes), case["sha256"].as_str().unwrap());
     }
+}
+
+#[test]
+fn a_manifest_without_parallelism_fields_writes_none_and_means_a_single_gpu() {
+    let json = valid_json();
+    assert!(json.get("parallelism").is_none());
+    assert!(json["layers"][0].get("sharding").is_none());
+    assert!(v1(sample()).validate().is_ok());
+}
+
+#[test]
+fn sharding_classes_and_supported_sizes_round_trip() {
+    use hyperion_specification::v1::{Parallelism, ShardClass};
+    let mut m = v1(sample());
+    m.layers[0].sharding = Some(ShardClass::Column);
+    m.parallelism = Some(Parallelism { supported_tp_sizes: vec![1, 2, 4] });
+    let value = serde_json::to_value(Manifest::V1(m.clone())).unwrap();
+    assert_eq!(value["layers"][0]["sharding"], json!("column"));
+    assert_eq!(value["parallelism"]["supported_tp_sizes"], json!([1, 2, 4]));
+    let back = v1(serde_json::from_value::<Manifest>(value).unwrap());
+    assert_eq!(back.layers[0].sharding, Some(ShardClass::Column));
+    assert_eq!(back.parallelism, m.parallelism);
+}
+
+#[test]
+fn an_unknown_sharding_class_or_parallelism_field_is_refused() {
+    let mut v = valid_json();
+    v["layers"][0]["sharding"] = json!("diagonal");
+    assert!(serde_json::from_value::<Manifest>(v).is_err());
+    let mut v = valid_json();
+    v["parallelism"] = json!({"supported_tp_sizes": [1], "pipeline": 2});
+    assert!(serde_json::from_value::<Manifest>(v).is_err());
+}
+
+#[test]
+fn a_supported_size_the_model_does_not_allow_is_refused_by_validation() {
+    use hyperion_specification::v1::Parallelism;
+    // `sample()` has 32 heads and 8 KV heads: 3 divides neither; a list must also start with 1 and ascend.
+    for bad in [vec![1, 3], vec![2, 4], vec![1, 4, 2], vec![]] {
+        let mut m = v1(sample());
+        m.parallelism = Some(Parallelism { supported_tp_sizes: bad.clone() });
+        assert!(m.validate().is_err(), "{bad:?}");
+    }
+    let mut m = v1(sample());
+    m.parallelism = Some(Parallelism { supported_tp_sizes: vec![1, 2, 4, 8] });
+    assert!(m.validate().is_ok());
 }

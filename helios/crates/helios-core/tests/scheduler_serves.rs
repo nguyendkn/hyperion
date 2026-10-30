@@ -46,6 +46,7 @@ fn stub_manifest() -> Manifest {
         tokenizer: TokenizerConfig::default(),
         layers: vec![],
         payloads: Vec::new(),
+        parallelism: None,
         hardware_recipe: Default::default(),
         signature: None,
     }

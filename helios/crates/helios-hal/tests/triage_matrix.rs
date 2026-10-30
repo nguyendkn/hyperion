@@ -37,6 +37,7 @@ fn manifest(target_arch: &str, tensor_format: TensorFormat) -> Manifest {
         tokenizer: TokenizerConfig::default(),
         layers: vec![],
         payloads: Vec::new(),
+        parallelism: None,
         hardware_recipe: Default::default(),
         signature: None,
     }

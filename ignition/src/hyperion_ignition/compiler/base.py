@@ -46,6 +46,20 @@ class LayerMap:
     # Index into the manifest's payload table of the file holding the tensor; the offset counts
     # from the start of that file's data section.
     payload: int = 0
+    # How the tensor may be split between tensor-parallel ranks (`column`, `row`, `replicated`, `vocab`; ADR 0005); None: not split.
+    sharding: str | None = None
+
+
+# One node of eight GPUs; mirrors `hyperion_specification::v1::MAX_TP_SIZE`.
+MAX_TP_SIZE = 8
+
+
+def supported_tp_sizes(cfg: ModelConfig) -> list[int]:
+    """Tensor-parallel sizes the model supports (ADR 0005): the size divides the attention heads and the MLP width, and the KV heads
+    either divide by it or it is a multiple of them (each KV head is then replicated on size / num_kv_heads ranks). Mirrors
+    `hyperion_specification::v1::supported_tp_sizes`."""
+    heads, kv, inter = cfg.num_attention_heads, cfg.num_kv_heads, cfg.intermediate_size
+    return [t for t in range(1, MAX_TP_SIZE + 1) if heads % t == 0 and inter % t == 0 and (kv % t == 0 or t % kv == 0)]
 
 
 @dataclass
@@ -94,12 +108,14 @@ class CompiledManifest:
                     "byte_offset": l.byte_offset,
                     "byte_length": l.byte_length,
                     "tensor": {"dtype": l.dtype, "shape": list(l.shape)},
+                    **({"sharding": l.sharding} if l.sharding else {}),
                 }
                 for l in self.layers
             ],
             "hardware_recipe": self.hardware_recipe,
             "signature": self.signature,
         }
+        manifest["parallelism"] = {"supported_tp_sizes": supported_tp_sizes(self.model)}
         if self.chat_template is not None:
             manifest["chat_template"] = self.chat_template
         if self.qualified_checkpoint is not None:

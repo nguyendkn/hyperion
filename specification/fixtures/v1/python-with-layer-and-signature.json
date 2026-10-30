@@ -53,5 +53,13 @@
     1,
     2,
     3
-  ]
+  ],
+  "parallelism": {
+    "supported_tp_sizes": [
+      1,
+      2,
+      4,
+      8
+    ]
+  }
 }
