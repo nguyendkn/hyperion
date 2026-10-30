@@ -93,6 +93,9 @@ pub(super) struct LayerWeights {
     k_b: u64,
     v_w: u64,
     v_b: u64,
+    /// Q, K and V weight rows (and biases) concatenated at load: one matrix multiply serves a decode step.
+    qkv_w: u64,
+    qkv_b: u64,
     o_w: u64,
     post_norm: u64,
     gate: u64,
@@ -126,6 +129,8 @@ pub(super) struct Buffers {
     q: u64,
     k: u64,
     v: u64,
+    /// The fused Q|K|V output of a decode step (`q_dim + 2 * kv_dim` bf16 values); `q`, `k` and `v` are its parts.
+    qkv: u64,
     attn: u64,
     o: u64,
     gate: u64,
@@ -162,7 +167,10 @@ fn session_bytes(d: &Qwen2Dims, splits: usize, chunk: usize) -> (usize, usize) {
     let per_token = 4 // ring
         + 2 * d.head_dim * bf // cos, sin
         + d.layers * 2 * kv_dim * bf; // K and V cache
-    let fixed = chunk * per_chunk_row + d.vocab * 4 + d.heads * splits * (d.head_dim + 2) * 4 + 4 + 4 + CUBLAS_WORKSPACE_BYTES;
+    let qkv_dim = q_dim + 2 * kv_dim;
+    // The concatenated copies of the weights a decode step reads, and the buffer it writes.
+    let fused = d.layers * (qkv_dim * d.hidden * bf + qkv_dim * bf) + qkv_dim * bf;
+    let fixed = chunk * per_chunk_row + fused + d.vocab * 4 + d.heads * splits * (d.head_dim + 2) * 4 + 4 + 4 + CUBLAS_WORKSPACE_BYTES;
     (fixed, per_token)
 }
 
@@ -271,6 +279,7 @@ impl Session {
             q: alloc(dev, t * q_dim * bf)?,
             k: alloc(dev, t * kv_dim * bf)?,
             v: alloc(dev, t * kv_dim * bf)?,
+            qkv: alloc(dev, (q_dim + 2 * kv_dim) * bf)?,
             attn: alloc(dev, t * q_dim * bf)?,
             o: alloc(dev, t * hidden * bf)?,
             gate: alloc(dev, t * d.intermediate * bf)?,
@@ -330,7 +339,19 @@ impl Session {
             let mut layers = Vec::with_capacity(d.layers);
             for l in 0..d.layers {
                 let n = |part: &str| format!("layers.{l}.{part}");
+                let (qkv_dim, hidden_bytes) = (q_dim + 2 * kv_dim, hidden * bf);
+                let qkv_w = alloc(dev, qkv_dim * hidden_bytes)?;
+                let qkv_b = alloc(dev, qkv_dim * bf)?;
+                // Row-major [out, hidden] matrices stack by concatenating their bytes.
+                let mut at = (0usize, 0usize);
+                for (part, rows) in [("q_proj", q_dim), ("k_proj", kv_dim), ("v_proj", kv_dim)] {
+                    dev.dtod_async(qkv_w + at.0 as u64, ptr(&n(&format!("self_attn.{part}.weight")))?, rows * hidden_bytes)?;
+                    dev.dtod_async(qkv_b + at.1 as u64, ptr(&n(&format!("self_attn.{part}.bias")))?, rows * bf)?;
+                    at = (at.0 + rows * hidden_bytes, at.1 + rows * bf);
+                }
                 layers.push(LayerWeights {
+                    qkv_w,
+                    qkv_b,
                     input_norm: ptr(&n("input_layernorm.weight"))?,
                     q_w: ptr(&n("self_attn.q_proj.weight"))?,
                     q_b: ptr(&n("self_attn.q_proj.bias"))?,
@@ -490,19 +511,28 @@ impl Session {
         for (l, w) in self.layers.iter().enumerate() {
             norm(b.h, w.input_norm, b.x, ti)?;
             mark("norm")?;
-            linear(w.q_w, w.q_b, b.x, b.q, q_dim, hidden)?;
-            linear(w.k_w, w.k_b, b.x, b.k, kv_dim, hidden)?;
-            linear(w.v_w, w.v_b, b.x, b.v, kv_dim, hidden)?;
+            // A decode step is one row: Q, K and V are the three consecutive parts of one fused projection.
+            let (q_p, k_p, v_p) = if dynamic {
+                let qkv_dim = q_dim + 2 * kv_dim;
+                cublas.linear_bf16_f32(w.qkv_w, b.x, b.y_f32, 1, qkv_dim, hidden)?;
+                launch(dev, k.bias_cast, grid_for(qkv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.y_f32), Arg::Ptr(w.qkv_b), Arg::Ptr(b.qkv), Arg::Int(i32::try_from(qkv_dim)?), Arg::Int(i32::try_from(qkv_dim)?)])?;
+                (b.qkv, b.qkv + (q_dim * bf) as u64, b.qkv + ((q_dim + kv_dim) * bf) as u64)
+            } else {
+                linear(w.q_w, w.q_b, b.x, b.q, q_dim, hidden)?;
+                linear(w.k_w, w.k_b, b.x, b.k, kv_dim, hidden)?;
+                linear(w.v_w, w.v_b, b.x, b.v, kv_dim, hidden)?;
+                (b.q, b.k, b.v)
+            };
             mark("qkv_proj")?;
             // RoPE in place: each thread owns a (i, i + half) pair, so reading and writing
             // the same buffer is safe.
-            launch(dev, k.rope, ti * u32::try_from(heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(b.q), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(b.q), Arg::Int(heads_i), Arg::Int(hd_i)])?;
-            launch(dev, k.rope, ti * u32::try_from(kv_heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(b.k), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(b.k), Arg::Int(kv_heads_i), Arg::Int(hd_i)])?;
+            launch(dev, k.rope, ti * u32::try_from(heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(q_p), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(q_p), Arg::Int(heads_i), Arg::Int(hd_i)])?;
+            launch(dev, k.rope, ti * u32::try_from(kv_heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(k_p), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(k_p), Arg::Int(kv_heads_i), Arg::Int(hd_i)])?;
             mark("rope")?;
             // Append this step's K and V to the layer's cache, then attend over it.
             let (k_cache, v_cache) = b.kv[l];
             if chunk {
-                launch(dev, k.kv_append_chunk, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.k), Arg::Ptr(b.v), Arg::Ptr(b.positions), Arg::Ptr(b.rows), Arg::Int(i32::try_from(kv_dim)?)])?;
+                launch(dev, k.kv_append_chunk, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(k_p), Arg::Ptr(v_p), Arg::Ptr(b.positions), Arg::Ptr(b.rows), Arg::Int(i32::try_from(kv_dim)?)])?;
                 mark("kv_append")?;
                 launch(
                     dev,
@@ -510,11 +540,11 @@ impl Session {
                     ti * u32::try_from(heads)?,
                     CHUNK_ATTENTION_BLOCK,
                     u32::try_from((hd + CHUNK_ATTENTION_FIXED_FLOATS) * 4)?,
-                    &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
+                    &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
                 )?;
                 mark("attention")?;
             } else if dynamic {
-                launch(dev, k.kv_append, grid_for(kv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.k), Arg::Ptr(b.v), Arg::Ptr(b.positions), Arg::Int(i32::try_from(kv_dim)?)])?;
+                launch(dev, k.kv_append, grid_for(kv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(k_p), Arg::Ptr(v_p), Arg::Ptr(b.positions), Arg::Int(i32::try_from(kv_dim)?)])?;
                 mark("kv_append")?;
                 launch(
                     dev,
@@ -522,15 +552,15 @@ impl Session {
                     u32::try_from(kv_heads * splits)?,
                     SPLIT_BLOCK,
                     0,
-                    &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn_ws), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(i32::try_from(splits)?)],
+                    &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn_ws), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(i32::try_from(splits)?)],
                 )?;
                 mark("attention")?;
                 launch(dev, k.attention_combine, u32::try_from(heads)?, u32::try_from(hd)?, 0, &[Arg::Ptr(b.attn_ws), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)])?;
                 mark("attention_combine")?;
             } else {
                 let offset = (start * kv_dim * bf) as u64;
-                dev.dtod_async(k_cache + offset, b.k, t * kv_dim * bf)?;
-                dev.dtod_async(v_cache + offset, b.v, t * kv_dim * bf)?;
+                dev.dtod_async(k_cache + offset, k_p, t * kv_dim * bf)?;
+                dev.dtod_async(v_cache + offset, v_p, t * kv_dim * bf)?;
                 mark("kv_append")?;
                 launch(
                     dev,
@@ -538,7 +568,7 @@ impl Session {
                     ti * u32::try_from(heads)?,
                     ATTENTION_BLOCK,
                     u32::try_from((seq + ATTENTION_BLOCK as usize) * 4)?,
-                    &[Arg::Ptr(b.q), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Int(i32::try_from(seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(start)?)],
+                    &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Int(i32::try_from(seq)?), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(start)?)],
                 )?;
                 mark("attention")?;
             }
