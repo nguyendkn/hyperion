@@ -1042,7 +1042,7 @@ fn prefill_time_vs_context() {
 #[test]
 #[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
 fn forward_matches_the_compact_oracle() {
-    use helios_hal::oracle::{compare, CompactOracle};
+    use helios_hal::oracle::{compare_at, CompactOracle};
     use helios_hal::sampling::argmax;
     use helios_hal::{DecodeMode, SamplingConfig};
 
@@ -1081,7 +1081,7 @@ fn forward_matches_the_compact_oracle() {
             .expect("teacher-forced generation");
         let (mut compared, mut worst_top, mut worst_lse) = (0usize, 0f32, 0f64);
         for (i, (logits, record)) in trace.iter().zip(&prompt.reference).enumerate() {
-            let c = compare(logits, record, &oracle.tolerance).expect("comparison");
+            let c = compare_at(logits, record, &oracle.tolerance, prompt.bf16_deviation.as_ref().map(|d| d[i].0)).expect("comparison");
             if std::env::var_os("HYPERION_ORACLE_VERBOSE").is_some() {
                 // Per position: Hyperion's differences next to Hugging Face bf16's, for telling a systematic error from one noisy region.
                 println!("   step {i:>2}: top-k {:.4} lse {:.4} | HF bf16 vs fp32 (top-k, lse): {:?}", c.max_abs_top_logits, c.abs_logsumexp, prompt.bf16_deviation.as_ref().map(|d| d[i]));
@@ -1126,9 +1126,9 @@ fn forward_matches_the_compact_oracle() {
             Some(j) => {
                 let chosen = argmax(&free[j]) as u32;
                 let reference = &prompt.reference[j];
-                let c = compare(&free[j], reference, &oracle.tolerance).expect("comparison");
+                let c = compare_at(&free[j], reference, &oracle.tolerance, prompt.bf16_deviation.as_ref().map(|d| d[j].0)).expect("comparison");
                 println!(
-                    "ORACLE {} (free greedy): left the reference chain at step {j}: ours id {chosen} (logit {:.4}), reference id {} (our logit {:.4}); fp32 top two {:?} = {:.4}, {:.4}, gap {:.4}; legitimate near tie: {}",
+                    "ORACLE {} (free greedy): left the reference chain at step {j}: ours id {chosen} (logit {:.4}), reference id {} (our logit {:.4}); fp32 top two {:?} = {:.4}, {:.4}, gap {:.4}; legitimate near tie: {} (tie group of {} recorded tokens within {:.4} of the best; the token we picked is {} below it)",
                     prompt.label,
                     free[j][chosen as usize],
                     reference.argmax,
@@ -1137,7 +1137,10 @@ fn forward_matches_the_compact_oracle() {
                     reference.top_logits[0],
                     reference.top_logits[1],
                     reference.top_logits[0] - reference.top_logits[1],
-                    c.argmax_ok
+                    c.argmax_ok,
+                    c.tie_group,
+                    c.tie_threshold,
+                    c.picked_gap.map_or("not in the recorded top-k, so not".to_string(), |g| format!("{g:.4}"))
                 );
                 if !c.argmax_ok {
                     failures.push(format!("{}: free greedy left the reference chain at step {j} with token {chosen}, which is not within a near tie of the fp32 top two", prompt.label));

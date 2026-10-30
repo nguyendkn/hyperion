@@ -159,9 +159,14 @@ pub struct Comparison {
     /// `|our logsumexp - reference logsumexp|`.
     pub abs_logsumexp: f64,
     pub argmax: u32,
-    /// Our argmax equals the reference's, or it is a token of the reference's tie group: one whose float32 logit is within the
-    /// declared top-k tolerance of the best (only the reference's recorded top-k can be checked).
+    /// Our argmax equals the reference's, or it is a token of the reference's tie group (see [`compare_at`]).
     pub argmax_ok: bool,
+    /// How far the float32 logit of the token we picked is below the best, when it is among the recorded top-k.
+    pub picked_gap: Option<f32>,
+    /// The distance within which a token counts as tied with the best at this position.
+    pub tie_threshold: f32,
+    /// How many of the recorded top-k tokens (the best included) are in the tie group.
+    pub tie_group: usize,
 }
 
 impl Comparison {
@@ -170,23 +175,44 @@ impl Comparison {
     }
 }
 
-/// Compare the full logits row `ours` with one reference record under `tolerance`.
+/// One bfloat16 step at the magnitude of `x` (8 bits of significand: `2^(floor(log2 |x|) - 7)`).
+pub fn bf16_step(x: f32) -> f32 {
+    if x == 0.0 || !x.is_finite() {
+        return 0.0;
+    }
+    2f32.powi(x.abs().log2().floor() as i32 - 7)
+}
+
+/// Compare the full logits row `ours` with one reference record under `tolerance`, without the per-position deviation of Hugging Face
+/// bf16 (the tie group then has the floor width only). See [`compare_at`].
 pub fn compare(ours: &[f32], reference: &Record, tolerance: &Tolerance) -> Result<Comparison> {
+    compare_at(ours, reference, tolerance, None)
+}
+
+/// Compare the full logits row `ours` with one reference record under `tolerance`. Our argmax is accepted when it equals the
+/// reference's or is in the reference's tie group: a recorded top-k token whose float32 logit is no further below the best than
+/// `min(tolerance.max_abs_top_logits, max(hf_deviation, 2 bf16 steps of the best logit))`, where `hf_deviation` is how far Hugging
+/// Face's own bf16 run was from float32 at this very position (so the group is as wide as the noise of a bf16 forward here, never
+/// wider than the declared tolerance, never narrower than two steps of the logit's resolution). Only the recorded top-k can be checked.
+pub fn compare_at(ours: &[f32], reference: &Record, tolerance: &Tolerance, hf_deviation: Option<f32>) -> Result<Comparison> {
     let mut worst = 0.0f32;
     for (&id, &want) in reference.top_ids.iter().zip(&reference.top_logits) {
         let got = *ours.get(id as usize).ok_or_else(|| anyhow!("reference id {id} is outside our {} logits", ours.len()))?;
         worst = worst.max((got - want).abs());
     }
     let picked = argmax(ours) as u32;
-    // The tie group is every recorded token whose float32 logit is within the tolerance of the best. (Until 2026-10-30 the rule
-    // admitted only the second of two tied tokens; a three-way tie, as in Qwen3-0.6B's prose prompt, was refused.)
     let best = reference.top_logits[0];
-    let near_tie = reference.top_ids.iter().zip(&reference.top_logits).any(|(&id, &logit)| id == picked && best - logit <= tolerance.max_abs_top_logits);
+    let threshold = hf_deviation.unwrap_or(0.0).max(2.0 * bf16_step(best)).min(tolerance.max_abs_top_logits);
+    let picked_gap = reference.top_ids.iter().position(|&id| id == picked).map(|i| best - reference.top_logits[i]);
+    let tie_group = reference.top_logits.iter().filter(|&&l| best - l <= threshold).count();
     Ok(Comparison {
         max_abs_top_logits: worst,
         abs_logsumexp: (logsumexp(ours) - reference.logsumexp).abs(),
         argmax: picked,
-        argmax_ok: picked == reference.argmax || near_tie,
+        argmax_ok: picked == reference.argmax || picked_gap.is_some_and(|g| g <= threshold),
+        picked_gap,
+        tie_threshold: threshold,
+        tie_group,
     })
 }
 
@@ -274,15 +300,43 @@ mod tests {
         let reference3 = record_of_row(&three, 4);
         let mut picks_third = three.clone();
         picks_third[1] = 5.03;
-        let wide = compare(&picks_third, &reference3, &Tolerance { max_abs_top_logits: 0.1, ..TOL }).unwrap();
+        let wide = compare_at(&picks_third, &reference3, &Tolerance { max_abs_top_logits: 0.1, ..TOL }, Some(0.09)).unwrap();
         assert_eq!(wide.argmax, 1);
-        assert!(wide.argmax_ok, "token 1 is 0.08 behind the best, inside the tie group of 0.1");
+        assert!(wide.argmax_ok, "token 1 is 0.08 behind the best, inside the 0.09 Hugging Face's bf16 run was off at this position");
+        assert_eq!((wide.tie_group, wide.picked_gap.map(|g| (g * 100.0).round())), (3, Some(8.0)));
         let narrow = compare(&picks_third, &reference3, &Tolerance { max_abs_top_logits: 0.05, ..TOL }).unwrap();
         assert!(!narrow.argmax_ok, "outside a tolerance of 0.05 it is a wrong token");
         // A token the reference did not even record in its top-k is never in the tie group.
         let mut outside = r.clone();
         outside[9] = 99.0;
         assert!(!compare(&outside, &reference, &Tolerance { max_abs_top_logits: 1e6, ..TOL }).unwrap().argmax_ok);
+    }
+
+    #[test]
+    fn the_tie_group_is_as_wide_as_the_bf16_noise_here_never_beyond_the_tolerance_never_under_two_steps() {
+        assert_eq!(bf16_step(1.0), 1.0 / 128.0);
+        assert_eq!(bf16_step(32.0), 0.25);
+        assert_eq!(bf16_step(-40.0), 0.25);
+        let mut r = vec![0.0f32; 16];
+        r[3] = 40.0;
+        r[7] = 39.6; // 0.4 behind
+        let reference = record_of_row(&r, 4);
+        let mut flipped = r.clone();
+        flipped[7] = 41.0;
+        let tol = Tolerance { max_abs_top_logits: 2.5, ..TOL };
+        // Two steps at 40 are 0.5: token 7 is in the group even without a Hugging Face deviation.
+        assert!(compare(&flipped, &reference, &tol).unwrap().argmax_ok);
+        // A wide declared tolerance does not widen the group: with a narrow deviation the floor still decides.
+        let mut far = r.clone();
+        far[7] = 38.0; // 2.0 behind: inside the declared 2.5 but not tied
+        let reference_far = record_of_row(&far, 4);
+        let mut picks = far.clone();
+        picks[7] = 41.0;
+        let c = compare_at(&picks, &reference_far, &tol, Some(0.1)).unwrap();
+        assert!(!c.argmax_ok && c.tie_group == 1 && c.tie_threshold == 0.5, "{c:?}");
+        // The declared tolerance caps it.
+        let capped = compare_at(&picks, &reference_far, &Tolerance { max_abs_top_logits: 0.3, ..TOL }, Some(9.0)).unwrap();
+        assert_eq!(capped.tie_threshold, 0.3);
     }
 
     #[test]
