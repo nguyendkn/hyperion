@@ -96,6 +96,8 @@ pub(super) struct LayerWeights {
     /// Q, K and V weight rows (and biases) concatenated at load: one matrix multiply serves a decode step.
     qkv_w: u64,
     qkv_b: u64,
+    /// Gate and up weight rows concatenated at load: one matrix multiply serves the MLP input of a decode step.
+    gate_up: u64,
     o_w: u64,
     post_norm: u64,
     gate: u64,
@@ -131,6 +133,8 @@ pub(super) struct Buffers {
     v: u64,
     /// The fused Q|K|V output of a decode step (`q_dim + 2 * kv_dim` bf16 values); `q`, `k` and `v` are its parts.
     qkv: u64,
+    /// The fused gate|up output of a decode step (`2 * intermediate` bf16 values).
+    gate_up: u64,
     attn: u64,
     o: u64,
     gate: u64,
@@ -169,7 +173,7 @@ fn session_bytes(d: &Qwen2Dims, splits: usize, chunk: usize) -> (usize, usize) {
         + d.layers * 2 * kv_dim * bf; // K and V cache
     let qkv_dim = q_dim + 2 * kv_dim;
     // The concatenated copies of the weights a decode step reads, and the buffer it writes.
-    let fused = d.layers * (qkv_dim * d.hidden * bf + qkv_dim * bf) + qkv_dim * bf;
+    let fused = d.layers * (qkv_dim * d.hidden * bf + qkv_dim * bf + 2 * d.intermediate * d.hidden * bf) + (qkv_dim + 2 * d.intermediate) * bf;
     let fixed = chunk * per_chunk_row + fused + d.vocab * 4 + d.heads * splits * (d.head_dim + 2) * 4 + 4 + 4 + CUBLAS_WORKSPACE_BYTES;
     (fixed, per_token)
 }
@@ -280,6 +284,7 @@ impl Session {
             k: alloc(dev, t * kv_dim * bf)?,
             v: alloc(dev, t * kv_dim * bf)?,
             qkv: alloc(dev, (q_dim + 2 * kv_dim) * bf)?,
+            gate_up: alloc(dev, 2 * d.intermediate * bf)?,
             attn: alloc(dev, t * q_dim * bf)?,
             o: alloc(dev, t * hidden * bf)?,
             gate: alloc(dev, t * d.intermediate * bf)?,
@@ -349,9 +354,13 @@ impl Session {
                     dev.dtod_async(qkv_b + at.1 as u64, ptr(&n(&format!("self_attn.{part}.bias")))?, rows * bf)?;
                     at = (at.0 + rows * hidden_bytes, at.1 + rows * bf);
                 }
+                let gate_up = alloc(dev, 2 * d.intermediate * hidden_bytes)?;
+                dev.dtod_async(gate_up, ptr(&n("mlp.gate_proj.weight"))?, d.intermediate * hidden_bytes)?;
+                dev.dtod_async(gate_up + (d.intermediate * hidden_bytes) as u64, ptr(&n("mlp.up_proj.weight"))?, d.intermediate * hidden_bytes)?;
                 layers.push(LayerWeights {
                     qkv_w,
                     qkv_b,
+                    gate_up,
                     input_norm: ptr(&n("input_layernorm.weight"))?,
                     q_w: ptr(&n("self_attn.q_proj.weight"))?,
                     q_b: ptr(&n("self_attn.q_proj.bias"))?,
@@ -579,10 +588,19 @@ impl Session {
 
             norm(b.h, w.post_norm, b.x, ti)?;
             mark("norm")?;
-            linear(w.gate, 0, b.x, b.gate, d.intermediate, hidden)?;
-            linear(w.up, 0, b.x, b.up, d.intermediate, hidden)?;
+            // A decode step is one row: gate and up are the two consecutive halves of one fused projection.
+            let (gate_p, up_p) = if dynamic {
+                let both = 2 * d.intermediate;
+                cublas.linear_bf16_f32(w.gate_up, b.x, b.y_f32, 1, both, hidden)?;
+                launch(dev, k.bias_cast, grid_for(both)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.y_f32), Arg::Ptr(0), Arg::Ptr(b.gate_up), Arg::Int(i32::try_from(both)?), Arg::Int(i32::try_from(both)?)])?;
+                (b.gate_up, b.gate_up + (d.intermediate * bf) as u64)
+            } else {
+                linear(w.gate, 0, b.x, b.gate, d.intermediate, hidden)?;
+                linear(w.up, 0, b.x, b.up, d.intermediate, hidden)?;
+                (b.gate, b.up)
+            };
             mark("mlp_gate_up")?;
-            launch(dev, k.swiglu, grid_for(t * d.intermediate)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.gate), Arg::Ptr(b.up), Arg::Ptr(b.act), Arg::Int(i32::try_from(t * d.intermediate)?)])?;
+            launch(dev, k.swiglu, grid_for(t * d.intermediate)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(gate_p), Arg::Ptr(up_p), Arg::Ptr(b.act), Arg::Int(i32::try_from(t * d.intermediate)?)])?;
             mark("mlp_act")?;
             linear(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
             mark("mlp_down")?;
@@ -698,7 +716,8 @@ mod tests {
         // KV alone is 28 layers x 2 x (4 x 128) x 2 bytes = 57 344 bytes per token; the RoPE tables and the token ring
         // add a few hundred. The activations are a fixed cost of the largest chunk, not of the context.
         assert!((57_344..58_500).contains(&per_token), "{per_token}");
-        assert!(fixed > 800 << 20 && fixed < 3 << 30, "{fixed}");
+        // 1.4 GiB of chunk activations plus about 8.5 GiB of concatenated QKV and gate/up weight copies.
+        assert!(fixed > 8 << 30 && fixed < 12 << 30, "{fixed}");
         let free = (fixed as u64 + per_token as u64 * 1000) * 10 / 9 + 10; // room for about 1000 tokens
         let capacity = plan_capacity(&d, 131_072, free, 66).unwrap();
         assert!((990..=1010).contains(&capacity), "{capacity}");
@@ -716,7 +735,7 @@ mod tests {
         // The 7B weights take about 15.2 GB of an H100's 80, so well over 60 GB is free: the model's full 131 072 tokens fit.
         let (fixed, per_token) = session_bytes(&qwen2_7b(), 66, 4096);
         let total = fixed + per_token * 131_072;
-        assert!(total < 12 * (1 << 30), "7B session at 131072 tokens: {:.2} GiB", total as f64 / (1u64 << 30) as f64);
+        assert!(total < 20 * (1 << 30), "7B session at 131072 tokens: {:.2} GiB", total as f64 / (1u64 << 30) as f64);
         let (fixed, per_token) = session_bytes(&qwen2_half_b(), 66, 4096);
         assert!(fixed + per_token * 32_768 < 2 * (1 << 30));
     }
