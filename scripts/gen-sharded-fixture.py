@@ -41,6 +41,7 @@ def main() -> None:
         rope_theta=10000.0,
         rms_norm_eps=1e-6,
         tie_word_embeddings=False,
+        eos_token_id=127,
         torch_dtype="bfloat16",
     )
     model = Qwen2ForCausalLM(config).to(torch.bfloat16)

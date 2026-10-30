@@ -79,7 +79,7 @@ def test_every_tensor_of_a_sharded_model_maps_to_the_shard_its_index_names(model
     checkpoint = read_checkpoint(source, hash_payloads=False)
     assert checkpoint is not None and checkpoint.payloads == []
     config = json.loads((source / "config.json").read_text(encoding="utf-8"))
-    layers = map_qwen2_layers(checkpoint.entries, model_config_from_hf(source, ("Qwen2ForCausalLM",)), tie_word_embeddings=bool(config.get("tie_word_embeddings", False)))
+    layers = map_qwen2_layers(checkpoint.entries, model_config_from_hf(source, ("Qwen2ForCausalLM",), qkv_bias=True), tie_word_embeddings=bool(config.get("tie_word_embeddings", False)))
     weight_map = json.loads((source / SHARD_INDEX).read_text(encoding="utf-8"))["weight_map"]
     shards = sorted(set(weight_map.values()))
     assert len(layers) == len(weight_map), "every tensor of the index is mapped"

@@ -52,7 +52,7 @@ impl HopperBackend {
         d: &Qwen2Dims,
         prompt: &[u32],
         max_new: usize,
-        eos: Option<u32>,
+        eos: &[u32],
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
@@ -64,14 +64,14 @@ impl HopperBackend {
     pub fn generate_timed(&self, d: &Qwen2Dims, prompt: &[u32], steps: usize, mode: DecodeMode) -> Result<DecodeTiming> {
         let mut timing = None;
         let max_new = 1 + TIMING_WARM_UP + steps;
-        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, None, Some(&mut timing))?;
+        self.run_generation(d, prompt, max_new, &[], &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, None, Some(&mut timing))?;
         timing.ok_or_else(|| anyhow!("no timing produced (steps must be at least 1)"))
     }
 
     /// Greedy generation of `max_new` tokens with the decode steps profiled; see [`DecodeProfile`].
     pub fn generate_profiled(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, mode: DecodeMode) -> Result<DecodeProfile> {
         let mut profile = DecodeProfile::default();
-        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, Some(&mut profile), None)?;
+        self.run_generation(d, prompt, max_new, &[], &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, Some(&mut profile), None)?;
         Ok(profile)
     }
 
@@ -82,7 +82,7 @@ impl HopperBackend {
         d: &Qwen2Dims,
         prompt: &[u32],
         max_new: usize,
-        eos: Option<u32>,
+        eos: &[u32],
         sampling: &SamplingConfig,
         mode: DecodeMode,
         on_token: &mut dyn FnMut(u32),
@@ -98,7 +98,7 @@ impl HopperBackend {
         d: &Qwen2Dims,
         prompt: &[u32],
         max_new: usize,
-        eos: Option<u32>,
+        eos: &[u32],
         sampling: &SamplingConfig,
         mode: DecodeMode,
         trace: Option<&mut Vec<Vec<f32>>>,
@@ -112,14 +112,14 @@ impl HopperBackend {
     /// reference run on the same tokens is not disturbed by a legitimate near-tie flip of the
     /// argmax, which would otherwise make every later step incomparable.
     pub fn generate_forced(&self, d: &Qwen2Dims, prompt: &[u32], forced: &[u32], mode: DecodeMode, trace: &mut Vec<Vec<f32>>) -> Result<StopReason> {
-        self.run_generation(d, prompt, forced.len(), None, &SamplingConfig::greedy(), &mut |_| {}, mode, Some(forced), Some(trace), None, None)
+        self.run_generation(d, prompt, forced.len(), &[], &SamplingConfig::greedy(), &mut |_| {}, mode, Some(forced), Some(trace), None, None)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
     /// verification entry point that is compared bit for bit with the host path.
     pub fn forward_prefill_logits_device(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
         let mut trace = Vec::new();
-        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, None, Some(&mut trace), None, None)?;
+        self.run_generation(d, prompt, 0, &[], &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, None, Some(&mut trace), None, None)?;
         trace.into_iter().next().ok_or_else(|| anyhow!("no logits produced"))
     }
 
@@ -134,7 +134,7 @@ impl HopperBackend {
         d: &Qwen2Dims,
         prompt: &[u32],
         max_new: usize,
-        eos: Option<u32>,
+        eos: &[u32],
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
         mode: DecodeMode,
@@ -168,7 +168,7 @@ impl Session {
         cublas: &Cublas,
         prompt: &[u32],
         max_new: usize,
-        eos: Option<u32>,
+        eos: &[u32],
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
         mode: DecodeMode,
@@ -249,7 +249,7 @@ impl Session {
                 }
                 let token = read_token(index - 1)?;
                 on_token(token);
-                if Some(token) == eos {
+                if eos.contains(&token) {
                     dev.synchronize()?;
                     return Ok(StopReason::EndOfSequence);
                 }
@@ -266,7 +266,7 @@ impl Session {
                     wall_ms,
                 });
             }
-            return Ok(if Some(token) == eos { StopReason::EndOfSequence } else { StopReason::MaxTokens });
+            return Ok(if eos.contains(&token) { StopReason::EndOfSequence } else { StopReason::MaxTokens });
         }
 
         let mut rng = Rng::new(sampling.seed);
@@ -287,7 +287,7 @@ impl Session {
                 }
             }
             on_token(next);
-            if Some(next) == eos {
+            if eos.contains(&next) {
                 return Ok(StopReason::EndOfSequence);
             }
             if produced + 1 < max_new {

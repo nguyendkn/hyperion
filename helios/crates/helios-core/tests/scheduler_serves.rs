@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use helios_core::scheduler::{ingress_channel, InferenceRequest, SamplingParams, Scheduler, StreamEvent};
 use helios_core::StateMachine;
-use hyperion_specification::v1::{AttentionKind, Manifest, ModelConfig, TensorFormat, TokenizerConfig};
+use hyperion_specification::v1::{
+    Activation, AttentionKind, GenerationConfig, Manifest, ModelConfig, RopeStyle, TensorFormat, TokenizerConfig, CONTRACT_REVISION,
+};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -26,7 +28,21 @@ fn stub_manifest() -> Manifest {
             head_dim: 1,
             vocab_size: 1,
             max_seq_len: 8,
+            hidden_size: 8,
+            intermediate_size: 16,
+            rope_theta: 10000.0,
+            rope_style: RopeStyle::RotateHalf,
+            rms_norm_eps: 1e-6,
+            tie_word_embeddings: false,
+            qkv_bias: true,
+            qk_norm: false,
+            activation: Activation::Silu,
+            attention_scale: None,
         },
+        contract_revision: CONTRACT_REVISION,
+        generation: GenerationConfig { eos_token_ids: vec![0], sampling_defaults: None },
+        chat_template: None,
+        qualified_checkpoint: None,
         tokenizer: TokenizerConfig::default(),
         layers: vec![],
         payloads: Vec::new(),

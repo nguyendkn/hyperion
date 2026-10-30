@@ -90,7 +90,8 @@ pub fn plan(manifest: &Manifest, files: &[PayloadFile]) -> Result<Vec<TensorPlan
 #[cfg(test)]
 mod tests {
     use hyperion_specification::v1::{
-        AttentionKind, LayerMapping, Manifest, ModelConfig, Payload, TensorFormat, TensorMetadata, TokenizerConfig,
+        Activation, AttentionKind, GenerationConfig, LayerMapping, Manifest, ModelConfig, Payload, RopeStyle, TensorFormat, TensorMetadata,
+        TokenizerConfig, CONTRACT_REVISION,
     };
 
     use super::*;
@@ -108,7 +109,21 @@ mod tests {
                 head_dim: 1,
                 vocab_size: 1,
                 max_seq_len: 1,
+                hidden_size: 16,
+                intermediate_size: 32,
+                rope_theta: 10000.0,
+                rope_style: RopeStyle::RotateHalf,
+                rms_norm_eps: 1e-6,
+                tie_word_embeddings: false,
+                qkv_bias: true,
+                qk_norm: false,
+                activation: Activation::Silu,
+                attention_scale: None,
             },
+            contract_revision: CONTRACT_REVISION,
+            generation: GenerationConfig { eos_token_ids: vec![0], sampling_defaults: None },
+            chat_template: None,
+            qualified_checkpoint: None,
             tokenizer: TokenizerConfig::default(),
             layers: layers
                 .iter()

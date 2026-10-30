@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hyperion_specification::v1::{
-    is_bare_file_name, AttentionKind, LayerMapping, Manifest as ManifestV1, ModelConfig, Payload, TensorFormat, TensorMetadata,
-    TokenizerConfig, DEFAULT_PAYLOAD_FILE,
+    is_bare_file_name, Activation, AttentionKind, ChatTemplate, GenerationConfig, LayerMapping, Manifest as ManifestV1, ModelConfig,
+    Payload, QualifiedCheckpoint, RopeStyle, SamplingDefaults, TensorFormat, TensorMetadata, TokenizerConfig, CONTRACT_REVISION,
+    DEFAULT_PAYLOAD_FILE,
 };
-use hyperion_specification::Manifest;
+use hyperion_specification::{Manifest, ManifestError};
 use serde_json::{json, Value};
 
 fn spec_dir() -> PathBuf {
@@ -34,7 +35,24 @@ fn sample() -> Manifest {
             head_dim: 128,
             vocab_size: 128256,
             max_seq_len: 8192,
+            hidden_size: 4096,
+            intermediate_size: 14336,
+            rope_theta: 500000.0,
+            rope_style: RopeStyle::RotateHalf,
+            rms_norm_eps: 1e-5,
+            tie_word_embeddings: false,
+            qkv_bias: false,
+            qk_norm: false,
+            activation: Activation::Silu,
+            attention_scale: None,
         },
+        contract_revision: CONTRACT_REVISION,
+        generation: GenerationConfig {
+            eos_token_ids: vec![128001, 128009],
+            sampling_defaults: Some(SamplingDefaults { temperature: Some(0.6), top_p: Some(0.9), top_k: None, repetition_penalty: None }),
+        },
+        chat_template: Some(ChatTemplate { template: "{{ bos_token }}{% for m in messages %}{{ m.content }}{% endfor %}".into(), bos_token: "<|begin_of_text|>".into(), eos_token: "<|eot_id|>".into() }),
+        qualified_checkpoint: Some(QualifiedCheckpoint { repo: "meta-llama/Meta-Llama-3-8B".into(), revision: "8cde5ca8380496c9a6cc7ef3a8b46a0372a1d920".into() }),
         tokenizer: TokenizerConfig { family: "bpe".into(), asset_path: "tokenizer.json".into() },
         layers: vec![LayerMapping {
             index: 0,
@@ -223,4 +241,136 @@ fn committed_schema_is_up_to_date() {
         hyperion_specification::schema::manifest_schema_json(),
         "schema/manifest.v1.json is stale: run `task schema:gen`"
     );
+}
+
+fn bytes_of(value: &Value) -> Vec<u8> {
+    serde_json::to_vec(value).unwrap()
+}
+
+#[test]
+fn from_json_bytes_reads_a_current_manifest_and_validates_it() {
+    let parsed = Manifest::from_json_bytes(&bytes_of(&valid_json())).expect("a current manifest parses");
+    let Manifest::V1(m) = parsed;
+    assert_eq!(m.contract_revision, CONTRACT_REVISION);
+    assert_eq!(m.generation.eos_token_ids, vec![128001, 128009]);
+}
+
+#[test]
+fn an_old_manifest_without_the_new_fields_is_refused_with_the_reexport_hint() {
+    // A manifest as written before the contract revision existed: no contract_revision, no constants.
+    let mut old = valid_json();
+    let obj = old.as_object_mut().unwrap();
+    for key in ["contract_revision", "generation", "chat_template", "qualified_checkpoint"] {
+        obj.remove(key);
+    }
+    for key in ["hidden_size", "intermediate_size", "rope_theta", "rope_style", "rms_norm_eps", "tie_word_embeddings", "qkv_bias", "qk_norm", "activation"] {
+        old["model"].as_object_mut().unwrap().remove(key);
+    }
+    let err = Manifest::from_json_bytes(&bytes_of(&old)).unwrap_err();
+    assert!(matches!(err, ManifestError::UnsupportedContractVersion { .. }), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("re-export") && text.contains("Ignition >="), "{text}");
+    assert!(text.contains("contract_revision missing"), "{text}");
+}
+
+#[test]
+fn an_unknown_manifest_version_or_contract_revision_is_refused_before_any_field_is_read() {
+    for (field, value) in [("manifest_version", json!("V2")), ("manifest_version", json!(1)), ("contract_revision", json!(0)), ("contract_revision", json!(99))] {
+        let mut v = valid_json();
+        v[field] = value.clone();
+        // Even with the model object gone, the version complaint comes first.
+        v.as_object_mut().unwrap().remove("model");
+        let err = Manifest::from_json_bytes(&bytes_of(&v)).unwrap_err();
+        assert!(matches!(err, ManifestError::UnsupportedContractVersion { .. }), "{field}={value}: {err}");
+        assert!(err.to_string().contains("re-export"), "{err}");
+    }
+}
+
+#[test]
+fn constants_are_required_there_is_no_default() {
+    for key in ["hidden_size", "intermediate_size", "rope_theta", "rope_style", "rms_norm_eps", "tie_word_embeddings", "qkv_bias", "qk_norm", "activation"] {
+        let mut v = valid_json();
+        v["model"].as_object_mut().unwrap().remove(key);
+        let err = Manifest::from_json_bytes(&bytes_of(&v)).unwrap_err();
+        assert!(err.to_string().contains(key), "{key}: {err}");
+    }
+    let mut v = valid_json();
+    v.as_object_mut().unwrap().remove("generation");
+    assert!(Manifest::from_json_bytes(&bytes_of(&v)).is_err());
+}
+
+#[test]
+fn values_the_runtime_does_not_implement_are_not_representable() {
+    for (key, value) in [("activation", json!("gelu")), ("rope_style", json!("interleaved"))] {
+        let mut v = valid_json();
+        v["model"][key] = value;
+        assert!(Manifest::from_json_bytes(&bytes_of(&v)).is_err(), "{key}");
+    }
+}
+
+#[test]
+fn validation_refuses_an_empty_eos_list_a_zero_dimension_and_a_bad_checkpoint_revision() {
+    for (what, mutate) in [
+        ("empty eos", Box::new(|v: &mut Value| v["generation"]["eos_token_ids"] = json!([])) as Box<dyn Fn(&mut Value)>),
+        ("zero hidden", Box::new(|v: &mut Value| v["model"]["hidden_size"] = json!(0))),
+        ("negative rope", Box::new(|v: &mut Value| v["model"]["rope_theta"] = json!(-1.0))),
+        ("kv heads", Box::new(|v: &mut Value| v["model"]["num_kv_heads"] = json!(5))),
+        ("short revision", Box::new(|v: &mut Value| v["qualified_checkpoint"]["revision"] = json!("main"))),
+        ("scale", Box::new(|v: &mut Value| v["model"]["attention_scale"] = json!(0.0))),
+    ] {
+        let mut v = valid_json();
+        mutate(&mut v);
+        let err = Manifest::from_json_bytes(&bytes_of(&v)).expect_err(what);
+        assert!(matches!(err, ManifestError::Invalid(_)), "{what}: {err}");
+    }
+}
+
+#[test]
+fn the_attention_scale_defaults_to_one_over_sqrt_head_dim() {
+    let m = v1(sample());
+    assert!((m.model.effective_attention_scale() - 1.0 / 128f64.sqrt()).abs() < 1e-15);
+    let mut with = m.model.clone();
+    with.attention_scale = Some(0.25);
+    assert_eq!(with.effective_attention_scale(), 0.25);
+}
+
+#[test]
+fn cache_identity_is_computed_stable_and_sensitive_to_everything_it_covers() {
+    let base = with_payloads(&[("a.safetensors", SHA)]);
+    let id = base.cache_identity();
+    assert_eq!(id.len(), 64);
+    assert_eq!(id, base.cache_identity(), "deterministic");
+    let hash = |m: &ManifestV1| m.cache_identity();
+    let mut changed = base.clone();
+    changed.payloads[0].sha256 = "f".repeat(64);
+    assert_ne!(hash(&changed), id, "payload hash");
+    let mut changed = base.clone();
+    changed.target_arch = "sm_90".into();
+    assert_ne!(hash(&changed), id, "target arch");
+    let mut changed = base.clone();
+    changed.tensor_format = TensorFormat::Fp8;
+    assert_ne!(hash(&changed), id, "tensor format");
+    let mut changed = base.clone();
+    changed.layers[0].byte_offset += 1;
+    assert_ne!(hash(&changed), id, "layout");
+    let mut changed = base.clone();
+    changed.model.rope_theta = 10000.0;
+    assert_ne!(hash(&changed), id, "model config");
+    // What does not change the computation does not change the identity.
+    let mut same = base.clone();
+    same.signature = Some(vec![1, 2, 3]);
+    same.chat_template = None;
+    same.generation.eos_token_ids = vec![1];
+    assert_eq!(hash(&same), id, "signature, template and eos are outside the identity");
+}
+
+#[test]
+fn sha256_matches_python_hashlib_for_a_serialised_manifest() {
+    // The hash `cache_identity` rests on is the crate's own SHA-256; hashlib's answer for the same bytes is in the fixture.
+    let expected: Value = serde_json::from_slice(&std::fs::read(fixtures().join("../sha256-vectors.json")).unwrap()).unwrap();
+    for case in expected["cases"].as_array().unwrap() {
+        let data = case["hex"].as_str().unwrap();
+        let bytes: Vec<u8> = (0..data.len()).step_by(2).map(|i| u8::from_str_radix(&data[i..i + 2], 16).unwrap()).collect();
+        assert_eq!(hyperion_specification::sha256::sha256_hex(&bytes), case["sha256"].as_str().unwrap());
+    }
 }

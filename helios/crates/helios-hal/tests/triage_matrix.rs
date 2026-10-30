@@ -2,7 +2,9 @@
 //! a named test so a failure says exactly which cell of the matrix broke.
 
 use helios_hal::{supported_formats, triage, ProbedBackend, TriageError, TriageOutcome};
-use hyperion_specification::v1::{AttentionKind, Manifest, ModelConfig, TensorFormat, TokenizerConfig};
+use hyperion_specification::v1::{
+    Activation, AttentionKind, GenerationConfig, Manifest, ModelConfig, RopeStyle, TensorFormat, TokenizerConfig, CONTRACT_REVISION,
+};
 
 fn manifest(target_arch: &str, tensor_format: TensorFormat) -> Manifest {
     Manifest {
@@ -17,7 +19,21 @@ fn manifest(target_arch: &str, tensor_format: TensorFormat) -> Manifest {
             head_dim: 16,
             vocab_size: 10,
             max_seq_len: 16,
+            hidden_size: 64,
+            intermediate_size: 128,
+            rope_theta: 10000.0,
+            rope_style: RopeStyle::RotateHalf,
+            rms_norm_eps: 1e-6,
+            tie_word_embeddings: false,
+            qkv_bias: true,
+            qk_norm: false,
+            activation: Activation::Silu,
+            attention_scale: None,
         },
+        contract_revision: CONTRACT_REVISION,
+        generation: GenerationConfig { eos_token_ids: vec![0], sampling_defaults: None },
+        chat_template: None,
+        qualified_checkpoint: None,
         tokenizer: TokenizerConfig::default(),
         layers: vec![],
         payloads: Vec::new(),

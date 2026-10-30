@@ -1,4 +1,20 @@
 {
+  "chat_template": {
+    "bos_token": "<|begin_of_text|>",
+    "eos_token": "<|eot_id|>",
+    "template": "{{ bos_token }}{% for m in messages %}{{ m.content }}{% endfor %}"
+  },
+  "contract_revision": 1,
+  "generation": {
+    "eos_token_ids": [
+      128001,
+      128009
+    ],
+    "sampling_defaults": {
+      "temperature": 0.6,
+      "top_p": 0.9
+    }
+  },
   "hardware_recipe": {
     "fp4": "enabled"
   },
@@ -19,15 +35,28 @@
   ],
   "manifest_version": "V1",
   "model": {
+    "activation": "silu",
     "attention": "gqa",
     "head_dim": 128,
+    "hidden_size": 4096,
+    "intermediate_size": 14336,
     "max_seq_len": 8192,
     "num_attention_heads": 32,
     "num_kv_heads": 8,
     "num_layers": 32,
+    "qk_norm": false,
+    "qkv_bias": false,
+    "rms_norm_eps": 0.00001,
+    "rope_style": "rotate_half",
+    "rope_theta": 500000.0,
+    "tie_word_embeddings": false,
     "vocab_size": 128256
   },
   "model_id": "llama3",
+  "qualified_checkpoint": {
+    "repo": "meta-llama/Meta-Llama-3-8B",
+    "revision": "8cde5ca8380496c9a6cc7ef3a8b46a0372a1d920"
+  },
   "signature": null,
   "target_arch": "sm_120",
   "tensor_format": "fp4",

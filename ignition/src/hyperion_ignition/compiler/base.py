@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..hardware.base import HardwareRecipe
+from .generation import QualifiedCheckpoint
 from .model_config import ModelConfig
+
+# Written into every manifest; the Rust reader refuses any other value (`CONTRACT_REVISION`).
+CONTRACT_REVISION = 1
 
 
 # No quantizer exists yet, so every package holds bf16 weights. The manifest
@@ -62,8 +66,11 @@ class CompiledManifest:
     tensor_format: str
     model: ModelConfig
     tokenizer: dict[str, Any]
+    generation: dict[str, Any]
     layers: list[LayerMap] = field(default_factory=list)
     payloads: list[PayloadFile] = field(default_factory=list)
+    chat_template: dict[str, str] | None = None
+    qualified_checkpoint: QualifiedCheckpoint | None = None
     hardware_recipe: dict[str, str] = field(default_factory=dict)
     signature: list[int] | None = None
 
@@ -71,11 +78,13 @@ class CompiledManifest:
         """Serialize to the on-disk JSON form the runtime deserializes."""
         manifest = {
             "manifest_version": "V1",
+            "contract_revision": CONTRACT_REVISION,
             "model_id": self.model_id,
             "target_arch": self.target_arch,
             "tensor_format": self.tensor_format,
             "model": self.model.to_json_dict(),
             "tokenizer": self.tokenizer,
+            "generation": self.generation,
             "layers": [
                 {
                     "index": l.index,
@@ -91,6 +100,10 @@ class CompiledManifest:
             "hardware_recipe": self.hardware_recipe,
             "signature": self.signature,
         }
+        if self.chat_template is not None:
+            manifest["chat_template"] = self.chat_template
+        if self.qualified_checkpoint is not None:
+            manifest["qualified_checkpoint"] = self.qualified_checkpoint.to_json_dict()
         if self.payloads:
             manifest["payloads"] = [{"file": p.file, "byte_length": p.byte_length, "sha256": p.sha256} for p in self.payloads]
         return manifest
@@ -101,7 +114,7 @@ class ModelCompiler(Protocol):
 
     model_id: str
 
-    def compile(self, *, source: Path, recipe: HardwareRecipe) -> CompiledManifest:
+    def compile(self, *, source: Path, recipe: HardwareRecipe, checkpoint: QualifiedCheckpoint | None = None) -> CompiledManifest:
         """Extract weights + emit the manifest. Implementation is per-arch."""
         ...
 

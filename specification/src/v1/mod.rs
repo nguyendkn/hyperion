@@ -52,6 +52,22 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub payloads: Vec<Payload>,
 
+    /// Contract revision this manifest was written under; see [`CONTRACT_REVISION`]. A reader refuses any
+    /// other value before it looks at a single other field (`crate::Manifest::from_json_bytes`).
+    pub contract_revision: u32,
+
+    /// How generation ends and what the model's authors recommend for sampling.
+    pub generation: GenerationConfig,
+
+    /// The model's own chat template. Its text is inside the signed manifest so it cannot be changed
+    /// without breaking the signature. Absent for a model that has none (a plain completion model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_template: Option<ChatTemplate>,
+
+    /// Where the weights came from, when they came from a public checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_checkpoint: Option<QualifiedCheckpoint>,
+
     /// Hardware recipe applied at compile time (FP8/FP4/BF16, CUDA Graph capture).
     /// Stored as free-form k=v so recipes evolve without a schema change.
     #[serde(default)]
@@ -87,10 +103,38 @@ pub enum AttentionKind {
     Gqa,
 }
 
-/// Architecture dimensions of the compiled model. All fields are required: a
-/// manifest that cannot say how big its KV cache and vocabulary are is not
-/// loadable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The contract revision this build reads and Ignition writes. It is bumped whenever the manifest gains
+/// a field a reader must understand; a manifest of another revision is refused with
+/// [`crate::ManifestError::UnsupportedContractVersion`]. v1 is not frozen yet, so revisions are not
+/// compatible with each other: an old package is re-exported, not defaulted.
+pub const CONTRACT_REVISION: u32 = 1;
+
+/// The Ignition release that writes [`CONTRACT_REVISION`]; named in the re-export hint.
+pub const MIN_IGNITION_VERSION: &str = "0.2.0";
+
+/// The MLP activation. Only the values the runtime implements exist; a model with another activation
+/// needs a new variant here and a kernel, never a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum Activation {
+    /// `silu(gate) * up`, then the down projection.
+    Silu,
+}
+
+/// How rotary position embedding pairs the dimensions of a head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum RopeStyle {
+    /// Hugging Face `rotate_half` (GPT-NeoX): dimension `i` pairs with `i + head_dim / 2`; the whole head is rotated.
+    RotateHalf,
+}
+
+/// Architecture dimensions of the compiled model. All fields are required except `attention_scale`: a
+/// manifest that cannot say how big its tensors are, or which variant of each operation they feed, is
+/// not loadable. The runtime reads these and nothing else about the model's shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ModelConfig {
@@ -115,6 +159,99 @@ pub struct ModelConfig {
     /// Maximum sequence length the model was compiled with. Requests beyond
     /// this are rejected to avoid KV cache overrun.
     pub max_seq_len: u32,
+
+    /// Width of the residual stream.
+    pub hidden_size: u32,
+
+    /// Width of the MLP's inner (gate and up) projections.
+    pub intermediate_size: u32,
+
+    /// Base of the rotary embedding frequencies.
+    pub rope_theta: f64,
+
+    /// How rotary embedding pairs dimensions; see [`RopeStyle`].
+    pub rope_style: RopeStyle,
+
+    /// Epsilon of every RMS normalisation.
+    pub rms_norm_eps: f64,
+
+    /// The output head is the embedding matrix (no `lm_head.weight` tensor).
+    pub tie_word_embeddings: bool,
+
+    /// The Q, K and V projections have a bias.
+    pub qkv_bias: bool,
+
+    /// Q and K are normalised per head before RoPE (Qwen3). A runtime that does not implement it
+    /// refuses the package with a typed error.
+    pub qk_norm: bool,
+
+    /// MLP activation; see [`Activation`].
+    pub activation: Activation,
+
+    /// Softmax scale override. Absent means `1 / sqrt(head_dim)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_scale: Option<f64>,
+}
+
+impl ModelConfig {
+    /// The softmax scale attention applies: the override, or `1 / sqrt(head_dim)`.
+    pub fn effective_attention_scale(&self) -> f64 {
+        self.attention_scale.unwrap_or_else(|| 1.0 / f64::from(self.head_dim).sqrt())
+    }
+}
+
+/// How generation ends, and the sampling the model's authors recommend.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct GenerationConfig {
+    /// Token ids that end a generation: the union of `config.json` and `generation_config.json`,
+    /// without duplicates, in the order they were found. At least one.
+    pub eos_token_ids: Vec<u32>,
+
+    /// Recommended sampling, from `generation_config.json` when it has any. Absent fields mean "no recommendation".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_defaults: Option<SamplingDefaults>,
+}
+
+/// Sampling parameters a model's authors recommend. A client's own values win.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SamplingDefaults {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repetition_penalty: Option<f64>,
+}
+
+/// A Jinja chat template and the special-token texts it refers to (`bos_token`, `eos_token`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ChatTemplate {
+    /// The template source, exactly as the tokenizer configuration holds it.
+    pub template: String,
+    /// Text of the beginning-of-sequence token ("" when the model has none).
+    pub bos_token: String,
+    /// Text of the end-of-sequence token ("" when the model has none).
+    pub eos_token: String,
+}
+
+/// The public checkpoint a package was made from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct QualifiedCheckpoint {
+    /// Hugging Face repository id, `owner/name`.
+    pub repo: String,
+    /// The git commit of that repository, 40 lowercase hex digits. The weights' hashes are in `payloads`.
+    #[cfg_attr(feature = "schema", schemars(regex(pattern = r"^[0-9a-f]{40}$")))]
+    pub revision: String,
 }
 
 /// Tokenizer metadata. Kept intentionally thin — the actual vocab/merges are
@@ -216,6 +353,48 @@ fn is_windows_device_name(name: &str) -> bool {
 }
 
 impl Manifest {
+    /// Everything that can be checked on the manifest alone: the payload table, a non-empty EOS list,
+    /// positive dimensions, a head size that fits the hidden size's heads, a finite positive RoPE base.
+    pub fn validate(&self) -> Result<(), crate::ManifestError> {
+        self.validate_payloads()?;
+        let invalid = |message: String| Err(crate::ManifestError::Invalid(message));
+        let m = &self.model;
+        for (name, value) in [
+            ("num_layers", m.num_layers),
+            ("num_attention_heads", m.num_attention_heads),
+            ("num_kv_heads", m.num_kv_heads),
+            ("head_dim", m.head_dim),
+            ("vocab_size", m.vocab_size),
+            ("max_seq_len", m.max_seq_len),
+            ("hidden_size", m.hidden_size),
+            ("intermediate_size", m.intermediate_size),
+        ] {
+            if value == 0 {
+                return invalid(format!("model.{name} must be positive"));
+            }
+        }
+        if m.num_kv_heads > m.num_attention_heads || m.num_attention_heads % m.num_kv_heads != 0 {
+            return invalid(format!("model: {} KV heads do not divide {} attention heads", m.num_kv_heads, m.num_attention_heads));
+        }
+        for (name, value) in [("rope_theta", m.rope_theta), ("rms_norm_eps", m.rms_norm_eps)] {
+            if !(value.is_finite() && value > 0.0) {
+                return invalid(format!("model.{name} must be finite and positive, got {value}"));
+            }
+        }
+        if m.attention_scale.is_some_and(|s| !(s.is_finite() && s > 0.0)) {
+            return invalid("model.attention_scale must be finite and positive".to_string());
+        }
+        if self.generation.eos_token_ids.is_empty() {
+            return invalid("generation.eos_token_ids must name at least one token".to_string());
+        }
+        if let Some(q) = &self.qualified_checkpoint {
+            if q.revision.len() != 40 || !q.revision.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                return invalid("qualified_checkpoint.revision must be a 40-digit lowercase hex commit".to_string());
+            }
+        }
+        Ok(())
+    }
+
     /// The weights file names in payload-index order: the table's files, or just
     /// [`DEFAULT_PAYLOAD_FILE`] when the manifest has no table.
     pub fn payload_files(&self) -> Vec<&str> {

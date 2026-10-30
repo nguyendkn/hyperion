@@ -21,6 +21,6 @@ mod ops_split_attention;
 mod session;
 
 pub use backend::HopperBackend;
-pub use forward::{KvCache, Qwen2Dims};
+pub use forward::{KvCache, Qwen2Dims, UnsupportedModel};
 pub use decode_profile::{DecodeProfile, DecodeTiming};
 pub use forward_device::DecodeMode;

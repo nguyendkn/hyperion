@@ -1,5 +1,6 @@
 {
   "manifest_version": "V1",
+  "contract_revision": 1,
   "model_id": "qwen2",
   "target_arch": "sm_90",
   "tensor_format": "bf16",
@@ -10,11 +11,25 @@
     "num_kv_heads": 2,
     "head_dim": 16,
     "vocab_size": 128,
-    "max_seq_len": 256
+    "max_seq_len": 256,
+    "hidden_size": 64,
+    "intermediate_size": 128,
+    "rope_theta": 10000.0,
+    "rope_style": "rotate_half",
+    "rms_norm_eps": 1e-06,
+    "tie_word_embeddings": false,
+    "qkv_bias": true,
+    "qk_norm": false,
+    "activation": "silu"
   },
   "tokenizer": {
     "family": "bpe",
     "asset_path": "tokenizer.json"
+  },
+  "generation": {
+    "eos_token_ids": [
+      127
+    ]
   },
   "layers": [
     {

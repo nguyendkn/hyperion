@@ -17,7 +17,7 @@ from ..registry import register
 class DeepSeekCompiler:
     model_id = "deepseek"
 
-    def compile(self, *, source: Path, recipe: HardwareRecipe) -> CompiledManifest:
+    def compile(self, *, source: Path, recipe: HardwareRecipe, checkpoint=None) -> CompiledManifest:
         raise NotImplementedError(
             "deepseek: MLA KV geometry is not representable by manifest v1 ModelConfig"
         )

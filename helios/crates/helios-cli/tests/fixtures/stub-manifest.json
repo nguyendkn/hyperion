@@ -1,5 +1,6 @@
 {
   "manifest_version": "V1",
+  "contract_revision": 1,
   "model_id": "stub",
   "target_arch": "sm_0",
   "tensor_format": "bf16",
@@ -10,9 +11,19 @@
     "num_kv_heads": 4,
     "head_dim": 16,
     "vocab_size": 10,
-    "max_seq_len": 64
+    "max_seq_len": 64,
+    "hidden_size": 64,
+    "intermediate_size": 128,
+    "rope_theta": 10000.0,
+    "rope_style": "rotate_half",
+    "rms_norm_eps": 1e-6,
+    "tie_word_embeddings": false,
+    "qkv_bias": true,
+    "qk_norm": false,
+    "activation": "silu"
   },
   "tokenizer": { "family": "bpe", "asset_path": "" },
+  "generation": { "eos_token_ids": [0] },
   "layers": [],
   "hardware_recipe": {},
   "signature": null

@@ -24,7 +24,8 @@ REGISTRY = json.loads((TESTDATA / "models.json").read_text(encoding="utf-8"))["m
 
 # 2 layers, 4 heads (head_dim 4), 2 kv heads, hidden 16, vocab 8
 CFG = ModelConfig(num_layers=2, attention="gqa", num_attention_heads=4, num_kv_heads=2, head_dim=4,
-                  vocab_size=8, max_seq_len=16)
+                  vocab_size=8, max_seq_len=16, hidden_size=16, intermediate_size=32, rope_theta=10000.0,
+                  rms_norm_eps=1e-06, tie_word_embeddings=False, qkv_bias=True)
 HIDDEN = 16
 
 
@@ -149,10 +150,11 @@ def test_real_header_maps_every_tensor(model_id):
     from hyperion_ignition.compiler.model_config import model_config_from_hf
 
     cfg_dir = TESTDATA / "models" / model_id
-    cfg = model_config_from_hf(cfg_dir)
-    tied = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8")).get("tie_word_embeddings", False)
-    entries = read_safetensors_header(model_header(model_id))
-    layers = map_qwen2_layers(entries, cfg, tie_word_embeddings=tied)
+    # The fixture check comes first: without the downloaded files this test skips visibly, it does not fail.
+    header = model_header(model_id)
+    cfg = model_config_from_hf(cfg_dir, qkv_bias=True)
+    entries = read_safetensors_header(header)
+    layers = map_qwen2_layers(entries, cfg, tie_word_embeddings=cfg.tie_word_embeddings)
     assert len(layers) == len(entries)
     ranges = sorted((l.byte_offset, l.byte_offset + l.byte_length) for l in layers)
     assert ranges[0][0] == 0 and all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))

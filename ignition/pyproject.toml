@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hyperion-ignition"
-version = "0.1.0"
+version = "0.2.0"
 description = "Build-time compiler for .hyperion packages: extract weights, compile model graphs, sign and package."
 readme = "README.md"
 requires-python = ">=3.11"

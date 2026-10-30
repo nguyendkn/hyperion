@@ -12,6 +12,7 @@ from pathlib import Path
 
 import click
 
+from .compiler.generation import QualifiedCheckpoint
 from .compiler.registry import build_compiler
 from .hardware.registry import build_recipe
 from .manifest_schema import validate_manifest
@@ -22,13 +23,18 @@ from .manifest_schema import validate_manifest
 @click.option("--hw", "target_arch", required=True, help="Target compute capability, e.g. sm_90")
 @click.option("--out", "out_path", type=click.Path(path_type=Path), required=True)
 @click.option("--source", "source_path", type=click.Path(path_type=Path), required=True)
-def main(model_id: str, target_arch: str, out_path: Path, source_path: Path) -> None:
+@click.option("--hf-repo", default=None, help="Hugging Face repo id the weights came from (owner/name); needs --hf-revision")
+@click.option("--hf-revision", default=None, help="the 40-digit git commit of that repo; needs --hf-repo")
+def main(model_id: str, target_arch: str, out_path: Path, source_path: Path, hf_repo: str | None, hf_revision: str | None) -> None:
     """Compile a model into a `.hyperion` package for the given hardware."""
     try:
         compiler = build_compiler(model_id)
         recipe = build_recipe(target_arch)
         click.echo(f"compiling {model_id} for {target_arch} via {compiler.__class__.__name__}")
-        manifest = compiler.compile(source=source_path, recipe=recipe)
+        if (hf_repo is None) != (hf_revision is None):
+            raise ValueError("--hf-repo and --hf-revision go together")
+        checkpoint = QualifiedCheckpoint(hf_repo, hf_revision) if hf_repo else None
+        manifest = compiler.compile(source=source_path, recipe=recipe, checkpoint=checkpoint)
         document = manifest.to_json_dict()
         validate_manifest(document)  # nothing is written unless it satisfies the schema
     except (KeyError, ValueError, OSError, NotImplementedError) as exc:

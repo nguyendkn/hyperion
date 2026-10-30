@@ -201,20 +201,13 @@ async fn main() -> Result<()> {
             tok_path.to_string_lossy().into_owned(),
             Some(max_seq_len as usize),
         );
-        // The model's own chat template, if it ships one beside the tokenizer
-        // (`tokenizer_config.json`, the Hugging Face convention). A template that is present
-        // but does not compile is a broken package: refuse to boot instead of serving prompts
-        // in the wrong format.
-        let config_path = tok_path.with_file_name("tokenizer_config.json");
-        if config_path.is_file() {
-            let text = std::fs::read_to_string(&config_path)
-                .map_err(|e| anyhow!("read {}: {e}", config_path.display()))?;
-            if let Some(template) = helios_core::chat_template::ChatTemplate::from_tokenizer_config(&text)
-                .map_err(|e| anyhow!("{}: {e:#}", config_path.display()))?
-            {
-                tracing::info!("chat template loaded from tokenizer_config.json");
-                prompt_tokenizer = prompt_tokenizer.with_chat_template(template);
-            }
+        // The model's own chat template, carried (and signed) in the manifest. One that does not
+        // compile is a broken package: refuse to boot instead of serving prompts in the wrong format.
+        if let Some(spec) = &manifest.chat_template {
+            let template = helios_core::chat_template::ChatTemplate::new(&spec.template, spec.bos_token.clone(), spec.eos_token.clone())
+                .map_err(|e| anyhow!("manifest chat_template: {e:#}"))?;
+            tracing::info!("chat template loaded from the manifest");
+            prompt_tokenizer = prompt_tokenizer.with_chat_template(template);
         }
         Some(prompt_tokenizer)
     };
@@ -353,7 +346,7 @@ fn load_manifest(path: &std::path::Path) -> Result<hyperion_specification::v1::M
     let sidecar = path.with_extension("manifest.json");
     let bytes = std::fs::read(&sidecar)
         .map_err(|e| anyhow!("read manifest {p}: {e}", p = sidecar.display()))?;
-    let wrapped: hyperion_specification::Manifest = serde_json::from_slice(&bytes)?;
+    let wrapped = hyperion_specification::Manifest::from_json_bytes(&bytes).map_err(|e| anyhow!("manifest {p}: {e}", p = sidecar.display()))?;
     match wrapped {
         hyperion_specification::Manifest::V1(m) => Ok(m),
     }
@@ -394,7 +387,7 @@ fn resolve_in_package(package_path: &Path, asset_path: &Path) -> Result<PathBuf>
 
 #[cfg(test)]
 mod tests {
-    use hyperion_specification::v1::{AttentionKind, ModelConfig};
+    use hyperion_specification::v1::{Activation, AttentionKind, ModelConfig, RopeStyle};
 
     use super::{kv_bytes_per_sequence, resolve_max_seq_len};
 
@@ -408,6 +401,16 @@ mod tests {
             head_dim: 128,
             vocab_size: 152_064,
             max_seq_len: 131_072,
+            hidden_size: 3584,
+            intermediate_size: 18944,
+            rope_theta: 10000.0,
+            rope_style: RopeStyle::RotateHalf,
+            rms_norm_eps: 1e-6,
+            tie_word_embeddings: false,
+            qkv_bias: true,
+            qk_norm: false,
+            activation: Activation::Silu,
+            attention_scale: None,
         }
     }
 

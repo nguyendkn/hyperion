@@ -184,6 +184,6 @@ def test_header_only_shards_map_tensors_to_shards_without_hashing(tmp_path: Path
     shards = sorted(set(weight_map.values()))
     for name, entry in checkpoint.entries.items():
         assert shards[entry.payload] == weight_map[name]
-    config = model_config_from_hf(source, ("Qwen2ForCausalLM",))
+    config = model_config_from_hf(source, ("Qwen2ForCausalLM",), qkv_bias=True)
     layers = map_qwen2_layers(checkpoint.entries, config, tie_word_embeddings=False)
     assert {layer.payload for layer in layers} == set(range(len(shards)))

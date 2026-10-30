@@ -34,8 +34,8 @@ pub struct HopperBackend {
     pub(super) cublas: Mutex<Option<Cublas>>,
     pub(super) modules: Mutex<HashMap<&'static str, KernelModule>>,
     pub(super) weights: Mutex<Option<DeviceWeights>>,
-    /// Model dimensions and end-of-sequence token, read from `config.json` at load time.
-    runtime: Mutex<Option<(Qwen2Dims, Option<u32>)>>,
+    /// Model dimensions and the tokens that end a generation, taken from the manifest at load time.
+    runtime: Mutex<Option<(Qwen2Dims, Vec<u32>)>>,
     pub(super) device: Mutex<CudaDevice>,
 }
 
@@ -199,15 +199,9 @@ impl ComputeBackend for HopperBackend {
         }
         let plans = weights_plan::plan(manifest, &facts)?;
 
-        // The manifest does not carry hidden size, MLP width, RoPE theta or the EOS token yet,
-        // so read them from the model's own config.json beside the package (like the weights)
-        // and refuse a config that disagrees with the manifest.
-        let config_path = model_path.with_file_name("config.json");
-        let config: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&config_path).with_context(|| format!("read {}", config_path.display()))?,
-        )
-        .with_context(|| format!("parse {}", config_path.display()))?;
-        let runtime = Qwen2Dims::from_config_json(&config, &manifest.model)?;
+        // Everything the forward pass needs to know about the model is in the signed manifest; nothing is
+        // read from files beside the package. A model the pass does not implement is a typed refusal.
+        let runtime = (Qwen2Dims::from_manifest(&manifest.model)?, manifest.generation.eos_token_ids.clone());
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
         // A model loaded before is released first (its session refers to its weights).
@@ -242,7 +236,7 @@ impl ComputeBackend for HopperBackend {
             .expect("runtime mutex poisoned")
             .clone()
             .ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
-        self.generate_streaming(&dims, prompt, max_new, eos, sampling, on_token)
+        self.generate_streaming(&dims, prompt, max_new, &eos, sampling, on_token)
     }
 
     fn allocate_kv_cache(

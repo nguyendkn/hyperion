@@ -7,6 +7,27 @@
       "description": "Top-level descriptor embedded in every `.hyperion` package.\n\nWritten by Ignition at compile time, read by Helios at load time. The\n`target_arch` field is what drives HAL backend selection — see\n`helios-hal::backend_factory`.",
       "type": "object",
       "properties": {
+        "chat_template": {
+          "description": "The model's own chat template. Its text is inside the signed manifest so it cannot be changed\nwithout breaking the signature. Absent for a model that has none (a plain completion model).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChatTemplate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contract_revision": {
+          "description": "Contract revision this manifest was written under; see [`CONTRACT_REVISION`]. A reader refuses any\nother value before it looks at a single other field (`crate::Manifest::from_json_bytes`).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "generation": {
+          "description": "How generation ends and what the model's authors recommend for sampling.",
+          "$ref": "#/$defs/GenerationConfig"
+        },
         "hardware_recipe": {
           "description": "Hardware recipe applied at compile time (FP8/FP4/BF16, CUDA Graph capture).\nStored as free-form k=v so recipes evolve without a schema change.",
           "type": "object",
@@ -40,6 +61,17 @@
           "items": {
             "$ref": "#/$defs/Payload"
           }
+        },
+        "qualified_checkpoint": {
+          "description": "Where the weights came from, when they came from a public checkpoint.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QualifiedCheckpoint"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "signature": {
           "description": "Ed25519 signature over the weight blob, verified at load. Absent =\nunsigned package (allowed in dev builds, rejected by release loader).",
@@ -79,11 +111,23 @@
         "target_arch",
         "tensor_format",
         "model",
-        "layers"
+        "layers",
+        "contract_revision",
+        "generation"
       ]
     }
   ],
   "$defs": {
+    "Activation": {
+      "description": "The MLP activation. Only the values the runtime implements exist; a model with another activation\nneeds a new variant here and a kernel, never a guess.",
+      "oneOf": [
+        {
+          "description": "`silu(gate) * up`, then the down projection.",
+          "type": "string",
+          "const": "silu"
+        }
+      ]
+    },
     "AttentionKind": {
       "description": "How the attention layers lay out their KV cache. Decides the geometry that\n`num_kv_heads` and `head_dim` describe; a variant with a different cache\nshape (e.g. latent attention) is added here, never guessed from the dims.",
       "oneOf": [
@@ -97,6 +141,60 @@
           "type": "string",
           "const": "gqa"
         }
+      ]
+    },
+    "ChatTemplate": {
+      "description": "A Jinja chat template and the special-token texts it refers to (`bos_token`, `eos_token`).",
+      "type": "object",
+      "properties": {
+        "bos_token": {
+          "description": "Text of the beginning-of-sequence token (\"\" when the model has none).",
+          "type": "string"
+        },
+        "eos_token": {
+          "description": "Text of the end-of-sequence token (\"\" when the model has none).",
+          "type": "string"
+        },
+        "template": {
+          "description": "The template source, exactly as the tokenizer configuration holds it.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "template",
+        "bos_token",
+        "eos_token"
+      ]
+    },
+    "GenerationConfig": {
+      "description": "How generation ends, and the sampling the model's authors recommend.",
+      "type": "object",
+      "properties": {
+        "eos_token_ids": {
+          "description": "Token ids that end a generation: the union of `config.json` and `generation_config.json`,\nwithout duplicates, in the order they were found. At least one.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "sampling_defaults": {
+          "description": "Recommended sampling, from `generation_config.json` when it has any. Absent fields mean \"no recommendation\".",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SamplingDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "eos_token_ids"
       ]
     },
     "LayerMapping": {
@@ -146,15 +244,39 @@
       ]
     },
     "ModelConfig": {
-      "description": "Architecture dimensions of the compiled model. All fields are required: a\nmanifest that cannot say how big its KV cache and vocabulary are is not\nloadable.",
+      "description": "Architecture dimensions of the compiled model. All fields are required except `attention_scale`: a\nmanifest that cannot say how big its tensors are, or which variant of each operation they feed, is\nnot loadable. The runtime reads these and nothing else about the model's shape.",
       "type": "object",
       "properties": {
+        "activation": {
+          "description": "MLP activation; see [`Activation`].",
+          "$ref": "#/$defs/Activation"
+        },
         "attention": {
           "description": "KV cache layout; see [`AttentionKind`].",
           "$ref": "#/$defs/AttentionKind"
         },
+        "attention_scale": {
+          "description": "Softmax scale override. Absent means `1 / sqrt(head_dim)`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "head_dim": {
           "description": "Dimension of one attention head.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "hidden_size": {
+          "description": "Width of the residual stream.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "intermediate_size": {
+          "description": "Width of the MLP's inner (gate and up) projections.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -183,6 +305,32 @@
           "format": "uint32",
           "minimum": 0
         },
+        "qk_norm": {
+          "description": "Q and K are normalised per head before RoPE (Qwen3). A runtime that does not implement it\nrefuses the package with a typed error.",
+          "type": "boolean"
+        },
+        "qkv_bias": {
+          "description": "The Q, K and V projections have a bias.",
+          "type": "boolean"
+        },
+        "rms_norm_eps": {
+          "description": "Epsilon of every RMS normalisation.",
+          "type": "number",
+          "format": "double"
+        },
+        "rope_style": {
+          "description": "How rotary embedding pairs dimensions; see [`RopeStyle`].",
+          "$ref": "#/$defs/RopeStyle"
+        },
+        "rope_theta": {
+          "description": "Base of the rotary embedding frequencies.",
+          "type": "number",
+          "format": "double"
+        },
+        "tie_word_embeddings": {
+          "description": "The output head is the embedding matrix (no `lm_head.weight` tensor).",
+          "type": "boolean"
+        },
         "vocab_size": {
           "description": "Vocabulary size (logits width).",
           "type": "integer",
@@ -198,7 +346,16 @@
         "num_kv_heads",
         "head_dim",
         "vocab_size",
-        "max_seq_len"
+        "max_seq_len",
+        "hidden_size",
+        "intermediate_size",
+        "rope_theta",
+        "rope_style",
+        "rms_norm_eps",
+        "tie_word_embeddings",
+        "qkv_bias",
+        "qk_norm",
+        "activation"
       ]
     },
     "Payload": {
@@ -230,6 +387,72 @@
         "byte_length",
         "sha256"
       ]
+    },
+    "QualifiedCheckpoint": {
+      "description": "The public checkpoint a package was made from.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Hugging Face repository id, `owner/name`.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "The git commit of that repository, 40 lowercase hex digits. The weights' hashes are in `payloads`.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "revision"
+      ]
+    },
+    "RopeStyle": {
+      "description": "How rotary position embedding pairs the dimensions of a head.",
+      "oneOf": [
+        {
+          "description": "Hugging Face `rotate_half` (GPT-NeoX): dimension `i` pairs with `i + head_dim / 2`; the whole head is rotated.",
+          "type": "string",
+          "const": "rotate_half"
+        }
+      ]
+    },
+    "SamplingDefaults": {
+      "description": "Sampling parameters a model's authors recommend. A client's own values win.",
+      "type": "object",
+      "properties": {
+        "repetition_penalty": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "top_k": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "top_p": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
     },
     "TensorFormat": {
       "description": "Weight packing format of a package. Per-tensor dtypes live in\n[`TensorMetadata`]; this is the package-level format the recipe selected.",

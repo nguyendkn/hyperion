@@ -44,6 +44,11 @@ impl ChatTemplate {
             return Ok(None);
         };
 
+        Self::new(source, token_text(&config, "bos_token"), token_text(&config, "eos_token")).map(Some)
+    }
+
+    /// Compile `source` (a Jinja chat template, as the manifest carries it) with the special-token texts it can refer to.
+    pub fn new(source: &str, bos_token: String, eos_token: String) -> Result<Self> {
         let mut env = Environment::new();
         // The settings Hugging Face's `apply_chat_template` uses.
         env.set_syntax(SyntaxConfig::builder().trim_blocks(true).lstrip_blocks(true).build().map_err(|e| anyhow!("{e:#}"))?);
@@ -53,7 +58,7 @@ impl ChatTemplate {
             Err(Error::new(ErrorKind::InvalidOperation, message))
         });
         env.add_template_owned(TEMPLATE_NAME, source.to_string()).map_err(|e| anyhow!("chat template does not compile: {e:#}"))?;
-        Ok(Some(Self { env, bos_token: token_text(&config, "bos_token"), eos_token: token_text(&config, "eos_token") }))
+        Ok(Self { env, bos_token, eos_token })
     }
 
     /// The prompt text for `messages`; `add_generation_prompt` appends the opening of the

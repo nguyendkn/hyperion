@@ -18,24 +18,11 @@ use std::path::PathBuf;
 use helios_hal::{weights_plan, ComputeBackend, HopperBackend};
 use hyperion_specification::Manifest;
 
-/// The model dimensions, read from the `config.json` beside the compiled package.
+/// The model dimensions, taken from the compiled package's manifest, the only place the runtime reads them.
 fn qwen2_dims(package: &std::path::Path) -> helios_hal::Qwen2Dims {
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
-    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
-    let heads = int("num_attention_heads");
-    helios_hal::Qwen2Dims {
-        layers: int("num_hidden_layers"),
-        hidden: int("hidden_size"),
-        intermediate: int("intermediate_size"),
-        heads,
-        kv_heads: int("num_key_value_heads"),
-        head_dim: int("hidden_size") / heads,
-        vocab: int("vocab_size"),
-        rope_theta: config["rope_theta"].as_f64().unwrap(),
-        rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
-        tied_head: config["tie_word_embeddings"] == true,
-    }
+    let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap())
+        .unwrap_or_else(|e| panic!("manifest of {}: {e}", package.display()));
+    helios_hal::Qwen2Dims::from_manifest(&manifest.model).expect("a model the sm90 forward pass implements")
 }
 
 /// The prompt ids the timing tests repeat: the first prompt of the compact oracle when
@@ -376,27 +363,11 @@ fn attention_matches_the_cpu_reference_for_prefill_and_decode() {
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
 fn first_forward_matches_the_hf_oracle() {
-    use helios_hal::Qwen2Dims;
 
     let package = package();
     let oracle: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
-    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
-    let heads = int("num_attention_heads");
-    let dims = Qwen2Dims {
-        layers: int("num_hidden_layers"),
-        hidden: int("hidden_size"),
-        intermediate: int("intermediate_size"),
-        heads,
-        kv_heads: int("num_key_value_heads"),
-        head_dim: int("hidden_size") / heads,
-        vocab: int("vocab_size"),
-        rope_theta: config["rope_theta"].as_f64().expect("rope_theta"),
-        rms_eps: config["rms_norm_eps"].as_f64().expect("rms_norm_eps") as f32,
-        tied_head: config["tie_word_embeddings"] == true,
-    };
+    let dims = qwen2_dims(&package);
 
     let ids: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
     let want: Vec<f32> = oracle["logits"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
@@ -438,33 +409,17 @@ fn first_forward_matches_the_hf_oracle() {
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
 fn greedy_generation_matches_hf_generate() {
-    use helios_hal::Qwen2Dims;
 
     let package = package();
     let oracle: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
-    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
-    let heads = int("num_attention_heads");
-    let dims = Qwen2Dims {
-        layers: int("num_hidden_layers"),
-        hidden: int("hidden_size"),
-        intermediate: int("intermediate_size"),
-        heads,
-        kv_heads: int("num_key_value_heads"),
-        head_dim: int("hidden_size") / heads,
-        vocab: int("vocab_size"),
-        rope_theta: config["rope_theta"].as_f64().unwrap(),
-        rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
-        tied_head: config["tie_word_embeddings"] == true,
-    };
+    let dims = qwen2_dims(&package);
     let ids = |key: &str| -> Vec<u32> { oracle[key].as_array().expect(key).iter().map(|v| v.as_u64().unwrap() as u32).collect() };
     let (prompt, want) = (ids("prompt_ids"), ids("generated_ids"));
 
     let (_, _, backend) = loaded_backend();
     let started = std::time::Instant::now();
-    let got = backend.generate_greedy(&dims, &prompt, want.len(), None).expect("generation");
+    let got = backend.generate_greedy(&dims, &prompt, want.len(), &[]).expect("generation");
     let elapsed = started.elapsed();
     let prefix = got.iter().zip(&want).take_while(|(a, b)| a == b).count();
     println!(
@@ -485,27 +440,12 @@ fn greedy_generation_matches_hf_generate() {
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
 fn device_pipeline_is_bit_identical_to_the_host_path() {
-    use helios_hal::{Qwen2Dims, SamplingConfig};
+    use helios_hal::SamplingConfig;
 
     let package = package();
     let oracle: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(package.with_file_name("config.json")).unwrap()).unwrap();
-    let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("config.json {k}")) as usize;
-    let heads = int("num_attention_heads");
-    let dims = Qwen2Dims {
-        layers: int("num_hidden_layers"),
-        hidden: int("hidden_size"),
-        intermediate: int("intermediate_size"),
-        heads,
-        kv_heads: int("num_key_value_heads"),
-        head_dim: int("hidden_size") / heads,
-        vocab: int("vocab_size"),
-        rope_theta: config["rope_theta"].as_f64().unwrap(),
-        rms_eps: config["rms_norm_eps"].as_f64().unwrap() as f32,
-        tied_head: config["tie_word_embeddings"] == true,
-    };
+    let dims = qwen2_dims(&package);
     let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
     let want: Vec<u32> = oracle["generated_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
 
@@ -521,11 +461,11 @@ fn device_pipeline_is_bit_identical_to_the_host_path() {
     let started = std::time::Instant::now();
     let mut device_tokens = Vec::new();
     backend
-        .generate_streaming(&dims, &prompt, want.len(), None, &SamplingConfig::greedy(), &mut |t| device_tokens.push(t))
+        .generate_streaming(&dims, &prompt, want.len(), &[], &SamplingConfig::greedy(), &mut |t| device_tokens.push(t))
         .expect("device generation");
     let device_time = started.elapsed();
     let started = std::time::Instant::now();
-    let host_tokens = backend.generate_greedy_host(&dims, &prompt, want.len(), None).expect("host generation");
+    let host_tokens = backend.generate_greedy_host(&dims, &prompt, want.len(), &[]).expect("host generation");
     let host_time = started.elapsed();
     println!(
         "{} tokens: device {:.2?} ({:.1} ms/token incl. prefill) vs host path {:.2?} ({:.1} ms/token); equal to HF: device {}, host {}",
@@ -563,10 +503,10 @@ fn graph_decode_is_bit_identical_to_direct_launches() {
     let steps = 40;
     let (mut direct, mut graph) = (Vec::new(), Vec::new());
     backend
-        .generate_traced(&dims, &prompt, steps, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut direct))
+        .generate_traced(&dims, &prompt, steps, &[], &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut direct))
         .expect("direct generation");
     backend
-        .generate_traced(&dims, &prompt, steps, None, &SamplingConfig::greedy(), DecodeMode::Graph, Some(&mut graph))
+        .generate_traced(&dims, &prompt, steps, &[], &SamplingConfig::greedy(), DecodeMode::Graph, Some(&mut graph))
         .expect("graph generation");
     assert_eq!(direct.len(), steps);
     assert_eq!(direct.len(), graph.len());
@@ -662,13 +602,13 @@ fn device_token_chain_matches_host_argmax() {
     // The reference: the host picks each token from the logits of the logits-returning path.
     let steps = 40;
     let mut trace = Vec::new();
-    backend.generate_traced(&dims, &prompt, steps, None, &greedy, DecodeMode::Direct, Some(&mut trace)).expect("reference");
+    backend.generate_traced(&dims, &prompt, steps, &[], &greedy, DecodeMode::Direct, Some(&mut trace)).expect("reference");
     let want: Vec<u32> = trace.iter().map(|l| host_argmax(l)).collect();
     assert_eq!(want.len(), steps);
 
     for mode in [DecodeMode::Direct, DecodeMode::Graph] {
         let mut got = Vec::new();
-        let stop = backend.generate_mode(&dims, &prompt, steps, None, &greedy, mode, &mut |t| got.push(t)).expect("device chain");
+        let stop = backend.generate_mode(&dims, &prompt, steps, &[], &greedy, mode, &mut |t| got.push(t)).expect("device chain");
         assert_eq!(got, want, "{mode:?}: tokens differ from the host argmax");
         assert_eq!(stop, helios_hal::traits::StopReason::MaxTokens);
         println!("{mode:?}: {steps} tokens identical to the host argmax");
@@ -677,15 +617,15 @@ fn device_token_chain_matches_host_argmax() {
         let eos = want[10];
         let first = want.iter().position(|&t| t == eos).unwrap();
         let mut got = Vec::new();
-        let stop = backend.generate_mode(&dims, &prompt, steps, Some(eos), &greedy, mode, &mut |t| got.push(t)).expect("device chain with eos");
+        let stop = backend.generate_mode(&dims, &prompt, steps, &[eos], &greedy, mode, &mut |t| got.push(t)).expect("device chain with eos");
         assert_eq!(got, want[..=first].to_vec(), "{mode:?}: must stop right after the end-of-sequence token");
         assert_eq!(stop, helios_hal::traits::StopReason::EndOfSequence);
     }
     // One token, and none.
     let mut one = Vec::new();
-    backend.generate_mode(&dims, &prompt, 1, None, &greedy, DecodeMode::Graph, &mut |t| one.push(t)).unwrap();
+    backend.generate_mode(&dims, &prompt, 1, &[], &greedy, DecodeMode::Graph, &mut |t| one.push(t)).unwrap();
     assert_eq!(one, want[..1].to_vec());
-    backend.generate_mode(&dims, &prompt, 0, None, &greedy, DecodeMode::Graph, &mut |_| panic!("no token expected")).unwrap();
+    backend.generate_mode(&dims, &prompt, 0, &[], &greedy, DecodeMode::Graph, &mut |_| panic!("no token expected")).unwrap();
     backend.shutdown().unwrap();
 }
 
@@ -816,7 +756,7 @@ fn cold_start_timing() {
     let load_ms = started.elapsed().as_secs_f64() * 1000.0;
     let generate = |mode| {
         let started = std::time::Instant::now();
-        backend.generate_mode(&dims, &prompt, 8, None, &SamplingConfig::greedy(), mode, &mut |_| {}).expect("generation");
+        backend.generate_mode(&dims, &prompt, 8, &[], &SamplingConfig::greedy(), mode, &mut |_| {}).expect("generation");
         started.elapsed().as_secs_f64() * 1000.0
     };
     let (first_direct, second_direct) = (generate(DecodeMode::Direct), generate(DecodeMode::Direct));
@@ -902,7 +842,7 @@ fn long_context_decode_logits_match_prefill_logits() {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
         // trace[0]: prefill logits of the prompt; trace[1]: logits of one decode step that feeds the greedy token.
         let mut trace = Vec::new();
-        backend.generate_traced(&dims, &prompt, 2, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut trace)).unwrap();
+        backend.generate_traced(&dims, &prompt, 2, &[], &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut trace)).unwrap();
         let first = trace[0].iter().enumerate().fold(0, |b, (i, v)| if *v > trace[0][b] { i } else { b }) as u32;
         let mut extended = prompt.clone();
         extended.push(first);
@@ -998,7 +938,7 @@ fn forward_matches_the_compact_oracle() {
         //    tolerance and our token one of those two. The token we chose and its logit are always printed.
         let mut free = Vec::new();
         backend
-            .generate_traced(&dims, &prompt.ids, n, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut free))
+            .generate_traced(&dims, &prompt.ids, n, &[], &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut free))
             .expect("free greedy generation");
         match (0..free.len().min(n)).find(|&j| argmax(&free[j]) as u32 != prompt.generated_ids[j]) {
             None => println!("ORACLE {} (free greedy): all {n} tokens equal the reference's", prompt.label),

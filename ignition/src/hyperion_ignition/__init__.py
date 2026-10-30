@@ -7,4 +7,4 @@ a new file, never an edit to existing ones — so the long-term Rust port can
 lift each submodule independently without touching helios/.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

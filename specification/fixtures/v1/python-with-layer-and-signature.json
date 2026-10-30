@@ -1,5 +1,6 @@
 {
   "manifest_version": "V1",
+  "contract_revision": 1,
   "model_id": "llama3",
   "target_arch": "sm_120",
   "tensor_format": "fp4",
@@ -10,11 +11,25 @@
     "num_kv_heads": 8,
     "head_dim": 128,
     "vocab_size": 128256,
-    "max_seq_len": 8192
+    "max_seq_len": 8192,
+    "hidden_size": 4096,
+    "intermediate_size": 14336,
+    "rope_theta": 500000.0,
+    "rope_style": "rotate_half",
+    "rms_norm_eps": 1e-05,
+    "tie_word_embeddings": false,
+    "qkv_bias": false,
+    "qk_norm": false,
+    "activation": "silu"
   },
   "tokenizer": {
     "family": "bpe",
     "asset_path": "tokenizer.json"
+  },
+  "generation": {
+    "eos_token_ids": [
+      128001
+    ]
   },
   "layers": [
     {
