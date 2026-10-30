@@ -49,6 +49,10 @@ It closes these ledger rows at once: the device upload of a sharded model, an un
 - Nsight Systems: `apt-get install nsight-systems-2025.5.2` (the CUDA image's apt repo has it); the binary is `/opt/nvidia/nsight-systems/2025.5.2/bin/nsys`.
 - `kubectl exec ... nohup ... &` keeps the exec attached and times out: start long jobs with `(setsid nohup bash script.sh > log 2>&1 < /dev/null &)` and poll the log.
 
+- Kernel binaries are not byte-reproducible: `elementwise.fatbin` differs on every rebuild (nvcc puts a per-compile id into the names of shared variables), its SASS (`cuobjdump -sass`) does not. Compare SASS, never hashes.
+- An fp32 oracle at 16384 tokens does not fit next to the weights on an 80 GB GPU (the attention score matrix is 28 GiB); 12288 tokens peaked at 67 GiB.
+- A model's package is compiled on the pod with the Ignition of the tree under test (`uv pip install -e <tree>/ignition`), with `--hf-repo` and `--hf-revision` from `testdata/models.json`.
+
 ## Rules learned from incidents
 
 1. **One `CARGO_TARGET_DIR` per build in an A/B comparison.** With one shared target directory cargo saw the second tree's sources as up to date and did not rebuild, so "B" was the A binary and a whole run was void. It was noticed only because the output format was the old one.

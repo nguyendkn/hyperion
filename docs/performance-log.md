@@ -97,3 +97,61 @@ Single H100 80GB HBM3 (sm_90), driver 580.126.20 (CUDA 13.0), libcuda.so.1 and l
 | 8000 | 2.758 | 2.017 | 9.459 [9.454, 9.462] | 8.548 [8.537, 8.549] | 8.680 |
 
 0.5B against the earlier event-based figures (graph 1.755 / 1.816 / 1.929 / 2.017): unchanged within 0.5%, so moving the work to load time costs nothing per token. Graph is 1.10x to 1.11x faster than direct on 7B (1.40x on 0.5B): the 7B step is dominated by GEMV weight reads, so launch overhead is a smaller share. 7B at 8000 tokens: attention is 1.35 of 10.37 ms in the profiled direct step (13%), against 5% at context 5. Weight load 12.2 to 13.4 s for 14.19 GiB (4 shards); 58.27 GiB free after load. Weight bandwidth bound for reference: 14.19 GiB at 3.35 TB/s is about 4.5 ms, the graph step at context 5 is 7.7 ms, so decode runs at roughly 59% of the memory-bandwidth floor (inference from the datasheet bandwidth, not measured).
+
+## Chunked prefill and the kernel-count series (pod session 2026-10-30)
+
+Single H100 80GB HBM3 (sm_90), driver 580.126.20 (CUDA 13.0), nvcc 12.4.131, libcuda.so.1, libcublas.so.12, libcublasLt.so.12. SM clock median 1980 MHz in every window (a few seconds at 1845 to 1965 in the longest runs), memory 2619 MHz, 30 to 58 C. Release builds, one `CARGO_TARGET_DIR` per commit, every result starts with `BUILD revision=... sha256=...`. Decode: GPU ms/token between CUDA events around 128 chained steps after 3 warm-ups, median [p10, p90] of 10 windows, graph decode / direct launches. The same hardware-test code measured every commit (`scripts/package-variant.sh`). Between two processes the same build varies by up to about 1.5% (the final tip measured 6.495 ms where an earlier build of the same kernels measured 6.603); inside a run the spread is under 0.3%.
+
+### Decode, Qwen2.5-7B, graph GPU ms/token [p10, p90] / direct
+
+| build | ctx 5 | ctx 1024 | ctx 4096 | ctx 8000 | ctx 16000 |
+|---|---|---|---|---|---|
+| before the series (`9c5d380`) | 7.632 [7.629, 7.635] / 8.383 | 7.720 [7.719, 7.725] / 8.485 | 7.917 [7.916, 7.922] / 8.706 | 8.472 [8.457, 8.474] / 9.237 | 9.566 [9.563, 9.568] / 10.329 |
+| + Q, K, V concatenated (`d797a6a`) | 7.311 [7.299, 7.317] / 7.941 | 7.384 [7.377, 7.385] / 8.033 | 7.609 [7.600, 7.613] / 8.257 | 8.147 [8.130, 8.150] / 8.780 | - |
+| + gate, up concatenated (`35e639c`) | 7.044 [7.033, 7.045] / 7.635 | 7.133 [7.122, 7.133] / 7.736 | 7.351 [7.343, 7.352] / 7.968 | 7.892 [7.885, 7.897] / 8.507 | - |
+| + cuBLASLt, bias in the epilogue (`82b8056`) | 6.909 [6.909, 6.911] / 7.385 | 6.995 [6.990, 6.996] / 7.472 | 7.212 [7.208, 7.212] / 7.706 | 7.752 [7.745, 7.754] / 8.223 | - |
+| + residual fused into the norm (`eb518a1`) | 7.028 [7.016, 7.028] / 7.423 | 7.117 [7.109, 7.117] / 7.523 | 7.333 [7.329, 7.333] / 7.749 | 7.871 [7.856, 7.876] / 8.289 | - |
+| + norm kernels with batched loads (`b888327`, experiment build) | 6.603 [6.601, 6.603] / 6.991 | 6.691 [6.683, 6.692] / 7.090 | 6.904 [6.898, 6.906] / 7.314 | 7.444 [7.431, 7.448] / 7.860 | - |
+| **final tip `aaada2e`** | **6.495 [6.493, 6.500] / 6.893** | **6.589 [6.582, 6.590] / 7.001** | **6.793 [6.793, 6.801] / 7.226** | **7.346 [7.336, 7.346] / 7.767** | **8.437 [8.430, 8.439] / 8.859** |
+
+Final against before: -14.9%, -14.6%, -14.2%, -13.3%, -11.8%. The fused residual+norm kernel with the old norm loop was 1.7% slower on 7B than the commit before it (the single block did the add too, one more dependent load per element); with batched loads (bit-identical results) fusing is 0.45% faster than the separate add on 7B (6.603 against 6.633 at context 5, 6.904 against 6.936 at 4096) and 5% faster on 0.5B.
+
+### Decode, Qwen2.5-0.5B, graph GPU ms/token [p10, p90] / direct
+
+| build | ctx 5 | ctx 1024 | ctx 4096 | ctx 8000 | ctx 16000 |
+|---|---|---|---|---|---|
+| before the series | 1.753 [1.751, 1.754] / 2.409 | 1.796 [1.795, 1.806] / 2.460 | 1.925 [1.924, 1.937] / 2.588 | 2.028 [2.011, 2.029] / 2.660 | 2.269 [2.268, 2.290] / 2.942 |
+| + QKV | 1.580 / 2.133 | 1.631 / 2.187 | 1.756 / 2.318 | 1.836 / 2.385 | - |
+| + gate/up | 1.500 / 1.984 | 1.539 / 2.035 | 1.687 / 2.168 | 1.762 / 2.250 | - |
+| + cuBLASLt | 1.402 / 1.789 | 1.451 / 1.846 | 1.591 / 1.972 | 1.665 / 2.051 | - |
+| + fused add+norm | 1.372 / 1.696 | 1.408 / 1.755 | 1.545 / 1.888 | 1.627 / 1.969 | - |
+| **final tip** | **1.340 [1.340, 1.342] / 1.689** | **1.403 [1.394, 1.403] / 1.754** | **1.525 [1.523, 1.527] / 1.881** | **1.606 [1.599, 1.607] / 1.970** | **1.869 [1.868, 1.870] / 2.243** |
+
+Final against before: -23.6%, -21.9%, -20.8%, -20.8%, -17.6%.
+
+### Achieved bandwidth of each GEMM, 7B graph decode step (Nsight Systems over decode steps at contexts 5 to 133, `scripts/gemm-bandwidth.py`, H100 peak taken as 3350 GB/s)
+
+| build | QKV (31.5 MiB) | o_proj (24.5) | gate+up (259) | down (129.5) | lm_head (1039.5) | all GEMMs |
+|---|---|---|---|---|---|---|
+| before (separate Q, K, V, gate, up) | q 49.3%, k 20.0%, v 21.1% | 47.5% | gate 82.1%, up 82.9% | 79.1% | 93.0% | 5720.6 us, 73.8% |
+| + QKV concatenated | 17.7 us, 55.8% | 48.5% | 82.1%, 82.8% | 79.1% | 92.9% | 5473.7 us, 77.1% |
+| + gate/up concatenated | 17.8 us, 55.5% | 48.6% | 90.8 us, 88.9% | 79.0% | 92.8% | 5279.7 us, 79.9% |
+| + cuBLASLt (and every later build) | 17.9 us, 55.1% | 48.3% | 90.9 us, 89.1% | 79.8% | 92.8% | 5265.2 us, 80.2% |
+
+The step is 84% GEMM time. What stays below 80%: the two small projections (QKV and o_proj, 55% and 48%: 17.9 and 15.9 us for 31.5 and 24.5 MiB, a latency-bound matrix-vector kernel) and `down` (79.8%). If every GEMM ran at 90% of peak they would take about 4.5 ms of the 6.3 ms of kernel time; the 0.46 ms between the two small projections and that ideal is where a custom matrix-vector kernel would pay, and was not attempted. Per step on the final build (Nsight, decode steps at contexts 5 to 133): 6298 us of kernels in 340 launches (the step takes 6.5 ms, so about 0.3 ms is gaps between launches); GEMMs 5265, attention split 445 and combine 70 (about 16 us per layer even at a context of 5), add_rmsnorm 306 (it was 716 us before the batched loads and the separate norm 542 us), rope 88, swiglu 73.
+0.5B: GEMMs 942 MiB in 704 us (42% of peak: the matrices are too small to fill the device), `lm_head` 86.5%.
+
+### Time to first token (prefill), chunked, graph = direct within 0.1%
+
+| prompt tokens | Qwen2.5-7B | Qwen2.5-0.5B |
+|---|---|---|
+| 1024 | 76.2 ms (graph), 77.1 (direct) | 17.8 ms |
+| 4096 | 840 ms | 216 ms |
+| 8192 | 3099 ms | 820 ms |
+| 16384 | 11 934 ms | 3171 ms |
+
+The curve is quadratic: the chunk attention kernel uses no tensor cores and recomputes K for each query head (see the ledger), so at 16384 tokens the 7B prefill takes about 12 s, almost all of it attention. A fused tensor-core attention kernel is the next speed item for long prompts. Prefill at 16384 against 8192 grows 3.85x for 7B.
+
+### Not byte-reproducible but equal
+
+Rebuilding `elementwise.fatbin` from the committed source gives a different file each time (`cuobjdump -sass` is identical, the PTX differs only in nvcc's per-compile id in the names of shared variables); `rmsnorm.fatbin`, which has no such variable, rebuilds to the same bytes. Compare kernels by SASS, not by hash.
