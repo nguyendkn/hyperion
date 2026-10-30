@@ -13,6 +13,7 @@ use tracing::info;
 
 use hyperion_specification::v1::Manifest;
 
+use crate::contract::RankInfo;
 use crate::traits::{ComputeBackend, DynBackend, HardwareInfo};
 use crate::triage::{triage, ProbedBackend, Triage};
 
@@ -83,7 +84,7 @@ pub fn create_backend(manifest: &Manifest) -> Result<CreatedBackend> {
             }
         };
         let device_arch = hardware.compute_capability.clone();
-        let probed = ProbedBackend { backend_arch: kind.target_arch(), device_arch: device_arch.clone() };
+        let probed = ProbedBackend { capabilities: backend.capabilities(), device_arch: device_arch.clone() };
         match triage(manifest, &probed) {
             Ok(decision) => {
                 info!(backend = ?kind, actual = %device_arch, target = %manifest.target_arch, outcome = ?decision.outcome, "triaged");
@@ -120,19 +121,19 @@ fn instantiate(kind: BackendKind) -> Result<(DynBackend, HardwareInfo)> {
     match kind {
         BackendKind::Stub => {
             let b = crate::backends::stub::StubBackend::new();
-            let info = b.initialize_device()?;
+            let info = b.initialize_device(&RankInfo::single())?;
             Ok((Box::new(b), info))
         }
         #[cfg(feature = "sm90")]
         BackendKind::HopperSm90 => {
             let b = crate::backends::hopper_sm90::HopperBackend::new()?;
-            let info = b.initialize_device()?;
+            let info = b.initialize_device(&RankInfo::single())?;
             Ok((Box::new(b), info))
         }
         #[cfg(feature = "sm120")]
         BackendKind::BlackwellSm120 => {
             let b = crate::backends::blackwell_sm120::BlackwellBackend::new()?;
-            let info = b.initialize_device()?;
+            let info = b.initialize_device(&RankInfo::single())?;
             Ok((Box::new(b), info))
         }
     }

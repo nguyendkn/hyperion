@@ -33,7 +33,12 @@ pub use backends::hopper_sm90::{DecodeMode, DecodeProfile, DecodeTiming, HopperB
 pub use backends::hopper_sm90::{LayoutBench, PageLayout};
 pub use backend_factory::{create_backend, BackendKind, CreatedBackend};
 pub use sampling::{sample, Rng, SamplingConfig};
-pub use traits::{ComputeBackend, DevicePointer, DynBackend, HardwareInfo, StopReason, TensorData};
+pub use contract::{
+    BackendConfig, Capabilities, CollectiveKind, Deployment, DeviceGroup, GraphSet, HalError, KvPool, KvPoolInfo, KvReservation, KvSpec, LoadedModel, MemoryKind,
+    MemoryPolicy, RankInfo, StepTicket, TensorSlice, TensorSpec, WeightSource,
+};
+pub use step::{Capacity, Input, PageDelta, PlanError, Row, RowOutput, SamplingInit, SlotInit, StepOutput, StepPlan, Want};
+pub use traits::{load_package, CommDType, Communicator, ComputeBackend, DevicePointer, DynBackend, HardwareInfo, StopReason};
 pub use triage::{
     format_name, format_table, supported_formats, triage, ProbedBackend, Triage, TriageError,
     TriageOutcome,

@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::io::Read;
 
 use anyhow::{anyhow, bail, Result};
-use hyperion_specification::v1::Manifest;
+use crate::contract::BackendConfig;
 
 /// Header-length prefixes above this are corrupt, not real checkpoints.
 const MAX_HEADER_BYTES: u64 = 64 * 1024 * 1024;
@@ -49,26 +49,28 @@ pub fn data_start(file: &mut impl Read) -> Result<u64> {
 /// weights: empty, duplicate names, a payload that does not exist, a file whose size disagrees
 /// with the payload table, or ranges that overflow or run past the end of their file. `files`
 /// holds one entry per payload, in the manifest's payload order.
-pub fn plan(manifest: &Manifest, files: &[PayloadFile]) -> Result<Vec<TensorPlan>> {
-    if manifest.layers.is_empty() {
+pub fn plan(config: &BackendConfig, files: &[PayloadFile]) -> Result<Vec<TensorPlan>> {
+    if config.tensors.is_empty() {
         bail!("manifest has no layers: nothing to load (was it compiled with a weights header?)");
     }
-    let names = manifest.payload_files();
+    let names = &config.payload_files;
     if files.len() != names.len() {
         bail!("the manifest lists {} payload file(s) but {} were given", names.len(), files.len());
     }
-    for (index, payload) in manifest.payloads.iter().enumerate() {
-        if payload.byte_length != files[index].file_len {
-            bail!("payload `{}` has {} bytes but the manifest says {}", payload.file, files[index].file_len, payload.byte_length);
+    for (index, declared) in config.payload_lengths.iter().enumerate() {
+        if let Some(declared) = declared {
+            if *declared != files[index].file_len {
+                bail!("payload `{}` has {} bytes but the manifest says {}", names[index], files[index].file_len, declared);
+            }
         }
     }
     let mut seen = HashSet::new();
-    let mut plans = Vec::with_capacity(manifest.layers.len());
-    for layer in &manifest.layers {
+    let mut plans = Vec::with_capacity(config.tensors.len());
+    for layer in &config.tensors {
         if !seen.insert(layer.name.as_str()) {
             bail!("duplicate tensor name in manifest: {}", layer.name);
         }
-        let payload = layer.payload as usize;
+        let payload = layer.payload;
         let Some(file) = files.get(payload) else {
             bail!("{}: refers to payload {payload} but the manifest has {}", layer.name, files.len());
         };
@@ -146,6 +148,11 @@ mod tests {
     fn with_payloads(mut m: Manifest, files: &[(&str, u64)]) -> Manifest {
         m.payloads = files.iter().map(|(file, len)| Payload { file: (*file).into(), byte_length: *len, sha256: "0".repeat(64) }).collect();
         m
+    }
+
+    /// The plan of a test manifest, through the config a backend is given.
+    fn plan(m: &Manifest, files: &[PayloadFile]) -> Result<Vec<TensorPlan>> {
+        super::plan(&BackendConfig::from_manifest(m)?, files)
     }
 
     fn file(data_start: u64, file_len: u64) -> PayloadFile {

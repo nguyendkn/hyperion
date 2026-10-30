@@ -55,10 +55,10 @@ fn device_weights_equal_file_weights() {
         serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
 
     let backend = HopperBackend::new().expect("an H100 must be present");
-    let info = backend.initialize_device().unwrap();
+    let info = backend.initialize_device(&helios_hal::RankInfo::single()).unwrap();
     assert_eq!(info.compute_capability, "sm_90", "this test is for Hopper");
 
-    backend.load_model_weights(&package, &manifest).expect("upload");
+    helios_hal::load_package(&backend, &package, &manifest).expect("upload");
     let (tensors, bytes) = backend.loaded_weights();
     assert_eq!(tensors, manifest.layers.len());
 
@@ -67,7 +67,7 @@ fn device_weights_equal_file_weights() {
     let mut source = std::fs::File::open(&file).unwrap();
     let file_len = source.metadata().unwrap().len();
     let data_start = weights_plan::data_start(&mut source).unwrap();
-    let plans = weights_plan::plan(&manifest, &[weights_plan::PayloadFile { data_start, file_len }]).unwrap();
+    let plans = weights_plan::plan(&helios_hal::BackendConfig::from_manifest(&manifest).unwrap(), &[weights_plan::PayloadFile { data_start, file_len }]).unwrap();
     for plan in &plans {
         let mut expected = vec![0u8; plan.len as usize];
         source.seek(SeekFrom::Start(plan.file_offset)).unwrap();
@@ -89,7 +89,7 @@ fn a_missing_weights_file_is_a_clean_error_not_a_panic() {
     .unwrap();
     let backend = HopperBackend::new().expect("an H100 must be present");
     let nowhere = std::env::temp_dir().join("hyperion-no-such-dir").join("model.hyperion");
-    let err = backend.load_model_weights(&nowhere, &manifest).unwrap_err();
+    let err = helios_hal::load_package(&backend, &nowhere, &manifest).unwrap_err();
     assert!(err.to_string().contains("open weights"), "{err}");
     backend.shutdown().unwrap();
 }
@@ -125,7 +125,7 @@ fn linear_on_a_real_weight_matches_the_cpu_reference() {
         .collect();
 
     let backend = HopperBackend::new().expect("an H100 must be present");
-    backend.load_model_weights(&package, &manifest).expect("upload");
+    helios_hal::load_package(&backend, &package, &manifest).expect("upload");
     let got = backend.linear_bf16_f32(NAME, &x, tokens, out_features, in_features).expect("gemm");
     let want = linear(&w, &x, tokens, out_features, in_features);
 
@@ -174,7 +174,7 @@ fn rmsnorm_kernel_matches_the_cpu_reference() {
         .collect();
 
     let backend = HopperBackend::new().expect("an H100 must be present");
-    backend.load_model_weights(&package, &manifest).expect("upload");
+    helios_hal::load_package(&backend, &package, &manifest).expect("upload");
     let got = backend.rmsnorm_bf16(NAME, &x, tokens, hidden, EPS).expect("rmsnorm kernel");
     let want = rmsnorm(&x, &w, tokens, hidden, EPS);
 
@@ -214,7 +214,7 @@ fn loaded_backend() -> (PathBuf, hyperion_specification::v1::Manifest, HopperBac
         backend.allow_unverified_qk_norm();
     }
     let started = std::time::Instant::now();
-    backend.load_model_weights(&package, &manifest).expect("upload");
+    helios_hal::load_package(&backend, &package, &manifest).expect("upload");
     println!(
         "LOADED in {:.2?}; {}; decode session capacity {:?} tokens",
         started.elapsed(),
@@ -974,7 +974,7 @@ fn mma_attention_matches_reference_and_is_repeatable() {
 fn page_layout_microbenchmark() {
     use helios_hal::PageLayout;
     let backend = HopperBackend::new().expect("an H100 must be present");
-    backend.initialize_device().unwrap();
+    backend.initialize_device(&helios_hal::RankInfo::single()).unwrap();
     let (layers, heads, kv_heads, d) = (28usize, 28usize, 4usize, 128usize);
     println!("BUILD revision={}", std::env::var("HYPERION_REVISION").unwrap_or_else(|_| "unknown".into()));
     for ctx in [8192usize, 32768] {

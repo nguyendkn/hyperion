@@ -1,7 +1,7 @@
 //! Triage matrix: arch x tensor_format x backend, no GPU needed. Each case is
 //! a named test so a failure says exactly which cell of the matrix broke.
 
-use helios_hal::{supported_formats, triage, ProbedBackend, TriageError, TriageOutcome};
+use helios_hal::{supported_formats, triage, Capabilities, ProbedBackend, TriageError, TriageOutcome};
 use hyperion_specification::v1::{
     Activation, AttentionKind, GenerationConfig, Manifest, ModelConfig, RopeStyle, TensorFormat, TokenizerConfig, CONTRACT_REVISION,
 };
@@ -44,7 +44,10 @@ fn manifest(target_arch: &str, tensor_format: TensorFormat) -> Manifest {
 
 /// Backend written for `backend` running on a device that reports `device`.
 fn probed(backend: &'static str, device: &str) -> ProbedBackend {
-    ProbedBackend { backend_arch: backend, device_arch: device.into() }
+    let known = Capabilities::known(backend);
+    // An arch no backend is written for declares no formats.
+    let capabilities = known.unwrap_or_else(|| Capabilities { arch: backend, formats: Vec::new(), ..Capabilities::known("sm_0").unwrap() });
+    ProbedBackend { capabilities, device_arch: device.into() }
 }
 
 fn accept(arch: &'static str, format: TensorFormat) {
@@ -144,4 +147,13 @@ fn refusals_say_what_to_do() {
     assert!(arch.contains("sm_120") && arch.contains("sm_90") && arch.contains("hyperion-compile --hw sm_90"), "{arch}");
     let fmt = triage(&manifest("sm_90", TensorFormat::Fp4), &probed("sm_90", "sm_90")).unwrap_err().to_string();
     assert!(fmt.contains("fp4") && fmt.contains("bf16, fp8") && fmt.contains("recompile"), "{fmt}");
+}
+
+/// Triage reads what a backend declares, so a backend with other capabilities needs no edit anywhere else (ADR 0006).
+#[test]
+fn triage_follows_the_capabilities_the_backend_declares() {
+    let bf16_only = Capabilities { formats: vec![TensorFormat::Bf16], ..Capabilities::known("sm_90").unwrap() };
+    let probed = ProbedBackend { capabilities: bf16_only, device_arch: "sm_90".into() };
+    assert!(triage(&manifest("sm_90", TensorFormat::Bf16), &probed).is_ok());
+    assert!(matches!(triage(&manifest("sm_90", TensorFormat::Fp8), &probed), Err(TriageError::FormatUnsupported { .. })), "fp8 is refused by a backend that does not declare it");
 }

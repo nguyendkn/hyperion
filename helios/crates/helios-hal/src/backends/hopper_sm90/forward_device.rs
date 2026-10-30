@@ -121,7 +121,7 @@ impl HopperBackend {
     pub fn time_prefill(&self, d: &Qwen2Dims, prompt: &[u32], mode: DecodeMode) -> Result<(f64, f64)> {
         let dev = self.device.lock().expect("device mutex poisoned");
         let session = self.session.lock().expect("session mutex poisoned");
-        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
         if session.dims != *d {
             return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
         }
@@ -139,7 +139,7 @@ impl HopperBackend {
     pub fn forward_prefill_logits_untiled_reference(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
         let dev = self.device.lock().expect("device mutex poisoned");
         let session = self.session.lock().expect("session mutex poisoned");
-        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
         if session.dims != *d {
             return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
         }
@@ -183,7 +183,7 @@ impl HopperBackend {
         }
         let dev = self.device.lock().expect("device mutex poisoned");
         let session = self.session.lock().expect("session mutex poisoned");
-        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
         if session.dims != *d {
             return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
         }

@@ -125,13 +125,12 @@ async fn main() -> Result<()> {
 
     // 5. Bring up the engine state machine and load the weights. `Ready` means
     //    the device is probed and triage passed; `Loaded` means the weights are
-    //    really in device memory, so it is set only after `load_model_weights`
+    //    really in device memory, so it is set only after `load_model`
     //    succeeds. A failed load exits non-zero at startup (fail fast) and the
     //    backend is dropped, which releases the device context.
     let sm = helios_core::StateMachine::new();
     sm.mark_ready()?;
-    backend
-        .load_model_weights(&cli.model, &manifest)
+    helios_hal::load_package(backend.as_ref().as_ref(), &cli.model, &manifest)
         .map_err(|e| anyhow!("loading model weights failed: {e:#}"))?;
     sm.mark_loaded()?;
     tracing::info!(status = ?sm.status(), "weights loaded");

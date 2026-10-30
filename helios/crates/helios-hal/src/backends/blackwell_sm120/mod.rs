@@ -6,13 +6,9 @@
 //! overhead drops to near zero — the "zero-overhead" target the architecture
 //! doc requires.
 //!
-//! Submodules:
-//! - the CUDA device/memory/graph layer is the shared core in `crate::cuda` (the same
-//!   `GraphExec` the SM90 backend uses).
-//! - [`kernels`] — kernel-launch surface; stands in for FlashInfer's
-//!   attention/matmul kernels until those are vendored.
-
-pub mod kernels;
+//! Only the device probe and the capabilities are real today: weight upload, the KV pool and the graph capture return
+//! `HalError::Unsupported` (the CUDA device/memory/graph layer is the shared core in `crate::cuda`). The placeholder kernel
+//! module that stood in for FlashInfer went with the unwired trait methods it served.
 
 mod backend;
 

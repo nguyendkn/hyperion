@@ -66,6 +66,24 @@ pub struct Capabilities {
     pub collectives: Vec<CollectiveKind>,
 }
 
+impl Capabilities {
+    /// The capabilities of the backend written for `arch`, as data (CLAUDE.md rules 6 and 7: Hopper has no FP4). `None` for an arch no
+    /// backend is written for. A backend starts from this and adds what only it knows (the collectives it can capture).
+    pub fn known(arch: &str) -> Option<Self> {
+        let (arch, formats, memory_kind) = match arch {
+            "sm_90" => ("sm_90", vec![TensorFormat::Bf16, TensorFormat::Fp8], MemoryKind::Device),
+            "sm_120" => ("sm_120", vec![TensorFormat::Bf16, TensorFormat::Fp8, TensorFormat::Fp4], MemoryKind::Device),
+            // The stub runs no kernels, so it does not constrain the format.
+            "sm_0" => ("sm_0", vec![TensorFormat::Bf16, TensorFormat::Fp8, TensorFormat::Fp4], MemoryKind::None),
+            _ => return None,
+        };
+        Some(Self { arch, formats, memory_kind, head_dims: vec![64, 128], max_graph_captures: 0, peer_access: false, collectives: Vec::new() })
+    }
+
+    /// Every arch with a backend, in a stable order (the committed format-table dump reads this).
+    pub const KNOWN_ARCHS: [&'static str; 3] = ["sm_0", "sm_90", "sm_120"];
+}
+
 /// One rank of a device group: a GPU and the thread that drives it (ADR 0004).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RankInfo {
@@ -144,6 +162,8 @@ pub struct BackendConfig {
     pub eos_token_ids: Vec<u32>,
     /// Weights file names, in the order `TensorSpec::payload` indexes them (bare names, validated).
     pub payload_files: Vec<String>,
+    /// The byte length the manifest declares for each payload file (`None`: a package without a payload table, whose one file has no declared size).
+    pub payload_lengths: Vec<Option<u64>>,
     pub tensors: Vec<TensorSpec>,
     pub deployment: Deployment,
 }
@@ -155,9 +175,10 @@ impl BackendConfig {
     }
 
     /// As [`Self::from_manifest`], for one rank of a deployment. The deployment is checked against the model (a TP size the model does
-    /// not allow is refused here, before any CUDA call).
+    /// not allow is refused here, before any CUDA call: W1.5).
     pub fn for_deployment(manifest: &Manifest, deployment: Deployment) -> Result<Self, HalError> {
-        manifest.validate().map_err(|e| HalError::Invalid(e.to_string()))?;
+        // Payload names come from the signed manifest: refuse any that could leave the package directory before a path is built from them.
+        manifest.validate_payloads().map_err(|e| HalError::Invalid(e.to_string()))?;
         Ok(Self {
             model_id: manifest.model_id.clone(),
             model: manifest.model.clone(),
@@ -165,6 +186,7 @@ impl BackendConfig {
             target_arch: manifest.target_arch.clone(),
             eos_token_ids: manifest.generation.eos_token_ids.clone(),
             payload_files: manifest.payload_files().into_iter().map(str::to_string).collect(),
+            payload_lengths: if manifest.payloads.is_empty() { vec![None] } else { manifest.payloads.iter().map(|p| Some(p.byte_length)).collect() },
             tensors: manifest
                 .layers
                 .iter()

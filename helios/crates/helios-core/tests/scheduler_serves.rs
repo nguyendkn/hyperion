@@ -76,7 +76,7 @@ async fn a_backend_that_cannot_generate_gets_a_clear_error_event() {
     let (req, mut events) = request(1);
     tx.send(req).await.unwrap();
     match next(&mut events).await {
-        Some(StreamEvent::Error(message)) => assert!(message.contains("cannot generate"), "{message}"),
+        Some(StreamEvent::Error(message)) => assert!(message.contains("does not support `generate`"), "{message}"),
         other => panic!("expected an Error event, got {other:?}"),
     }
     // The terminal event ends the stream.

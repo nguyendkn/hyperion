@@ -7,7 +7,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
@@ -18,8 +17,14 @@ use crate::cuda::{Cublas, CudaDevice, DeviceWeights, Group, KernelModule};
 use super::forward::Qwen2Dims;
 use super::session::Session;
 use crate::sampling::SamplingConfig;
-use crate::traits::{ComputeBackend, DevicePointer, HardwareInfo, StopReason, TensorData};
+use crate::contract::{
+    BackendConfig, Capabilities, GraphSet, HalError, KvPool, KvReservation, KvSpec, LoadedModel, MemoryPolicy, RankInfo, StepTicket, WeightSource,
+};
+use crate::step::{StepOutput, StepPlan};
+use crate::traits::{ComputeBackend, HardwareInfo, StopReason};
 use crate::weights_plan::{self, PayloadFile};
+
+const NAME: &str = "sm_90";
 
 /// Fat binary built from `kernels/rmsnorm.cu` (rebuild with `scripts/build-kernels.sh`).
 pub(super) const RMSNORM_IMAGE: &[u8] = include_bytes!("../../../kernels/rmsnorm.fatbin");
@@ -64,7 +69,7 @@ impl HopperBackend {
     }
 
     /// Let this backend load a package that needs QK-norm although that path has not been verified against an oracle yet
-    /// (`QK_NORM_VERIFIED`): for the run that does the verifying. Call it before `load_model_weights`.
+    /// (`QK_NORM_VERIFIED`): for the run that does the verifying. Call it before `load_model`.
     pub fn allow_unverified_qk_norm(&self) {
         self.allow_qk_norm.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -195,37 +200,35 @@ impl HopperBackend {
 }
 
 impl ComputeBackend for HopperBackend {
-    fn initialize_device(&self) -> Result<HardwareInfo> {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::known("sm_90").expect("the sm_90 arch is known")
+    }
+
+    fn initialize_device(&self, _rank: &RankInfo) -> Result<HardwareInfo> {
         let dev = self.device.lock().expect("device mutex poisoned");
         Ok(HardwareInfo {
             compute_capability: dev.compute_capability_string(),
             total_vram_bytes: dev.total_vram_bytes(),
+            free_vram_bytes: dev.memory_info()?.0,
             max_cuda_streams: dev.max_streams(),
         })
     }
 
-    fn load_model_weights(
-        &self,
-        model_path: &Path,
-        manifest: &hyperion_specification::v1::Manifest,
-    ) -> Result<()> {
-        // The payload names come from the manifest: refuse any that could leave the package directory
-        // before a path is built from them.
-        manifest.validate_payloads()?;
-        let files: Vec<PathBuf> = manifest.payload_files().into_iter().map(|name| model_path.with_file_name(name)).collect();
+    fn load_model(&self, config: &BackendConfig, weights: &WeightSource) -> Result<LoadedModel> {
+        let files = &weights.files;
         let mut facts = Vec::with_capacity(files.len());
-        for file in &files {
+        for file in files {
             let mut handle = File::open(file).with_context(|| format!("open weights {}", file.display()))?;
             let file_len = handle.metadata()?.len();
             let data_start = weights_plan::data_start(&mut handle)?;
             facts.push(PayloadFile { data_start, file_len });
         }
-        let plans = weights_plan::plan(manifest, &facts)?;
+        let plans = weights_plan::plan(config, &facts)?;
 
         // Everything the forward pass needs to know about the model is in the signed manifest; nothing is
         // read from files beside the package. A model the pass does not implement is a typed refusal.
         let allow_qk_norm = self.allow_qk_norm.load(std::sync::atomic::Ordering::Relaxed);
-        let runtime = (Qwen2Dims::from_manifest_allowing(&manifest.model, allow_qk_norm || super::forward::QK_NORM_VERIFIED)?, manifest.generation.eos_token_ids.clone());
+        let runtime = (Qwen2Dims::from_manifest_allowing(&config.model, allow_qk_norm || super::forward::QK_NORM_VERIFIED)?, config.eos_token_ids.clone());
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
         // A model loaded before is released first (its session refers to its weights).
@@ -235,7 +238,7 @@ impl ComputeBackend for HopperBackend {
         // The fused projections of a decode step (Q|K|V and gate|up) are read from one matrix each: the tensors are placed
         // back to back in one allocation as they are uploaded, so there is no second copy of any weight.
         let groups = fused_groups(&runtime.0);
-        let uploaded = DeviceWeights::upload_grouped(&mut dev, &files, &plans, &groups)?;
+        let uploaded = DeviceWeights::upload_grouped(&mut dev, files, &plans, &groups)?;
         {
             let mut slot = self.weights.lock().expect("weights mutex poisoned");
             if let Some(mut old) = slot.replace(uploaded) {
@@ -244,10 +247,32 @@ impl ComputeBackend for HopperBackend {
         }
         // Everything a generation needs (buffers, K/V cache, kernels, cuBLAS workspace, decode graphs) is
         // built now, sized from the device memory left after the weights; serving builds nothing.
-        let session = Session::build(self, &mut dev, runtime.0.clone(), manifest.model.max_seq_len as usize)?;
+        let session = Session::build(self, &mut dev, runtime.0.clone(), config.model.max_seq_len as usize)?;
         *self.session.lock().expect("session mutex poisoned") = Some(session);
         *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
-        Ok(())
+        Ok(LoadedModel::new(NAME, ()))
+    }
+
+    // The page-index KV pool, the graphs bound to it and the StepPlan path are the next change (W1.2); until then the
+    // session built by `load_model` owns a contiguous KV cache and `generate` is the way to run a prompt.
+    fn reserve_kv(&self, _model: &LoadedModel, _spec: &KvSpec) -> Result<KvReservation> {
+        Err(HalError::Unsupported("reserve_kv on sm_90").into())
+    }
+
+    fn capture_graphs(&self, _model: &LoadedModel, _kv: &KvReservation) -> Result<GraphSet> {
+        Err(HalError::Unsupported("capture_graphs on sm_90").into())
+    }
+
+    fn commit_kv(&self, _kv: KvReservation, _graphs: &GraphSet, _policy: &MemoryPolicy) -> Result<KvPool> {
+        Err(HalError::Unsupported("commit_kv on sm_90").into())
+    }
+
+    fn submit_step(&self, _pool: &KvPool, _plan: &StepPlan) -> Result<StepTicket> {
+        Err(HalError::Unsupported("submit_step on sm_90").into())
+    }
+
+    fn take_output(&self, _ticket: StepTicket) -> Result<StepOutput> {
+        Err(HalError::Unsupported("take_output on sm_90").into())
     }
 
     fn generate(
@@ -262,28 +287,8 @@ impl ComputeBackend for HopperBackend {
             .lock()
             .expect("runtime mutex poisoned")
             .clone()
-            .ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+            .ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
         self.generate_streaming(&dims, prompt, max_new, &eos, sampling, on_token)
-    }
-
-    fn allocate_kv_cache(
-        &self,
-        _num_blocks: usize,
-        _block_size_tokens: usize,
-    ) -> Result<Vec<DevicePointer>> {
-        Err(anyhow!("sm90 backend: KV cache not wired yet"))
-    }
-
-    fn execute_prefill(
-        &self,
-        _input_tokens: &[u32],
-        _cache_pointers: &[DevicePointer],
-    ) -> Result<TensorData> {
-        Err(anyhow!("sm90 backend: forward pass not wired yet"))
-    }
-
-    fn execute_decode_step(&self, _current_step: usize, _active_slots: &[u32]) -> Result<u32> {
-        Err(anyhow!("sm90 backend: forward pass not wired yet"))
     }
 
     fn shutdown(&self) -> Result<()> {

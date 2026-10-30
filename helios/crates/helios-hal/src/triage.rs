@@ -13,22 +13,17 @@
 //! sides cannot drift.
 
 use hyperion_specification::v1::{Manifest, TensorFormat};
+
+use crate::contract::Capabilities;
 use thiserror::Error;
 
 /// Capability the stub backend reports; not a real compile target.
 const STUB_ARCH: &str = "sm_0";
 
-/// Compute-capability string -> tensor formats the matching backend can run.
-/// Unknown archs map to an empty list, which triage treats as unsupported.
-pub fn supported_formats(arch: &str) -> &'static [TensorFormat] {
-    match arch {
-        // Hopper has no FP4 (CLAUDE.md rule 7).
-        "sm_90" => &[TensorFormat::Bf16, TensorFormat::Fp8],
-        "sm_120" => &[TensorFormat::Bf16, TensorFormat::Fp8, TensorFormat::Fp4],
-        // The stub runs no kernels, so it does not constrain the format.
-        "sm_0" => &[TensorFormat::Bf16, TensorFormat::Fp8, TensorFormat::Fp4],
-        _ => &[],
-    }
+/// Tensor formats the backend written for `arch` can run (from [`Capabilities::known`]); an unknown arch has none, which triage treats
+/// as unsupported.
+pub fn supported_formats(arch: &str) -> Vec<TensorFormat> {
+    Capabilities::known(arch).map(|c| c.formats).unwrap_or_default()
 }
 
 /// Wire name of a tensor format, as written in the manifest.
@@ -43,7 +38,7 @@ pub fn format_name(format: TensorFormat) -> &'static str {
 /// Every known arch with its formats, in a stable order. Used for the
 /// committed JSON dump that the Python cross-check test reads.
 pub fn format_table() -> Vec<(&'static str, Vec<&'static str>)> {
-    ["sm_0", "sm_90", "sm_120"]
+    Capabilities::KNOWN_ARCHS
         .into_iter()
         .map(|arch| (arch, supported_formats(arch).iter().map(|f| format_name(*f)).collect()))
         .collect()
@@ -58,9 +53,9 @@ fn valid_capability(cap: &str) -> bool {
 /// What the factory learned about a backend by probing real hardware.
 #[derive(Debug, Clone)]
 pub struct ProbedBackend {
-    /// The arch the backend implementation is written for (e.g. `sm_120` for
-    /// the Blackwell backend), independent of the device it ended up on.
-    pub backend_arch: &'static str,
+    /// What the backend declares it can do (`ComputeBackend::capabilities`). Its `arch` is the arch the implementation is written for
+    /// (`sm_120` for the Blackwell backend), independent of the device it ended up on.
+    pub capabilities: Capabilities,
     /// The capability the device actually reported when probed.
     pub device_arch: String,
 }
@@ -99,14 +94,14 @@ pub struct Triage {
 /// a backend that does not match its own device is reported first, since the
 /// package cannot be judged against a backend that should not be running.
 pub fn triage(manifest: &Manifest, probed: &ProbedBackend) -> Result<Triage, TriageError> {
-    for cap in [manifest.target_arch.as_str(), probed.backend_arch, probed.device_arch.as_str()] {
+    for cap in [manifest.target_arch.as_str(), probed.capabilities.arch, probed.device_arch.as_str()] {
         if !valid_capability(cap) {
             return Err(TriageError::BadCapability(cap.into()));
         }
     }
-    if probed.backend_arch != probed.device_arch {
+    if probed.capabilities.arch != probed.device_arch {
         return Err(TriageError::BackendArchMismatch {
-            backend: probed.backend_arch.into(),
+            backend: probed.capabilities.arch.into(),
             device: probed.device_arch.clone(),
         });
     }
@@ -119,7 +114,7 @@ pub fn triage(manifest: &Manifest, probed: &ProbedBackend) -> Result<Triage, Tri
             device: probed.device_arch.clone(),
         });
     }
-    let formats = supported_formats(&probed.device_arch);
+    let formats = &probed.capabilities.formats;
     if !formats.contains(&manifest.tensor_format) {
         return Err(TriageError::FormatUnsupported {
             format: format_name(manifest.tensor_format).into(),

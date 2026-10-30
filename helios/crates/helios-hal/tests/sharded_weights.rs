@@ -9,6 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
 use helios_hal::weights_plan::{self, PayloadFile};
+use helios_hal::BackendConfig;
 use hyperion_specification::Manifest;
 use serde_json::Value;
 
@@ -40,7 +41,7 @@ fn load() -> (hyperion_specification::v1::Manifest, Vec<PayloadFile>, Value) {
 fn every_tensor_of_a_real_sharded_checkpoint_is_read_from_its_own_shard() {
     let (manifest, facts, expected) = load();
     assert!(manifest.payloads.len() >= 3, "the fixture must really be sharded");
-    let plans = weights_plan::plan(&manifest, &facts).expect("the plan accepts the real files");
+    let plans = weights_plan::plan(&BackendConfig::from_manifest(&manifest).unwrap(), &facts).expect("the plan accepts the real files");
     assert_eq!(plans.len(), expected.as_object().unwrap().len());
     let files = manifest.payload_files();
     let mut payloads_used = std::collections::HashSet::new();
@@ -65,7 +66,7 @@ fn every_tensor_of_a_real_sharded_checkpoint_is_read_from_its_own_shard() {
 fn a_shard_whose_size_differs_from_the_payload_table_is_refused() {
     let (manifest, mut facts, _) = load();
     facts[2].file_len -= 1;
-    let error = weights_plan::plan(&manifest, &facts).unwrap_err().to_string();
+    let error = weights_plan::plan(&BackendConfig::from_manifest(&manifest).unwrap(), &facts).unwrap_err().to_string();
     assert!(error.contains(&manifest.payloads[2].file), "{error}");
 }
 
