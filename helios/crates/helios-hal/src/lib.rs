@@ -14,6 +14,8 @@
 //! - No GPU code lives in this crate. Backend modules (`backends/*`) hold the
 //!   FFI/kernel calls; here we only mediate.
 
+pub mod contract;
+pub mod step;
 pub mod traits;
 #[cfg(feature = "cuda")]
 pub mod cuda;
