@@ -19,8 +19,9 @@ file before Hyperion runs (so it cannot be chosen after seeing a result):
                                        fp32 top-k ids, floor)
     tolerance_max_abs_logsumexp  = the same for |logsumexp diff|
 
-Argmax rule: equal to the fp32 argmax, or, when the fp32 gap between its two best logits is not larger
-than the logit tolerance, either of those two (a near tie may flip legitimately).
+Argmax rule: equal to the fp32 argmax, or a token of its tie group: one of the recorded top-k whose fp32 logit
+is within the logit tolerance of the best (a near tie may flip legitimately; before 2026-10-30 only the second of
+two tied tokens was admitted, the committed oracle files still carry that wording in `tolerance.rule`).
 
     python scripts/gen-oracle-large.py qwen2.5-7b                       # weights in testdata/models/qwen2.5-7b
     python scripts/gen-oracle-large.py tiny --source testdata/synthetic/qwen2-tiny-sharded --device cpu --natural-contexts ""
@@ -284,7 +285,7 @@ def main() -> None:
             "(over the fp32 top-k ids, and over the logsumexp) times the margin, with a floor. A Hyperion bf16 "
             "forward sums in a different order than Hugging Face's, so its error against float32 is of the same "
             "size as, not identical to, bfloat16's; the margin covers that. Argmax: equal to the float32 argmax, "
-            "or, when the float32 gap between its two best logits is within max_abs_top_logits, either of those two."
+            "or a token of its tie group: one of the recorded top-k whose float32 logit is within max_abs_top_logits of the best."
         ),
     }
     oracle = {

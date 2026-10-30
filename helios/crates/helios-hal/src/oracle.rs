@@ -159,8 +159,8 @@ pub struct Comparison {
     /// `|our logsumexp - reference logsumexp|`.
     pub abs_logsumexp: f64,
     pub argmax: u32,
-    /// Our argmax equals the reference's, or the reference's two best logits are within the tolerance
-    /// of each other and ours is one of them.
+    /// Our argmax equals the reference's, or it is a token of the reference's tie group: one whose float32 logit is within the
+    /// declared top-k tolerance of the best (only the reference's recorded top-k can be checked).
     pub argmax_ok: bool,
 }
 
@@ -178,8 +178,10 @@ pub fn compare(ours: &[f32], reference: &Record, tolerance: &Tolerance) -> Resul
         worst = worst.max((got - want).abs());
     }
     let picked = argmax(ours) as u32;
-    let gap = reference.top_logits[0] - reference.top_logits[1];
-    let near_tie = gap <= tolerance.max_abs_top_logits && (picked == reference.top_ids[0] || picked == reference.top_ids[1]);
+    // The tie group is every recorded token whose float32 logit is within the tolerance of the best. (Until 2026-10-30 the rule
+    // admitted only the second of two tied tokens; a three-way tie, as in Qwen3-0.6B's prose prompt, was refused.)
+    let best = reference.top_logits[0];
+    let near_tie = reference.top_ids.iter().zip(&reference.top_logits).any(|(&id, &logit)| id == picked && best - logit <= tolerance.max_abs_top_logits);
     Ok(Comparison {
         max_abs_top_logits: worst,
         abs_logsumexp: (logsumexp(ours) - reference.logsumexp).abs(),
@@ -266,10 +268,21 @@ mod tests {
         clear[3] = 1.0; // ours now picks 7 although the reference had it 0.05 behind: allowed only for a near tie
         let strict = compare(&clear, &reference, &Tolerance { max_abs_top_logits: 0.01, ..TOL }).unwrap();
         assert!(!strict.argmax_ok, "with a tolerance smaller than the gap a flip is an error");
-        // A third token winning is never a near-tie flip.
-        let mut third = r.clone();
-        third[1] = 9.0;
-        assert!(!compare(&third, &reference, &Tolerance { max_abs_top_logits: 10.0, ..TOL }).unwrap().argmax_ok);
+        // A third token of a three-way tie is a flip inside the tie group; one outside the tolerance is not.
+        let mut three = r.clone();
+        three[1] = 4.92; // 0.08 behind the best: within a tolerance of 0.1
+        let reference3 = record_of_row(&three, 4);
+        let mut picks_third = three.clone();
+        picks_third[1] = 5.03;
+        let wide = compare(&picks_third, &reference3, &Tolerance { max_abs_top_logits: 0.1, ..TOL }).unwrap();
+        assert_eq!(wide.argmax, 1);
+        assert!(wide.argmax_ok, "token 1 is 0.08 behind the best, inside the tie group of 0.1");
+        let narrow = compare(&picks_third, &reference3, &Tolerance { max_abs_top_logits: 0.05, ..TOL }).unwrap();
+        assert!(!narrow.argmax_ok, "outside a tolerance of 0.05 it is a wrong token");
+        // A token the reference did not even record in its top-k is never in the tie group.
+        let mut outside = r.clone();
+        outside[9] = 99.0;
+        assert!(!compare(&outside, &reference, &Tolerance { max_abs_top_logits: 1e6, ..TOL }).unwrap().argmax_ok);
     }
 
     #[test]
