@@ -33,7 +33,10 @@ fn dimensions_come_from_the_manifest_and_equal_the_models_config() {
         let config: Value = serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
         let int = |k: &str| config[k].as_u64().unwrap_or_else(|| panic!("{id}: config.json {k}")) as usize;
         if manifest.model.qk_norm {
-            assert_eq!(Qwen2Dims::from_manifest(&manifest.model), Err(UnsupportedModel::QkNorm), "{id} must be refused");
+            // The QK-norm path is verified (QK_NORM_VERIFIED): the dimensions are built, and the same manifest is refused by a build that has not verified it.
+            let dims = Qwen2Dims::from_manifest(&manifest.model).unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert!(dims.qk_norm && !dims.qkv_bias, "{id}");
+            assert_eq!(Qwen2Dims::from_manifest_allowing(&manifest.model, false), Err(UnsupportedModel::QkNorm), "{id}");
             refused += 1;
             continue;
         }

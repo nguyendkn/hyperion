@@ -40,7 +40,11 @@ pub struct Qwen2Dims {
 /// Whether the QK-norm forward path has passed an oracle comparison on a GPU. Until it has, a package that needs it is
 /// refused with [`UnsupportedModel::QkNorm`]; a verification run can opt in with
 /// [`HopperBackend::allow_unverified_qk_norm`](super::HopperBackend::allow_unverified_qk_norm).
-pub const QK_NORM_VERIFIED: bool = false;
+///
+/// Verified 2026-10-30 on an H100 against Qwen3-0.6B oracles generated on CUDA, short prompts and a 16384-token prompt, under the tie-group
+/// rule: worst top-k difference 0.2803 against a declared tolerance of 0.4088 (ratio to Hugging Face bf16 1.03) and 0.2722 against 0.9031
+/// (0.45); graph decode and prefill chunk graphs bit-identical to direct launches.
+pub const QK_NORM_VERIFIED: bool = true;
 
 /// Per-layer K/V history (after RoPE) of one sequence, `[len, kv_heads, head_dim]` bf16 bits.
 /// Prefill fills it, every decode step appends one position.
@@ -281,17 +285,14 @@ mod tests {
 
     #[test]
     fn what_the_forward_pass_does_not_implement_is_refused_with_a_typed_error() {
-        let mut model = untied();
-        model.qk_norm = true;
-        assert_eq!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::QkNorm));
-        // A model without Q/K/V biases (Qwen3) is fine; its QK-norm is what is refused until it is verified.
+        // A model without Q/K/V biases and with QK-norm (Qwen3) runs: its path is verified. The gate itself still works: a build that has
+        // not verified the path refuses it with a typed error.
         let mut model = untied();
         model.qkv_bias = false;
-        assert!(Qwen2Dims::from_manifest(&model).is_ok());
         model.qk_norm = true;
-        assert_eq!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::QkNorm));
-        let dims = Qwen2Dims::from_manifest_allowing(&model, true).expect("a verification run may opt in");
+        let dims = Qwen2Dims::from_manifest(&model).expect("QK-norm is verified");
         assert!(dims.qk_norm && !dims.qkv_bias);
+        assert_eq!(Qwen2Dims::from_manifest_allowing(&model, false), Err(UnsupportedModel::QkNorm));
         let mut model = untied();
         model.attention_scale = Some(0.25);
         assert!(matches!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::AttentionScale { .. })));
