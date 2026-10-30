@@ -155,3 +155,30 @@ The curve is quadratic: the chunk attention kernel uses no tensor cores and reco
 ### Not byte-reproducible but equal
 
 Rebuilding `elementwise.fatbin` from the committed source gives a different file each time (`cuobjdump -sass` is identical, the PTX differs only in nvcc's per-compile id in the names of shared variables); `rmsnorm.fatbin`, which has no such variable, rebuilds to the same bytes. Compare kernels by SASS, not by hash.
+
+## Tensor-core prefill attention, cuBLASLt selection, page layouts (pod session 2026-10-30, tag `pod-20261030-1047`, build `8dd5bf1`)
+
+Single H100 80GB HBM3, driver 580.126.20, same clocks as above. Release binary sha256 `1796ff35...` (`BUILD` line of each log).
+
+### Time to first token (graph GPU ms, median [p10, p90] of 10 windows)
+
+| prompt tokens | 7B, mma attention | 7B, previous kernel | 0.5B, mma | 0.5B, previous |
+|---|---|---|---|---|
+| 1024 | 31.8 | 76.4 | 6.2 | 17.9 |
+| 4096 | 140.7 | 841.7 | 23.3 | 217.5 |
+| 8192 | **332.3** [331.9, 332.7] | 3100.4 | 59.3 | 823.3 |
+| 16384 | 886.7 | 11 940.7 | 175.3 | 3180.6 |
+
+7B at 8192 tokens: 332 ms (target < 1 s), 9.3x faster; 16384 tokens 13.5x faster. Chunk graphs are bit-identical to direct launches at 1, 129, 1000, 4096, 4097, 9000, 16384 tokens on both models.
+
+### Decode with the new build (7B graph GPU ms/token)
+
+ctx 5: 6.475, 1024: 6.557, 4096: 6.787, 8000: 7.329, 16000: 8.425 (0.5B: 1.338, 1.396, 1.527, 1.608, 1.867). Within 0.3% of the previous tip at every context.
+
+### cuBLASLt algorithm selection (timed top-8 candidates at load)
+
+No change: the timed choice for the 1x4608x3584 and 1x3584x3584 shapes on 7B and the two 0.5B shapes is the algorithm the heuristic already ranks first (identical hex in the cache), decode ms/token equal within 0.1% with tune on and off, per-GEMM GB/s unchanged (7B QKV 1846, o_proj 1609-1612, gate+up 2987-2990, down 2710-2713, lm_head 3106-3109; 0.5B QKV 516, o_proj 469). QKV and o_proj stay at 55% and 48% of peak: no candidate beats the heuristic for a 1-row GEMM of 25 to 31 MiB. The tuner stays (it is cheap and persisted) but is not a speed item.
+
+### Page layouts (decision 17), VMM
+
+Decode attention sweep, 28/4/128: see ADR 0002 (page-major / layer-major 1.0152 at 8192, 1.0073 at 32768). VMM: granule 2 MiB; reserving 8 GiB of addresses uses 0 bytes; mapping 512 granules one by one 391 ms (764 us each), 4 GiB in one call 0.58 ms; a mapping beyond the free memory is refused (`cuMemCreate` out of memory); reserve and map are refused while serving.
