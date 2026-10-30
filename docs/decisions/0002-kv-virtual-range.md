@@ -1,34 +1,38 @@
 # 0002: KV cache memory is one reserved virtual range per rank, addressed by page index
 
-Status: **proposed**, needs owner sign-off (not accepted, nothing implemented). Plan: phase 12 step 6, phase 11 (tiered store), phase 13 D3; owner decision 17 (page-major layout). Part of one trait design with ADR 0006: the trait change that this ADR needs is NOT made separately.
+Status: **accepted** (owner review, 2026-10-30). Design only: nothing here is implemented, and the trait change it needs is made once, together with every other (ADR 0006, step C3). Plan: phase 12 step 6, phase 11 (tiered store), phase 13 D3; owner decision 17 (page-major layout).
 
 ## Context
-- Today (`session.rs`) the K/V cache is one contiguous buffer per layer, `[capacity, kv_heads, head_dim]` bf16, allocated when the model loads, with `capacity = min(model maximum, 8192, what 90 percent of the free memory after the weights allows)`. The trait method `allocate_kv_cache(num_blocks, block_size) -> Vec<DevicePointer>` (one pointer per block) is not used by any real backend.
-- That shape cannot serve what the plan needs: prefix sharing and tier moves (phase 07, 11) work on pages; continuous batching needs sequences to own pages, not a whole buffer; tensor parallelism needs the same page count on every rank; and the size must come from the memory that is really free after the weights and the graphs exist, not from a total.
-- Facts so far: `cuMemGetInfo` after the weights load has been written but never run on a GPU (ledger: `[NEEDS-GPU]`, closed by the 7B run). The 8192-token limit comes from the untiled prefill kernel (phase 12 step 7), not from memory.
+- Today (`session.rs`) the K/V cache is one contiguous buffer per layer, `[capacity, kv_heads, head_dim]` bf16, allocated when the model loads, with `capacity = min(model maximum, what 90 percent of the free memory after the weights allows)` (the 8192 limit went with tiled prefill). The trait method `allocate_kv_cache(num_blocks, block_size) -> Vec<DevicePointer>` is not used by any real backend.
+- That shape cannot serve what the plan needs: prefix sharing and tier moves (phase 07, 11) work on pages; continuous batching needs sequences to own pages, not a whole buffer; tensor parallelism needs the same page count on every rank; and the size must come from the memory that is really free after the weights and the graphs exist.
+- Measured 2026-10-30 (H100, Qwen2.5-7B): 52.3 GiB free after the 14.19 GiB of weights and the session's activation buffers; capacity 131 072 tokens at 57 344 bytes of KV per token.
 
-## Decision (proposed)
-1. **One virtual range per rank.** At load, after the weights and after the decode and prefill graphs were captured, reserve a virtual address range for the whole KV pool (`cuMemAddressReserve`) and back it with physical memory in granules (`cuMemCreate` + `cuMemMap`, granule from `cuMemGetAllocationGranularity`). The pool's size is `pages = floor((free - reserve) / page_bytes)` rounded down to the granule, where `free` comes from `cuMemGetInfo` and `reserve` is a driver margin (for graph memory growth, cuBLAS and NCCL buffers) that is measured, not guessed: the free memory before and after capturing every graph, plus a fixed minimum, recorded in the ledger. Physical pages are mapped on demand up to that size, so an idle pool costs nothing and growth never moves existing pages.
-2. **Page-index addressing.** A page is a fixed number of tokens (`page_tokens`, a power of two). Kernels receive the pool base address and a device array of page indices per sequence; the address of a page is `base + index * page_bytes`. No `Vec<DevicePointer>`. The decode graphs read the page table from device buffers that the host updates before replay, like the position today.
-3. **Page-major layout (answer to decision 17, recommended).** A page holds every layer's K and V for its tokens: `[page][layer][k|v][token][kv_head][head_dim]`. A tier move (device to host, to disk, to another node) is one contiguous copy per page instead of one per layer, and it is the layout NVIDIA's KV block manager uses, so a Dynamo worker can exchange pages without a transposition. Cost: attention reads one layer's keys as `page_tokens * kv_heads * head_dim` contiguous elements per page, strided by `page_bytes`. For Qwen2.5-7B with 64-token pages that is 64 KiB contiguous per (layer, page), large enough to stay efficient. **Condition: measure first.** Accept page-major only if decode attention at 8k and 32k contexts is within 5 percent of the layer-major layout on an H100; otherwise keep layer-major pages (each layer's slab is its own pool) and pay per-layer batched copies for tier moves.
-4. **Tensor parallel: identical page counts.** Every rank reserves the same `page_bytes` per token for its own KV heads, and the pool page count is the minimum over ranks of what each can hold, so one page table is valid on every rank (phase 13 D3).
-5. **Ownership.** The pool belongs to the backend of the rank; `helios-core` sees page indices and counts only (rule 1). The prefix index (phase 07) stores page indices and hashes; it never sees addresses.
+## Decision
+1. **The order is fixed, and nothing is mapped while serving.** At load, in this order:
+   1. weights are uploaded;
+   2. **reserve** the virtual range for the whole KV pool (`cuMemAddressReserve`), with no physical memory behind it;
+   3. **capture every graph** (prefill chunk capacities, decode batch buckets) against that range, so their kernels hold its base address;
+   4. **measure** the free memory (`cuMemGetInfo`) now that the weights, buffers and graph memory exist;
+   5. compute `pages = floor((free - margin) / page_bytes)`, `margin` being what the driver, cuBLAS and NCCL still need (measured: the free memory before and after capturing every graph, plus a fixed minimum, recorded in the ledger), rounded down to the allocation granule (`cuMemGetAllocationGranularity`);
+   6. **map all physical memory at once** (`cuMemCreate`, `cuMemMap`, `cuMemSetAccess`);
+   7. the engine is **Ready**.
+   There is no map-on-demand, no growth and no shrinking after Ready: this is the "no new GPU work while serving" rule applied to memory. A pool that is full is a typed refusal (or an eviction the scheduler orders), never a mapping. **The trait expresses the order** (ADR 0006): reserving, capturing and committing are separate calls, and the type that allows a step exists only after the commit (type-state), so a backend cannot serve with an unmapped or half-mapped pool.
+2. **Page-index addressing.** A page is `page_tokens` tokens, **64 by default** (a power of two, a load-time setting; decoupled from the hash block of ADR 0008, whose default is also 64). Kernels receive the pool base address and a device-resident page table; the address of a page is `base + index * page_bytes`. No `Vec<DevicePointer>`. The decode graphs read the page table from device memory that is updated by deltas (ADR 0007).
+3. **Page-major layout (decision 17: yes if it measures up).** A page holds every layer's K and V for its tokens: `[page][layer][k|v][token][kv_head][head_dim]`. A tier move (device to host, disk, another node) is one contiguous copy per page. **Budget: 5 percent.** Page-major is adopted when decode attention at 8k and 32k contexts is within 5 percent of the layer-major layout on an H100 (attention is 13 to 25 percent of the step there, so 5 percent of it is about 1 percent of the step); otherwise pages stay layer-major (each layer's slab its own pool) and tier moves pay per-layer batched copies.
+4. **Tensor parallel: identical page counts.** Every rank reserves the same `page_bytes` per token for its own KV heads, and the page count is the minimum over ranks of what each can hold after step 4, so one page table is valid on every rank (phase 13 D3). The minimum is agreed through the control plane before step 6.
+5. **Ownership.** The pool belongs to the backend of the rank; `helios-core` sees page indices and counts only (rule 1). The prefix index (phase 07) stores page indices and hashes, never addresses.
 
 ## Why over the alternatives
 - Per-sequence contiguous buffers (today): fragmentation, no sharing, no tiering.
-- Many small `cuMemAlloc` pages: no contiguous virtual range, so kernels need a pointer per page, and allocation at serving time is forbidden by the "no new GPU work while serving" rule.
-- A single big `cuMemAlloc` pool: works, but cannot grow or shrink physical backing and wastes memory when the free amount changes between loads.
+- Many small `cuMemAlloc` pages: no contiguous virtual range, so kernels need a pointer per page, and allocation while serving is forbidden.
+- A single big `cuMemAlloc` pool: cannot be sized after the graphs exist without a second allocation, and cannot be extended.
+- Mapping on demand: an out-of-memory or a driver stall in the middle of serving, and a graph replay that races the map.
 
 ## Consequences
-- The trait changes (ADR 0006): `allocate_kv_cache` is replaced by planning and reserving a pool; this happens together with every other trait change, once.
-- The session's contiguous K/V buffers, `kv_append_bf16` (row index from position) and the split-K attention (rows addressed by position) change to page-table addressing: a kernel and graph rework with its own bit-identity and long-context checks (kernel-level 32768 test already exists).
-- Prefill chunks (phase 12 step 7) write whole pages.
-- The memory report (`HardwareInfo`) must carry the free amount after load, not only the total.
+- The trait changes (ADR 0006): `allocate_kv_cache` is replaced by `reserve_kv`, graph capture against the reservation, and `commit_kv`.
+- The session's contiguous K/V buffers, `kv_append_bf16` and the split-K and chunk attention change to page-table addressing: a kernel and graph rework with its own bit-identity and long-context checks (the 32768 kernel test exists).
+- Prefill chunks write whole pages (a chunk capacity is a multiple of `page_tokens`).
+- `HardwareInfo` carries the free amount at call time as well as the total.
 
-## Open questions for the owner
-- `page_tokens` (64 matches decision 10's candidate hash block; they stay decoupled either way).
-- Is the 5 percent attention budget for page-major right?
-- Decision 17 itself.
-
-## Verification plan (before accepting)
-`cuMemGetInfo` and granule size on the H100 (7B session); a page-strided attention microbenchmark at 8k and 32k against layer-major; map and unmap time per granule; behaviour when the pool is mapped to 100 percent and a sequence needs a page (a typed refusal, never a silent eviction).
+## Verification plan (before the trait change is implemented)
+`cuMemGetInfo` and granule size on the H100 (7B session); the margin measured over all graphs; a page-strided attention microbenchmark at 8k and 32k against layer-major, which decides the layout; map time for the whole pool; a full pool answered with a typed refusal.

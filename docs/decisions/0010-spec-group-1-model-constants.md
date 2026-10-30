@@ -14,10 +14,10 @@ Status: **accepted for group 1** (owner authorisation A2 of the 2026-10-30 run).
 
 ## Owner decisions recorded as recommended
 1. Generic decoder versus per-architecture: **per-architecture Python**, descriptor fields grown additively; revisit at the third architecture.
-3. Parallelism fields in v1: **add now, but fields pending ADR 0005** (not in this change).
+3. Parallelism fields in v1: **add now**; the fields are specified by ADR 0005 (accepted 2026-10-30) and land in a separate step, not in this change.
 5. Publisher identity: **pinned keys plus a local trust store**.
 7. One deployment per bundle: **one package per target arch**; TP size chosen at load.
-20. Shard at load from canonical weights: **yes; fields pending ADR 0005**.
+20. Shard at load from canonical weights: **yes** (ADR 0005).
 
 ## Consequences
 Packages written before this change must be re-exported. The loader reads the dimensions from a signed source; a changed `rope_theta` now breaks the signature once signing exists. The e2e stub fixture, the shared golden manifests, the tiny sharded fixture and the schema were regenerated together.
