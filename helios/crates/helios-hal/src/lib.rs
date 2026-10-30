@@ -15,6 +15,7 @@
 //!   FFI/kernel calls; here we only mediate.
 
 pub mod contract;
+pub mod sharding;
 pub mod step;
 pub mod traits;
 #[cfg(feature = "cuda")]

@@ -147,6 +147,7 @@ mod tests {
             payload_files: vec!["model.safetensors".into()],
             payload_lengths: vec![None],
             tensors: Vec::new(),
+            supported_tp_sizes: vec![1],
             deployment: crate::contract::Deployment::SINGLE,
         }
     }

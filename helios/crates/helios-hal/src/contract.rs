@@ -10,7 +10,7 @@ use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use hyperion_specification::v1::{Manifest, ModelConfig, TensorFormat};
+use hyperion_specification::v1::{Manifest, ModelConfig, ShardClass, TensorFormat};
 use thiserror::Error;
 
 /// Typed errors of the contract. Nothing in a backend panics for these.
@@ -25,6 +25,9 @@ pub enum HalError {
     /// A request the backend cannot honour as configured (a TP size the model does not allow, a page count the pool cannot hold).
     #[error("invalid request: {0}")]
     Invalid(String),
+    /// A tensor-parallel size the model does not allow (ADR 0005). Raised before any CUDA call.
+    #[error("tensor-parallel size {tp} is not supported by this model (supported: {supported:?})")]
+    UnsupportedTp { tp: u32, supported: Vec<u32> },
     /// The KV pool has no free page for the request; the scheduler decides what to evict. Never answered by mapping more memory.
     #[error("the KV pool is full: {needed} pages needed, {free} free")]
     PoolFull { needed: usize, free: usize },
@@ -148,6 +151,8 @@ pub struct TensorSpec {
     pub byte_length: u64,
     pub dtype: String,
     pub shape: Vec<usize>,
+    /// How the tensor may be split between tensor-parallel ranks; `None` means it is not split.
+    pub sharding: Option<ShardClass>,
 }
 
 /// Everything a backend is told about the model, built from the manifest inside the HAL (`BackendConfig::from`): a backend never sees
@@ -165,6 +170,8 @@ pub struct BackendConfig {
     /// The byte length the manifest declares for each payload file (`None`: a package without a payload table, whose one file has no declared size).
     pub payload_lengths: Vec<Option<u64>>,
     pub tensors: Vec<TensorSpec>,
+    /// The tensor-parallel sizes the model supports (`[1]` when the manifest records none).
+    pub supported_tp_sizes: Vec<u32>,
     pub deployment: Deployment,
 }
 
@@ -179,7 +186,7 @@ impl BackendConfig {
     pub fn for_deployment(manifest: &Manifest, deployment: Deployment) -> Result<Self, HalError> {
         // Payload names come from the signed manifest: refuse any that could leave the package directory before a path is built from them.
         manifest.validate_payloads().map_err(|e| HalError::Invalid(e.to_string()))?;
-        Ok(Self {
+        let config = Self {
             model_id: manifest.model_id.clone(),
             model: manifest.model.clone(),
             tensor_format: manifest.tensor_format,
@@ -197,10 +204,30 @@ impl BackendConfig {
                     byte_length: l.byte_length,
                     dtype: l.tensor.dtype.clone(),
                     shape: l.tensor.shape.clone(),
+                    sharding: l.sharding,
                 })
                 .collect(),
+            supported_tp_sizes: manifest.parallelism.as_ref().map_or_else(|| vec![1], |p| p.supported_tp_sizes.clone()),
             deployment,
-        })
+        };
+        config.check_deployment()?;
+        Ok(config)
+    }
+
+    /// Refuse a deployment the model does not allow, before any device is touched: a tensor-parallel size outside the supported list,
+    /// a rank or stage outside its group, a pipeline deeper than the model.
+    pub fn check_deployment(&self) -> Result<(), HalError> {
+        let d = &self.deployment;
+        if !self.supported_tp_sizes.contains(&d.tp_size) {
+            return Err(HalError::UnsupportedTp { tp: d.tp_size, supported: self.supported_tp_sizes.clone() });
+        }
+        if d.tp_rank >= d.tp_size || d.pp_stage >= d.pp_size.max(1) || d.pp_size == 0 {
+            return Err(HalError::Invalid(format!("rank {} of tp {} / stage {} of pp {} is outside its group", d.tp_rank, d.tp_size, d.pp_stage, d.pp_size)));
+        }
+        if d.pp_size > self.model.num_layers {
+            return Err(HalError::Invalid(format!("pipeline of {} stages for a model of {} layers", d.pp_size, self.model.num_layers)));
+        }
+        Ok(())
     }
 }
 
