@@ -924,6 +924,46 @@ fn chunk_attention_matches_reference_and_is_repeatable() {
     backend.shutdown().unwrap();
 }
 
+/// The tensor-core prefill attention against the float64 reference, at lengths 1, 127, 128, 129, 4096, 8192 and 16384, for the
+/// 0.5B and 7B head layouts (groups of 7 query heads over a KV head, so a block's 64 virtual rows straddle chunk rows). Criteria
+/// declared before the first run, as for the other attention kernels: worst error at most `2 * ulp`, `ulp` being `max|ref| / 128`
+/// (one bf16 step at the largest output; the probabilities are rounded to bf16 before the second product, which the f32-only kernels
+/// do not do), and five launches bit-identical. Each length is run twice: the last 72 positions (several blocks, a long context) and,
+/// up to 300 tokens, the whole causal triangle (every row at its own position).
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn mma_attention_matches_reference_and_is_repeatable() {
+    use helios_hal::reference::{attention, bf16_to_f32};
+    let (_, _, backend) = loaded_backend();
+    let worst = |a: &[u16], b: &[u16]| a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((bf16_to_f32(*x) - bf16_to_f32(*y)).abs()));
+    for (heads, kv_heads, d) in [(14usize, 2usize, 64usize), (28, 4, 128)] {
+        for len in [1usize, 127, 128, 129, 4096, 8192, 16384] {
+            let mut shapes = vec![len.min(72)];
+            if len <= 300 && len > 72 {
+                shapes.push(len);
+            }
+            for rows in shapes {
+                let q_start = len - rows;
+                let q = noise(rows * heads * d, len as u32 + 1, 2.0);
+                let k = noise(len * kv_heads * d, len as u32 + 2, 2.0);
+                let v = noise(len * kv_heads * d, len as u32 + 3, 3.0);
+                let reference = attention(&q, &k, &v, rows, len, heads, kv_heads, d, q_start);
+                let ulp = reference.iter().map(|x| bf16_to_f32(*x).abs()).fold(0.0f32, f32::max) / 128.0;
+                let positions: Vec<u32> = (q_start..len).map(|p| p as u32).collect();
+                let out = backend.attention_mma_bf16(&q, &k, &v, &positions, len, heads, kv_heads, d).expect("tensor-core kernel");
+                let err = worst(&out, &reference);
+                for run in 1..5 {
+                    let again = backend.attention_mma_bf16(&q, &k, &v, &positions, len, heads, kv_heads, d).unwrap();
+                    assert!(again == out, "{heads}x{kv_heads}x{d} len {len} rows {rows}: launch {run} differs from the first, bit for bit");
+                }
+                println!("heads {heads}/{kv_heads} d {d} len {len:>5} rows {rows:>3}: err {err:.5}, 2 ulp {:.5}; 5 launches identical", 2.0 * ulp);
+                assert!(err <= 2.0 * ulp, "{heads}x{kv_heads}x{d} len {len} rows {rows}: error {err} exceeds 2 ulp {}", 2.0 * ulp);
+            }
+        }
+    }
+    backend.shutdown().unwrap();
+}
+
 /// The chunked prefill against the reference prefill (the whole prompt in one launch with the untiled kernel), on the
 /// loaded model, for prompts that fit one chunk: 1 and 127 and 129 tokens (the padding cases), 1000 and 4096. Both run
 /// the same kernels but the attention; the bound is the one declared for decode against prefill in this file, before the

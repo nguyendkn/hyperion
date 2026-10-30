@@ -61,6 +61,25 @@ pub(super) fn plan_chunks(tokens: usize, largest: usize) -> Result<Vec<Chunk>> {
     Ok(chunks)
 }
 
+/// Virtual rows per block of the tensor-core prefill attention kernel (4 warps of 16).
+pub(super) const MMA_BLOCK_ROWS: usize = 64;
+
+/// The launch grid of the tensor-core prefill attention for a chunk of `rows` rows: one block per 64 "virtual rows" (a virtual row is a
+/// (chunk row, query head of the group) pair) and one grid row per KV head. `None` when heads is not a multiple of kv_heads.
+pub(super) fn mma_grid(rows: usize, heads: usize, kv_heads: usize) -> Option<(usize, usize)> {
+    if kv_heads == 0 || heads % kv_heads != 0 || rows == 0 {
+        return None;
+    }
+    Some(((rows * (heads / kv_heads)).div_ceil(MMA_BLOCK_ROWS), kv_heads))
+}
+
+/// The (chunk row, query head) a virtual row stands for, as the kernel computes it.
+#[cfg(test)]
+pub(super) fn virtual_row(v: usize, heads: usize, kv_heads: usize, kv_head: usize) -> (usize, usize) {
+    let group = heads / kv_heads;
+    (v / group, kv_head * group + v % group)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +143,32 @@ mod tests {
         assert_eq!(largest_chunk(5000), 4096);
         assert_eq!(largest_chunk(1_000_000), 4096);
         assert_eq!(plan_chunks(300, 256).unwrap().iter().map(|c| c.capacity).collect::<Vec<_>>(), vec![256, 128]);
+    }
+
+    #[test]
+    fn every_chunk_row_and_query_head_is_covered_by_exactly_one_virtual_row() {
+        // 7B (28 heads / 4 kv heads, group 7), 0.5B (14/2, group 7), MHA (group 1), group 2 and 8; chunk capacities and ragged sizes.
+        for (heads, kv_heads) in [(28usize, 4usize), (14, 2), (16, 16), (16, 8), (64, 8)] {
+            for rows in [1usize, 2, 9, 10, 63, 64, 65, 127, 128, 129, 4096] {
+                let (blocks, kv_rows) = mma_grid(rows, heads, kv_heads).unwrap();
+                assert_eq!(kv_rows, kv_heads);
+                let group = heads / kv_heads;
+                let mut seen = vec![0u8; rows * heads];
+                for kv_head in 0..kv_heads {
+                    for v in 0..blocks * MMA_BLOCK_ROWS {
+                        if v < rows * group {
+                            let (row, head) = virtual_row(v, heads, kv_heads, kv_head);
+                            assert!(row < rows && head / group == kv_head, "({heads},{kv_heads}) rows {rows} v {v}");
+                            seen[row * heads + head] += 1;
+                        }
+                    }
+                }
+                assert!(seen.iter().all(|&n| n == 1), "({heads},{kv_heads}) rows {rows}: every (row, head) exactly once");
+                assert!((blocks - 1) * MMA_BLOCK_ROWS < rows * group, "no block is empty");
+            }
+        }
+        assert_eq!(mma_grid(4096, 28, 4), Some((448, 4)));
+        assert!(mma_grid(10, 14, 4).is_none() && mma_grid(0, 8, 8).is_none());
     }
 
     #[test]

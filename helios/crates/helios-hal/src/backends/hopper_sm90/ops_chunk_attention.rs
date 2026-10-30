@@ -9,12 +9,45 @@ use super::backend::HopperBackend;
 use super::ops::ELEMENTWISE_IMAGE;
 
 impl HopperBackend {
+    /// [`Self::attention_chunk_bf16`] computed by the tensor-core kernel the prefill chunks use (`attention_mma_{head_dim}_bf16`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn attention_mma_bf16(
+        &self,
+        q: &[u16],
+        k: &[u16],
+        v: &[u16],
+        positions: &[u32],
+        len: usize,
+        heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    ) -> Result<Vec<u16>> {
+        self.run_chunk_attention(&format!("attention_mma_{head_dim}_bf16"), true, q, k, v, positions, len, heads, kv_heads, head_dim)
+    }
+
     /// Attention of `positions.len()` query rows (`q`: `[rows, heads, head_dim]` bf16 bits) over a cache of `len`
     /// positions (`k`, `v`: `[len, kv_heads, head_dim]`), with the kernel the prefill chunks use. Row `t` attends to
     /// cache positions `0..=positions[t]`; every position must be below `len`.
     #[allow(clippy::too_many_arguments)]
     pub fn attention_chunk_bf16(
         &self,
+        q: &[u16],
+        k: &[u16],
+        v: &[u16],
+        positions: &[u32],
+        len: usize,
+        heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    ) -> Result<Vec<u16>> {
+        self.run_chunk_attention("attention_chunk_bf16", false, q, k, v, positions, len, heads, kv_heads, head_dim)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_chunk_attention(
+        &self,
+        kernel_name: &str,
+        tensor_core: bool,
         q: &[u16],
         k: &[u16],
         v: &[u16],
@@ -35,7 +68,7 @@ impl HopperBackend {
             return Err(anyhow!("a query position is beyond the {len} cached positions"));
         }
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        let kernel = self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, "attention_chunk_bf16")?;
+        let kernel = self.kernel(&dev, "elementwise", ELEMENTWISE_IMAGE, kernel_name)?;
         let bytes = |x: &[u16]| -> Vec<u8> { x.iter().flat_map(|v| v.to_le_bytes()).collect() };
 
         let mut allocated: Vec<u64> = Vec::new();
@@ -53,8 +86,20 @@ impl HopperBackend {
             dev.htod(v_ptr, &bytes(v))?;
             dev.htod(pos_ptr, &positions.iter().flat_map(|p| p.to_le_bytes()).collect::<Vec<u8>>())?;
 
-            let (h, kvh, hd) = (heads as i32, kv_heads as i32, head_dim as i32);
-            let mut args: Vec<*mut c_void> = vec![
+            let (h, kvh, hd, rows_i) = (heads as i32, kv_heads as i32, head_dim as i32, rows as i32);
+            let mut args: Vec<*mut c_void> = if tensor_core {
+                vec![
+                    &q_ptr as *const u64 as *mut c_void,
+                    &k_ptr as *const u64 as *mut c_void,
+                    &v_ptr as *const u64 as *mut c_void,
+                    &out_ptr as *const u64 as *mut c_void,
+                    &pos_ptr as *const u64 as *mut c_void,
+                    &rows_i as *const i32 as *mut c_void,
+                    &h as *const i32 as *mut c_void,
+                    &kvh as *const i32 as *mut c_void,
+                ]
+            } else {
+                vec![
                 &q_ptr as *const u64 as *mut c_void,
                 &k_ptr as *const u64 as *mut c_void,
                 &v_ptr as *const u64 as *mut c_void,
@@ -63,10 +108,17 @@ impl HopperBackend {
                 &h as *const i32 as *mut c_void,
                 &kvh as *const i32 as *mut c_void,
                 &hd as *const i32 as *mut c_void,
-            ];
-            let shared = ((head_dim + 128 + 4) * 4) as u32;
+                ]
+            };
             // Safety: the argument list mirrors the kernel's signature.
-            unsafe { kernel.launch(&dev, ((rows * heads) as u32, 1, 1), (128, 1, 1), shared, &mut args)? };
+            unsafe {
+                if tensor_core {
+                    let (blocks, kv_rows) = super::prefill_plan::mma_grid(rows, heads, kv_heads).ok_or_else(|| anyhow!("heads do not divide over the KV heads"))?;
+                    kernel.launch(&dev, (blocks as u32, kv_rows as u32, 1), (128, 1, 1), 0, &mut args)?
+                } else {
+                    kernel.launch(&dev, ((rows * heads) as u32, 1, 1), (128, 1, 1), ((head_dim + 128 + 4) * 4) as u32, &mut args)?
+                }
+            };
             dev.synchronize()?;
             let mut raw = vec![0u8; rows * heads * head_dim * 2];
             dev.dtoh(&mut raw, out_ptr)?;

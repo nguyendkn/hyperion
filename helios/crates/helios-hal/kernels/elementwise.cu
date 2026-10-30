@@ -520,3 +520,181 @@ extern "C" __global__ void attention_chunk_bf16(const bf16* __restrict__ q, cons
     if (threadIdx.x < head_dim) orow[threadIdx.x] = __float2bfloat16(acc0 / l);
     if (threadIdx.x + 128 < head_dim) orow[threadIdx.x + 128] = __float2bfloat16(acc1 / l);
 }
+
+// ---- Prefill attention on tensor cores (FlashAttention-2 style, mma.sync m16n8k16, sm80 and later) ----------------------------------
+// Same job and the same inputs as attention_chunk_bf16 (row t of the chunk sits at positions[t] and attends to keys 0..=positions[t] of the
+// cache), computed with bf16 tensor-core products and f32 accumulation. The work is cut over "virtual rows": virtual row v is query head
+// (kvh * G + v % G) of chunk row v / G, G = heads / kv_heads, so one block owns 64 consecutive virtual rows of ONE kv head and loads every
+// K and V tile once for all the query heads that share it. Four warps, 16 virtual rows each; keys run through in tiles of 64 with an online
+// softmax; nothing is atomic, so a replay is bit-identical to the launch that was captured. head_dim 64 or 128.
+//
+// Fragment layouts of mma.m16n8k16 (g = lane / 4, q = lane % 4): A (16x16, row major): a0 = (row g, cols 2q..2q+1), a1 = (row g+8, same cols),
+// a2 = (row g, cols 8+2q..), a3 = (row g+8, cols 8+2q..). B (16x8, "col"): b0 = (k 2q..2q+1, n g), b1 = (k 8+2q.., n g). C (16x8): c0,c1 =
+// (row g, cols 2q..2q+1), c2,c3 = (row g+8, same cols).
+static __device__ __forceinline__ void mma_16816(float (&d)[4], const unsigned (&a)[4], unsigned b0, unsigned b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+static __device__ __forceinline__ unsigned pack_bf16x2(float lo, float hi) {
+    const __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
+    return *reinterpret_cast<const unsigned*>(&v);
+}
+
+template <int HD>
+static __device__ __forceinline__ void attention_mma_impl(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
+                                                          const bf16* __restrict__ v_cache, bf16* __restrict__ out,
+                                                          const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
+    constexpr int KT = HD / 16;   // k steps of the Q K^T product
+    constexpr int NT = 8;         // n tiles of 8 keys in a 64-key tile
+    constexpr int OT = HD / 8;    // n tiles of the output
+    constexpr int LD = HD + 8;    // padded smem row (elements): keeps the fragment reads off one bank
+    __shared__ __align__(16) bf16 ks[64 * LD];
+    __shared__ __align__(16) bf16 vs[64 * LD];
+
+    const int group = heads / kv_heads;
+    const int kvh = blockIdx.y;
+    const int total = rows * group;  // virtual rows of this kv head
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int g = lane >> 2, qd = lane & 3;
+    const int v0 = blockIdx.x * 64 + warp * 16 + g;
+    const int v1 = v0 + 8;
+    const int pos0 = v0 < total ? (int)positions[v0 / group] : -1;
+    const int pos1 = v1 < total ? (int)positions[v1 / group] : -1;
+    const int vlast = min(blockIdx.x * 64 + 63, total - 1);
+    const int kmax = (int)positions[vlast / group] + 1;  // keys any row of this block can see
+
+    // Q fragments straight from global memory (each element is read once).
+    unsigned qa[KT][4];
+    {
+        const bf16* r0 = q + ((size_t)(v0 / group) * heads + kvh * group + v0 % group) * HD;
+        const bf16* r1 = q + ((size_t)(v1 / group) * heads + kvh * group + v1 % group) * HD;
+#pragma unroll
+        for (int kk = 0; kk < KT; ++kk) {
+            qa[kk][0] = v0 < total ? *reinterpret_cast<const unsigned*>(r0 + kk * 16 + 2 * qd) : 0u;
+            qa[kk][1] = v1 < total ? *reinterpret_cast<const unsigned*>(r1 + kk * 16 + 2 * qd) : 0u;
+            qa[kk][2] = v0 < total ? *reinterpret_cast<const unsigned*>(r0 + kk * 16 + 8 + 2 * qd) : 0u;
+            qa[kk][3] = v1 < total ? *reinterpret_cast<const unsigned*>(r1 + kk * 16 + 8 + 2 * qd) : 0u;
+        }
+    }
+
+    float o[OT][4];
+#pragma unroll
+    for (int i = 0; i < OT; ++i) { o[i][0] = o[i][1] = o[i][2] = o[i][3] = 0.f; }
+    float m0 = -INFINITY, m1 = -INFINITY, l0 = 0.f, l1 = 0.f;
+    const float scale_log2 = 1.4426950408889634f * rsqrtf((float)HD);  // 1/sqrt(head_dim), in base 2
+
+    for (int kb = 0; kb < kmax; kb += 64) {
+        __syncthreads();  // the previous tile is no longer read
+        for (int c = threadIdx.x; c < 64 * (HD / 8); c += 128) {
+            const int r = c / (HD / 8), cc = c % (HD / 8);
+            const int j = kb + r;
+            uint4 kv = make_uint4(0, 0, 0, 0), vv = make_uint4(0, 0, 0, 0);
+            if (j < kmax) {
+                const size_t at = ((size_t)j * kv_heads + kvh) * HD + cc * 8;
+                kv = *reinterpret_cast<const uint4*>(k_cache + at);
+                vv = *reinterpret_cast<const uint4*>(v_cache + at);
+            }
+            *reinterpret_cast<uint4*>(ks + r * LD + cc * 8) = kv;
+            *reinterpret_cast<uint4*>(vs + r * LD + cc * 8) = vv;
+        }
+        __syncthreads();
+
+        float s[NT][4];
+#pragma unroll
+        for (int nt = 0; nt < NT; ++nt) { s[nt][0] = s[nt][1] = s[nt][2] = s[nt][3] = 0.f; }
+#pragma unroll
+        for (int kk = 0; kk < KT; ++kk) {
+#pragma unroll
+            for (int nt = 0; nt < NT; ++nt) {
+                const bf16* kr = ks + (nt * 8 + g) * LD + kk * 16 + 2 * qd;
+                mma_16816(s[nt], qa[kk], *reinterpret_cast<const unsigned*>(kr), *reinterpret_cast<const unsigned*>(kr + 8));
+            }
+        }
+        // Causal mask and scale (into the log2 domain).
+#pragma unroll
+        for (int nt = 0; nt < NT; ++nt) {
+#pragma unroll
+            for (int e = 0; e < 4; ++e) {
+                const int col = kb + nt * 8 + 2 * qd + (e & 1);
+                const int pos = e < 2 ? pos0 : pos1;
+                s[nt][e] = col <= pos ? s[nt][e] * scale_log2 : -INFINITY;
+            }
+        }
+        float mx0 = -INFINITY, mx1 = -INFINITY;
+#pragma unroll
+        for (int nt = 0; nt < NT; ++nt) {
+            mx0 = fmaxf(mx0, fmaxf(s[nt][0], s[nt][1]));
+            mx1 = fmaxf(mx1, fmaxf(s[nt][2], s[nt][3]));
+        }
+        mx0 = fmaxf(mx0, __shfl_xor_sync(0xffffffffu, mx0, 1));
+        mx0 = fmaxf(mx0, __shfl_xor_sync(0xffffffffu, mx0, 2));
+        mx1 = fmaxf(mx1, __shfl_xor_sync(0xffffffffu, mx1, 1));
+        mx1 = fmaxf(mx1, __shfl_xor_sync(0xffffffffu, mx1, 2));
+        const float n0 = fmaxf(m0, mx0), n1 = fmaxf(m1, mx1);
+        const float u0 = n0 == -INFINITY ? 0.f : n0, u1 = n1 == -INFINITY ? 0.f : n1;  // a fully masked row keeps zero weight, no NaN
+        const float c0 = exp2f(m0 - u0), c1 = exp2f(m1 - u1);                           // exp2f(-inf) = 0
+        float sum0 = 0.f, sum1 = 0.f;
+#pragma unroll
+        for (int nt = 0; nt < NT; ++nt) {
+            s[nt][0] = exp2f(s[nt][0] - u0);
+            s[nt][1] = exp2f(s[nt][1] - u0);
+            s[nt][2] = exp2f(s[nt][2] - u1);
+            s[nt][3] = exp2f(s[nt][3] - u1);
+            sum0 += s[nt][0] + s[nt][1];
+            sum1 += s[nt][2] + s[nt][3];
+        }
+        sum0 += __shfl_xor_sync(0xffffffffu, sum0, 1);
+        sum0 += __shfl_xor_sync(0xffffffffu, sum0, 2);
+        sum1 += __shfl_xor_sync(0xffffffffu, sum1, 1);
+        sum1 += __shfl_xor_sync(0xffffffffu, sum1, 2);
+        l0 = l0 * c0 + sum0;
+        l1 = l1 * c1 + sum1;
+        m0 = n0;
+        m1 = n1;
+#pragma unroll
+        for (int i = 0; i < OT; ++i) { o[i][0] *= c0; o[i][1] *= c0; o[i][2] *= c1; o[i][3] *= c1; }
+
+        // O += P V, 16 keys at a time.
+#pragma unroll
+        for (int kc = 0; kc < 4; ++kc) {
+            unsigned pa[4];
+            pa[0] = pack_bf16x2(s[2 * kc][0], s[2 * kc][1]);
+            pa[1] = pack_bf16x2(s[2 * kc][2], s[2 * kc][3]);
+            pa[2] = pack_bf16x2(s[2 * kc + 1][0], s[2 * kc + 1][1]);
+            pa[3] = pack_bf16x2(s[2 * kc + 1][2], s[2 * kc + 1][3]);
+#pragma unroll
+            for (int ot = 0; ot < OT; ++ot) {
+                const bf16* vc = vs + (kc * 16 + 2 * qd) * LD + ot * 8 + g;
+                const unsigned b0 = pack_bf16x2(rd(vc[0]), rd(vc[LD]));
+                const unsigned b1 = pack_bf16x2(rd(vc[8 * LD]), rd(vc[9 * LD]));
+                mma_16816(o[ot], pa, b0, b1);
+            }
+        }
+    }
+
+    // Normalise and store: rows v0 (c0, c1) and v1 (c2, c3).
+    const float i0 = l0 > 0.f ? 1.f / l0 : 0.f, i1 = l1 > 0.f ? 1.f / l1 : 0.f;
+    if (v0 < total) {
+        bf16* orow = out + ((size_t)(v0 / group) * heads + kvh * group + v0 % group) * HD;
+#pragma unroll
+        for (int ot = 0; ot < OT; ++ot) *reinterpret_cast<unsigned*>(orow + ot * 8 + 2 * qd) = pack_bf16x2(o[ot][0] * i0, o[ot][1] * i0);
+    }
+    if (v1 < total) {
+        bf16* orow = out + ((size_t)(v1 / group) * heads + kvh * group + v1 % group) * HD;
+#pragma unroll
+        for (int ot = 0; ot < OT; ++ot) *reinterpret_cast<unsigned*>(orow + ot * 8 + 2 * qd) = pack_bf16x2(o[ot][2] * i1, o[ot][3] * i1);
+    }
+}
+
+// grid (ceil(rows * heads / kv_heads / 64), kv_heads), 128 threads, no dynamic shared memory.
+extern "C" __global__ void attention_mma_64_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache, const bf16* __restrict__ v_cache,
+                                                 bf16* __restrict__ out, const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
+    attention_mma_impl<64>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads);
+}
+
+extern "C" __global__ void attention_mma_128_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache, const bf16* __restrict__ v_cache,
+                                                  bf16* __restrict__ out, const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
+    attention_mma_impl<128>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads);
+}

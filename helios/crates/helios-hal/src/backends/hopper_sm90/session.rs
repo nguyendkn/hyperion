@@ -22,7 +22,7 @@ use super::forward::Qwen2Dims;
 use super::ops::ELEMENTWISE_IMAGE;
 use super::forward_device::DecodeMode;
 use super::ops_split_attention::split_count;
-use super::prefill_plan::{capacities, largest_chunk, plan_chunks, PrefillError};
+use super::prefill_plan::{capacities, largest_chunk, mma_grid, plan_chunks, PrefillError};
 use crate::cuda::event::Event;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{Cublas, CudaDevice, GraphExec, Kernel};
@@ -34,10 +34,8 @@ pub(super) const ROPE_BLOCK: u32 = 64;
 pub(super) const ARGMAX_BLOCK: u32 = 1024;
 /// Threads of the split-K decode attention block (the kernel's tile size).
 pub(super) const SPLIT_BLOCK: u32 = 128;
-/// Threads of the chunked prefill attention block (the kernel's key tile).
-pub(super) const CHUNK_ATTENTION_BLOCK: u32 = 128;
-/// Shared floats of the chunked prefill attention kernel besides the query: a key tile of scores and 4 reduction slots.
-const CHUNK_ATTENTION_FIXED_FLOATS: usize = 128 + 4;
+/// Threads of the tensor-core prefill attention block (4 warps of 16 virtual rows).
+pub(super) const MMA_ATTENTION_BLOCK: u32 = 128;
 /// The fixed workspace given to cuBLAS, so none of its calls allocates.
 const CUBLAS_WORKSPACE_BYTES: usize = 32 * 1024 * 1024;
 /// A model must fit at least this many tokens of context, or loading it is an error.
@@ -67,6 +65,11 @@ pub(super) enum Arg {
 /// Launch `kernel`. Every argument is stored in an 8-byte slot and the kernel reads its own
 /// width from the slot's first bytes (little endian), which is how the driver expects them.
 pub(super) fn launch(dev: &CudaDevice, kernel: Kernel, grid: u32, block: u32, shared: u32, args: &[Arg]) -> Result<()> {
+    launch_grid(dev, kernel, (grid, 1), block, shared, args)
+}
+
+/// [`launch`] with a two-dimensional grid.
+pub(super) fn launch_grid(dev: &CudaDevice, kernel: Kernel, grid: (u32, u32), block: u32, shared: u32, args: &[Arg]) -> Result<()> {
     let slots: Vec<u64> = args
         .iter()
         .map(|a| match a {
@@ -77,7 +80,7 @@ pub(super) fn launch(dev: &CudaDevice, kernel: Kernel, grid: u32, block: u32, sh
         .collect();
     let mut params: Vec<*mut c_void> = slots.iter().map(|s| s as *const u64 as *mut c_void).collect();
     // Safety: every call site passes the arguments in the kernel's signature order.
-    unsafe { kernel.launch(dev, (grid, 1, 1), (block, 1, 1), shared, &mut params) }
+    unsafe { kernel.launch(dev, (grid.0, grid.1, 1), (block, 1, 1), shared, &mut params) }
 }
 
 fn grid_for(n: usize) -> Result<u32> {
@@ -119,7 +122,8 @@ pub(super) struct Kernels {
     attention: Kernel,
     attention_split: Kernel,
     attention_combine: Kernel,
-    attention_chunk: Kernel,
+    /// Prefill attention on tensor cores (`attention_mma_{head_dim}_bf16`).
+    attention_mma: Kernel,
     kv_append: Kernel,
     kv_append_chunk: Kernel,
     argmax: Kernel,
@@ -335,7 +339,7 @@ impl Session {
             attention: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "attention_bf16")?,
             attention_split: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, &format!("attention_split_{hd}_bf16"))?,
             attention_combine: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "attention_combine_bf16")?,
-            attention_chunk: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "attention_chunk_bf16")?,
+            attention_mma: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, &format!("attention_mma_{hd}_bf16"))?,
             kv_append: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "kv_append_bf16")?,
             kv_append_chunk: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "kv_append_chunk_bf16")?,
             argmax: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "argmax_chain_bf16")?,
@@ -568,13 +572,15 @@ impl Session {
             if chunk {
                 launch(dev, k.kv_append_chunk, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(k_p), Arg::Ptr(v_p), Arg::Ptr(b.positions), Arg::Ptr(b.rows), Arg::Int(i32::try_from(kv_dim)?)])?;
                 mark("kv_append")?;
-                launch(
+                // Tensor-core attention: one block per 64 (chunk row, query head) pairs of a KV head, all K/V tiles loaded once per group.
+                let (blocks, kv_rows) = mma_grid(t, heads, kv_heads).ok_or_else(|| anyhow!("{heads} heads do not divide over {kv_heads} KV heads"))?;
+                launch_grid(
                     dev,
-                    k.attention_chunk,
-                    ti * u32::try_from(heads)?,
-                    CHUNK_ATTENTION_BLOCK,
-                    u32::try_from((hd + CHUNK_ATTENTION_FIXED_FLOATS) * 4)?,
-                    &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
+                    k.attention_mma,
+                    (u32::try_from(blocks)?, u32::try_from(kv_rows)?),
+                    MMA_ATTENTION_BLOCK,
+                    0,
+                    &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(i32::try_from(t)?), Arg::Int(heads_i), Arg::Int(kv_heads_i)],
                 )?;
                 mark("attention")?;
             } else if dynamic {
