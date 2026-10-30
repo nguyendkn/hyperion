@@ -443,12 +443,18 @@ fn greedy_generation_matches_hf_generate() {
     backend.shutdown().unwrap();
 }
 
-/// The device-resident pipeline must compute exactly what the host-sliced reference path
-/// (verified against Hugging Face) computes: same kernels, same rounding, so the prefill logits
-/// are bit-identical, and so is a short greedy continuation.
+/// The device-resident pipeline against the host-sliced reference path (verified against Hugging Face): the prefill logits
+/// agree within a declared bound and a short greedy continuation is token for token the same.
+///
+/// This test used to demand bit-identical prefill logits. That held while both paths ran the same untiled attention kernel in
+/// the same order; chunked prefill (online softmax over 128-key tiles), the cuBLASLt projections and the fused residual and
+/// norm kernels sum in other orders, so since 2026-10-30 the device path is no longer bit-identical to the host path (88% of
+/// the 0.5B logits differ in the last bit or more). Bit-identity is still demanded where it can hold (graph against direct
+/// launches of the same kernels); against the host path the criterion is the bound used for the same comparison elsewhere in
+/// this file, declared before the first run: max absolute logit difference <= 0.5 (`chunked_prefill_matches_the_untiled_reference`).
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
-fn device_pipeline_is_bit_identical_to_the_host_path() {
+fn device_pipeline_matches_the_host_path_within_the_declared_bound() {
     use helios_hal::SamplingConfig;
 
     let package = package();
@@ -463,8 +469,10 @@ fn device_pipeline_is_bit_identical_to_the_host_path() {
     let device = backend.forward_prefill_logits_device(&dims, &prompt).expect("device path");
     assert_eq!(host.len(), device.len());
     let differing = host.iter().zip(&device).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-    println!("prefill logits: {differing} of {} differ between the host and the device pipeline", host.len());
-    assert_eq!(differing, 0, "device pipeline must be bit-identical to the host path");
+    let worst = host.iter().zip(&device).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+    let bound = 0.5f32;
+    println!("prefill logits: {differing} of {} differ between the host and the device pipeline; max |difference| {worst:.4} (bound {bound})", host.len());
+    assert!(worst <= bound, "device pipeline differs from the host path by {worst}, more than the declared bound {bound}");
 
     // Speed and generation equality, device vs host vs Hugging Face.
     let started = std::time::Instant::now();
