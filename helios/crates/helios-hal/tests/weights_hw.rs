@@ -918,7 +918,7 @@ fn long_context_decode_logits_match_prefill_logits() {
 /// A Hyperion forward against the compact oracle (`scripts/gen-oracle-large.py`): for each prompt, the
 /// logits of the prefill and of each greedy decode step are compared with the float32 reference under the
 /// tolerance the oracle file declared before this run (see `helios_hal::oracle` for the rule). Positions are
-/// compared while our greedy tokens equal the reference's; the first 8 generated tokens must agree.
+/// compared teacher-forced (the reference's own tokens are fed, so a near-tie flip cannot make later steps incomparable); free greedy decoding is a secondary check that may leave the reference's chain only at a near tie.
 /// Also prints the device memory left after the weights loaded (`cuMemGetInfo`), for the KV sizing.
 ///
 /// Needs `HYPERION_COMPACT_ORACLE=/path/<id>.compact.json` next to the usual package variable.
@@ -948,23 +948,22 @@ fn forward_matches_the_compact_oracle() {
             d.max_abs_top_logits, d.max_abs_logsumexp, d.binding_top_logits
         );
     }
-    let required = 8.min(oracle.generated_tokens);
     // Failures are collected, not asserted at once, so the summary below (ratio and worst position) is
     // always printed. A failure is never answered by loosening the tolerance: see the runbook.
     let (mut failures, mut overall_top, mut overall_lse, mut worst_at) = (Vec::new(), 0f32, 0f64, String::new());
     // HF bf16's deviation over exactly the positions Hyperion was compared on (the like-for-like denominator).
     let mut bf16_same_set = Some(0f32);
     for prompt in &oracle.prompts {
+        let n = oracle.generated_tokens.min(prompt.generated_ids.len()).min(prompt.reference.len());
+
+        // 1. The check: teacher-forced. The reference's own tokens are fed, so every one of the n positions
+        //    is compared against the declared tolerance, whatever the model would have picked.
         let mut trace = Vec::new();
         backend
-            .generate_traced(&dims, &prompt.ids, oracle.generated_tokens, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut trace))
-            .expect("generation");
-        let (mut compared, mut worst_top, mut worst_lse, mut diverged) = (0usize, 0f32, 0f64, None);
+            .generate_forced(&dims, &prompt.ids, &prompt.generated_ids[..n], DecodeMode::Direct, &mut trace)
+            .expect("teacher-forced generation");
+        let (mut compared, mut worst_top, mut worst_lse) = (0usize, 0f32, 0f64);
         for (i, (logits, record)) in trace.iter().zip(&prompt.reference).enumerate() {
-            if i > 0 && argmax(&trace[i - 1]) as u32 != prompt.generated_ids[i - 1] {
-                diverged = Some(i);
-                break;
-            }
             let c = compare(logits, record, &oracle.tolerance).expect("comparison");
             worst_top = worst_top.max(c.max_abs_top_logits);
             worst_lse = worst_lse.max(c.abs_logsumexp);
@@ -986,13 +985,43 @@ fn forward_matches_the_compact_oracle() {
             compared += 1;
         }
         println!(
-            "ORACLE {}: {} prompt tokens, compared {compared} of {} positions (diverged at {diverged:?}); max top-k logit diff {worst_top:.4}, max logsumexp diff {worst_lse:.4}",
+            "ORACLE {} (teacher-forced): {} prompt tokens, compared {compared} of {n} positions; max top-k logit diff {worst_top:.4}, max logsumexp diff {worst_lse:.4}",
             prompt.label,
-            prompt.ids.len(),
-            oracle.generated_tokens
+            prompt.ids.len()
         );
-        if compared < required {
-            failures.push(format!("{}: only {compared} positions agreed with the reference's tokens, {required} are required", prompt.label));
+        if compared < n {
+            failures.push(format!("{}: only {compared} of {n} positions were produced", prompt.label));
+        }
+
+        // 2. Secondary: free greedy decoding, where Hyperion's own tokens feed the next step. It may leave the
+        //    reference's chain only at a near tie: the fp32 gap between the two best logits within the
+        //    tolerance and our token one of those two. The token we chose and its logit are always printed.
+        let mut free = Vec::new();
+        backend
+            .generate_traced(&dims, &prompt.ids, n, None, &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut free))
+            .expect("free greedy generation");
+        match (0..free.len().min(n)).find(|&j| argmax(&free[j]) as u32 != prompt.generated_ids[j]) {
+            None => println!("ORACLE {} (free greedy): all {n} tokens equal the reference's", prompt.label),
+            Some(j) => {
+                let chosen = argmax(&free[j]) as u32;
+                let reference = &prompt.reference[j];
+                let c = compare(&free[j], reference, &oracle.tolerance).expect("comparison");
+                println!(
+                    "ORACLE {} (free greedy): left the reference chain at step {j}: ours id {chosen} (logit {:.4}), reference id {} (our logit {:.4}); fp32 top two {:?} = {:.4}, {:.4}, gap {:.4}; legitimate near tie: {}",
+                    prompt.label,
+                    free[j][chosen as usize],
+                    reference.argmax,
+                    free[j][reference.argmax as usize],
+                    &reference.top_ids[..2],
+                    reference.top_logits[0],
+                    reference.top_logits[1],
+                    reference.top_logits[0] - reference.top_logits[1],
+                    c.argmax_ok
+                );
+                if !c.argmax_ok {
+                    failures.push(format!("{}: free greedy left the reference chain at step {j} with token {chosen}, which is not within a near tie of the fp32 top two", prompt.label));
+                }
+            }
         }
     }
     let ratio = |denominator: Option<f32>| denominator.filter(|d| *d > 0.0).map_or("n/a".to_string(), |d| format!("{:.2}", overall_top / d));

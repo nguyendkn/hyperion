@@ -56,7 +56,7 @@ impl HopperBackend {
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None, None, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, DecodeMode::Direct, None, None, None, None)
     }
 
     /// Time `steps` greedy decode steps inside one run: CUDA events and the host clock around the
@@ -64,14 +64,14 @@ impl HopperBackend {
     pub fn generate_timed(&self, d: &Qwen2Dims, prompt: &[u32], steps: usize, mode: DecodeMode) -> Result<DecodeTiming> {
         let mut timing = None;
         let max_new = 1 + TIMING_WARM_UP + steps;
-        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, Some(&mut timing))?;
+        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, None, Some(&mut timing))?;
         timing.ok_or_else(|| anyhow!("no timing produced (steps must be at least 1)"))
     }
 
     /// Greedy generation of `max_new` tokens with the decode steps profiled; see [`DecodeProfile`].
     pub fn generate_profiled(&self, d: &Qwen2Dims, prompt: &[u32], max_new: usize, mode: DecodeMode) -> Result<DecodeProfile> {
         let mut profile = DecodeProfile::default();
-        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, Some(&mut profile), None)?;
+        self.run_generation(d, prompt, max_new, None, &SamplingConfig::greedy(), &mut |_| {}, mode, None, None, Some(&mut profile), None)?;
         Ok(profile)
     }
 
@@ -87,7 +87,7 @@ impl HopperBackend {
         mode: DecodeMode,
         on_token: &mut dyn FnMut(u32),
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, on_token, mode, None, None, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, on_token, mode, None, None, None, None)
     }
 
     /// Like [`Self::generate_streaming`] with an explicit decode mode; when `trace` is given, the
@@ -103,14 +103,23 @@ impl HopperBackend {
         mode: DecodeMode,
         trace: Option<&mut Vec<Vec<f32>>>,
     ) -> Result<StopReason> {
-        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, trace, None, None)
+        self.run_generation(d, prompt, max_new, eos, sampling, &mut |_| {}, mode, None, trace, None, None)
+    }
+
+    /// Teacher-forced decode: the prompt, then the given tokens fed one per step regardless of what
+    /// the model would have picked. `trace` receives `forced.len()` logits rows: the one after the
+    /// prompt, then the one after each forced token except the last. Comparing those rows with a
+    /// reference run on the same tokens is not disturbed by a legitimate near-tie flip of the
+    /// argmax, which would otherwise make every later step incomparable.
+    pub fn generate_forced(&self, d: &Qwen2Dims, prompt: &[u32], forced: &[u32], mode: DecodeMode, trace: &mut Vec<Vec<f32>>) -> Result<StopReason> {
+        self.run_generation(d, prompt, forced.len(), None, &SamplingConfig::greedy(), &mut |_| {}, mode, Some(forced), Some(trace), None, None)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
     /// verification entry point that is compared bit for bit with the host path.
     pub fn forward_prefill_logits_device(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
         let mut trace = Vec::new();
-        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, Some(&mut trace), None, None)?;
+        self.run_generation(d, prompt, 0, None, &SamplingConfig::greedy(), &mut |_| {}, DecodeMode::Direct, None, Some(&mut trace), None, None)?;
         trace.into_iter().next().ok_or_else(|| anyhow!("no logits produced"))
     }
 
@@ -129,6 +138,7 @@ impl HopperBackend {
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
         mode: DecodeMode,
+        forced: Option<&[u32]>,
         trace: Option<&mut Vec<Vec<f32>>>,
         profile: Option<&mut DecodeProfile>,
         timing: Option<&mut Option<DecodeTiming>>,
@@ -146,7 +156,7 @@ impl HopperBackend {
         let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
         // Everything the generation uses was built at load time; refuse to build anything now.
         let _no_new_gpu_work = dev.forbid_new_gpu_work();
-        session.generate(&dev, cublas, prompt, max_new, eos, sampling, on_token, mode, trace, profile, timing)
+        session.generate(&dev, cublas, prompt, max_new, eos, sampling, on_token, mode, forced, trace, profile, timing)
     }
 }
 
@@ -162,10 +172,19 @@ impl Session {
         sampling: &SamplingConfig,
         on_token: &mut dyn FnMut(u32),
         mode: DecodeMode,
+        forced: Option<&[u32]>,
         mut trace: Option<&mut Vec<Vec<f32>>>,
         mut profile: Option<&mut DecodeProfile>,
         timing: Option<&mut Option<DecodeTiming>>,
     ) -> Result<StopReason> {
+        if let Some(forced) = forced {
+            if forced.len() < max_new {
+                return Err(anyhow!("{} forced tokens given for {max_new} steps", forced.len()));
+            }
+            if trace.is_none() {
+                return Err(anyhow!("forced tokens need a trace: the logits are the point"));
+            }
+        }
         let total = prompt.len() + max_new;
         if total > self.capacity {
             return Err(anyhow!("prompt + max_new = {total} exceeds the {} tokens of context this model was loaded with", self.capacity));
@@ -258,7 +277,10 @@ impl Session {
         let mut position = prompt.len();
         for produced in 0..max_new {
             let sampled_at = Instant::now();
-            let next = sample(&logits, sampling, &mut rng);
+            let next = match forced {
+                Some(forced) => forced[produced],
+                None => sample(&logits, sampling, &mut rng),
+            };
             if produced > 0 {
                 if let Some(p) = profile.as_mut() {
                     p.host_sample_ms += sampled_at.elapsed().as_secs_f64() * 1000.0;
