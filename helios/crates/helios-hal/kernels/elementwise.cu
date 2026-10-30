@@ -141,9 +141,9 @@ extern "C" __global__ void bias_cast_bf16(const float* __restrict__ y, const bf1
     }
 }
 
-// Greedy token choice on the device, and the chaining of decode steps. Every f32 logit is first
-// rounded to bf16 (the precision logits are defined at, and what the host path compares), the
-// highest wins, the lowest index on ties, and a value that is NaN never wins. The winner is then
+// Greedy token choice on the device, and the chaining of decode steps. The highest f32 logit wins
+// (as the output head computed it, not rounded to bf16: the host argmax over the same f32 values picks the same
+// token), the lowest index on ties, and a value that is NaN never wins. The winner is then
 // written as the next step's input id, the position advances by one, and the token is stored at
 // ring[position - *ring_base] for the host to read later. `ring_base` is read from device memory, like
 // the position, so a graph captured once at load time serves every generation. One block of 1024 threads.
@@ -154,7 +154,7 @@ extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, i
     float best = -INFINITY;
     int best_at = 0x7fffffff;
     for (int i = threadIdx.x; i < n; i += blockDim.x) {
-        const float v = rnd(logits[i]);
+        const float v = logits[i];
         if (v > best) {
             best = v;
             best_at = i;

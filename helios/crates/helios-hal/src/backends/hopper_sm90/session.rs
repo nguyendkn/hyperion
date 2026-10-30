@@ -26,7 +26,7 @@ use super::prefill_plan::{capacities, largest_chunk, plan_chunks, PrefillError};
 use crate::cuda::event::Event;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{Cublas, CudaDevice, GraphExec, Kernel};
-use crate::reference::{bf16_to_f32, f32_to_bf16, rope_tables};
+use crate::reference::rope_tables;
 
 pub(super) const ATTENTION_BLOCK: u32 = 128;
 pub(super) const ELEMENT_BLOCK: u32 = 256;
@@ -469,11 +469,13 @@ impl Session {
         dev.htod(self.b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
     }
 
-    /// The logits of the last step, read back and rounded to bf16 like the host path.
+    /// The logits of the last step as the output head computed them: f32, not rounded. (They used to be rounded to bf16 here to
+    /// match the host path; the rounding is an error of up to half a bf16 step of the logit, 0.125 above 32, that the model's
+    /// own arithmetic does not have.)
     pub(super) fn read_logits(&self, dev: &CudaDevice) -> Result<Vec<f32>> {
         let mut raw = vec![0u8; self.dims.vocab * 4];
         dev.dtoh(&mut raw, self.b.logits)?;
-        Ok(raw.chunks_exact(4).map(|c| bf16_to_f32(f32_to_bf16(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))).collect())
+        Ok(raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
     }
 
     /// Choose the next token from the logits on the device and chain it to the next step.

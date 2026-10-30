@@ -13,6 +13,9 @@ for src in *.cu; do
   # shellcheck disable=SC2086
   nvcc $FLAGS "$src" -o "$name.fatbin"
   sha=$(tr -d '\r' < "$src" | sha256sum | cut -d' ' -f1)
-  printf '{\n  "source": "%s",\n  "source_sha256": "%s",\n  "nvcc": "%s",\n  "flags": "%s"\n}\n' "$src" "$sha" "$NVCC_VERSION" "$FLAGS" > "$name.fatbin.json"
+  # nvcc does not write the same bytes twice (a per-compile id sits in the names of shared variables) but the machine code is the
+  # same: the sidecar also holds the hash of `cuobjdump -sass`, which scripts/check-kernels.sh and the tests compare.
+  sass=$(cuobjdump -sass "$name.fatbin" | sha256sum | cut -d' ' -f1)
+  printf '{\n  "source": "%s",\n  "source_sha256": "%s",\n  "sass_sha256": "%s",\n  "nvcc": "%s",\n  "flags": "%s"\n}\n' "$src" "$sha" "$sass" "$NVCC_VERSION" "$FLAGS" > "$name.fatbin.json"
   echo "built $name.fatbin ($(wc -c < "$name.fatbin") bytes, nvcc $NVCC_VERSION)"
 done
