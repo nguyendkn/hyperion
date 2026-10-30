@@ -1,0 +1,72 @@
+# L0 only (docs/testing-layers.md): everything that needs neither a GPU nor the CUDA toolkit, on
+# Linux and Windows. Hardware tests (L1 and above) stay manual on pods; they are `#[ignore]`d, so
+# `cargo test` lists them and never runs them. Model fixtures are not fetched here: tests that need
+# them skip visibly.
+name: L0
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  l0:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: l0-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Rust tests (stub backend)
+        run: cargo test --workspace
+
+      # The CUDA backends build and link without the toolkit (the driver and cuBLAS are loaded at
+      # run time), and their CUDA-free tests run; with no driver the factory falls back to the stub.
+      - name: Hopper backend, CUDA-free tests
+        run: cargo test -p helios-hal --features sm90
+
+      - name: Blackwell backend, CUDA-free tests
+        run: cargo test -p helios-hal --features sm120
+
+      - name: CLI builds with each backend
+        run: |
+          cargo build -p helios-cli --features sm90
+          cargo build -p helios-cli --features sm120
+
+      - name: Manifest contract and schema drift
+        run: cargo test -p hyperion-specification --features schema
+
+      - name: Committed schema equals the regenerated one
+        run: |
+          cargo run -p hyperion-specification --features schema --bin gen-schema
+          git diff --exit-code specification/schema
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ignition tests
+        run: |
+          python -m pip install -e "ignition[test]"
+          python -m pytest ignition/tests

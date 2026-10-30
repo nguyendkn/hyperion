@@ -18,5 +18,5 @@ Tags are exact: a test that was only compiled is `[TYPE-CHECK]`; a check that ne
 - **Tolerances are declared before a run**, from arithmetic or from measured repeatability or drift; a tolerance is never loosened to make a test pass.
 - **Measurements** (L1 and above): release build, CUDA events inside one run, ten windows, median with p10 and p90, GPU clocks recorded, one `CARGO_TARGET_DIR` per build in a comparison, and the revision and binary sha256 printed first.
 
-## What does not exist yet
-There is no CI. A workflow for L0 on Linux and Windows is waiting on the owner's decision 9 (the CI matrix); no GPU runner is planned, so L1 and above stay manual on pods.
+## CI
+`.github/workflows/l0.yml` runs L0 on Ubuntu and Windows for every push to `main` and every pull request: `cargo test --workspace`, the CUDA-free tests of the sm90 and sm120 backends, the CLI builds with each backend, the manifest contract and schema drift (regenerate, then `git diff --exit-code`), and `pytest ignition/tests`. Owner decision 9 (2026-10-30): Linux and Windows, L0 only. The workflow has not yet run on GitHub (its commands were run locally on Windows); no GPU runner is planned, so L1 and above stay manual on pods.
