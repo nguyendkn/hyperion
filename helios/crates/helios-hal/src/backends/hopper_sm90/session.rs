@@ -515,6 +515,16 @@ impl Session {
             launch(dev, k.bias_cast, grid_for(n)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.y_f32), Arg::Ptr(bias), Arg::Ptr(out_ptr), Arg::Int(i32::try_from(n)?), Arg::Int(i32::try_from(out)?)])
         };
 
+        // A decode step's projections go through cuBLASLt when it is available: bf16 out, bias in the epilogue, one launch.
+        let lt = if dynamic { cublas.lt() } else { None };
+        // `project` is `linear` for a step that is not a decode step or when cuBLASLt is absent.
+        let project = |w: u64, bias: u64, x: u64, out_ptr: u64, out: usize, inn: usize| -> Result<()> {
+            match lt {
+                Some(lt) => lt.linear_bf16(w, x, out_ptr, bias, 1, out, inn),
+                None => linear(w, bias, x, out_ptr, out, inn),
+            }
+        };
+
         launch(dev, k.embedding, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.ids), Arg::Ptr(self.embed), Arg::Ptr(b.h), Arg::Int(hidden_i)])?;
         mark("embedding")?;
         for (l, w) in self.layers.iter().enumerate() {
@@ -523,8 +533,7 @@ impl Session {
             // A decode step is one row: Q, K and V are the three consecutive parts of one fused projection.
             let (q_p, k_p, v_p) = if dynamic {
                 let qkv_dim = q_dim + 2 * kv_dim;
-                cublas.linear_bf16_f32(w.qkv_w, b.x, b.y_f32, 1, qkv_dim, hidden)?;
-                launch(dev, k.bias_cast, grid_for(qkv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.y_f32), Arg::Ptr(w.qkv_b), Arg::Ptr(b.qkv), Arg::Int(i32::try_from(qkv_dim)?), Arg::Int(i32::try_from(qkv_dim)?)])?;
+                project(w.qkv_w, w.qkv_b, b.x, b.qkv, qkv_dim, hidden)?;
                 (b.qkv, b.qkv + (q_dim * bf) as u64, b.qkv + ((q_dim + kv_dim) * bf) as u64)
             } else {
                 linear(w.q_w, w.q_b, b.x, b.q, q_dim, hidden)?;
@@ -581,7 +590,7 @@ impl Session {
                 )?;
                 mark("attention")?;
             }
-            linear(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
+            project(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
             mark("o_proj")?;
             launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.o), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
             mark("residual")?;
@@ -590,9 +599,7 @@ impl Session {
             mark("norm")?;
             // A decode step is one row: gate and up are the two consecutive halves of one fused projection.
             let (gate_p, up_p) = if dynamic {
-                let both = 2 * d.intermediate;
-                cublas.linear_bf16_f32(w.gate_up, b.x, b.y_f32, 1, both, hidden)?;
-                launch(dev, k.bias_cast, grid_for(both)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.y_f32), Arg::Ptr(0), Arg::Ptr(b.gate_up), Arg::Int(i32::try_from(both)?), Arg::Int(i32::try_from(both)?)])?;
+                project(w.gate_up, 0, b.x, b.gate_up, 2 * d.intermediate, hidden)?;
                 (b.gate_up, b.gate_up + (d.intermediate * bf) as u64)
             } else {
                 linear(w.gate, 0, b.x, b.gate, d.intermediate, hidden)?;
@@ -602,7 +609,7 @@ impl Session {
             mark("mlp_gate_up")?;
             launch(dev, k.swiglu, grid_for(t * d.intermediate)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(gate_p), Arg::Ptr(up_p), Arg::Ptr(b.act), Arg::Int(i32::try_from(t * d.intermediate)?)])?;
             mark("mlp_act")?;
-            linear(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
+            project(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
             mark("mlp_down")?;
             launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.down), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
             mark("residual")?;

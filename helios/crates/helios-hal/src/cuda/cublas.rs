@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 
 use anyhow::{anyhow, Result};
 
+use super::cublaslt::CublasLt;
 use super::device::CudaDevice;
 use super::loader::{Library, LoadError};
 
@@ -104,6 +105,8 @@ fn check(call: &str, status: c_int) -> Result<()> {
 pub struct Cublas {
     handle: Handle,
     api: &'static Api,
+    /// cuBLASLt, for projections that add their bias in the epilogue; absent when its library cannot be loaded.
+    lt: Option<CublasLt>,
 }
 
 // Safety: the handle is only used behind the backend's mutex.
@@ -123,7 +126,20 @@ impl Cublas {
                 return Err(e);
             }
         }
-        Ok(Self { handle, api })
+        // cuBLASLt is an optimisation: without it the decode step keeps the plain GEMM and the bias/cast kernel.
+        let lt = match CublasLt::new(dev) {
+            Ok(lt) => Some(lt),
+            Err(error) => {
+                tracing::warn!(%error, "cuBLASLt is not available: decode keeps the plain cuBLAS path");
+                None
+            }
+        };
+        Ok(Self { handle, api, lt })
+    }
+
+    /// The cuBLASLt handle, when its library was found.
+    pub fn lt(&self) -> Option<&CublasLt> {
+        self.lt.as_ref()
     }
 
     /// Give the handle a fixed, preallocated workspace of `bytes` at device address `ptr`, so no cuBLAS
@@ -131,6 +147,9 @@ impl Cublas {
     /// An error if the cuBLAS library has no `cublasSetWorkspace_v2`.
     pub fn set_workspace(&self, ptr: u64, bytes: usize) -> Result<()> {
         let set = self.api.set_workspace.ok_or_else(|| anyhow!("this cuBLAS library has no cublasSetWorkspace_v2"))?;
+        if let Some(lt) = &self.lt {
+            lt.set_workspace(ptr, bytes);
+        }
         unsafe { check("cublasSetWorkspace", set(self.handle, ptr as *mut c_void, bytes)) }
     }
 
