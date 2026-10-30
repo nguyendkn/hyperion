@@ -38,6 +38,17 @@ State in the report which term set the limit: the margin (drift x 1.5) or the 0.
 
 It closes these ledger rows at once: the device upload of a sharded model, an untied `lm_head` on a GPU, head_dim 128 on a real model, the free-memory number for KV sizing, and the first ms per token of a real-size model.
 
+## A/B of several commits on one pod (2026-10-30)
+
+- Package the tip with `scripts/package-for-pod.sh` and every older commit to compare with `scripts/package-variant.sh <commit> <out.tgz>`: the older tree with HEAD's hardware tests and scripts laid over it, so every build is measured by the same test code (`REVISION` reads `<commit> tests-from <HEAD>`).
+- Unpack each tree into its own directory, run `bash scripts/build-kernels.sh` in each (nvcc builds in seconds), then `CARGO_TARGET_DIR=/work/target-<tree> cargo test --release --features sm90 -p helios-hal --no-run` for all trees in parallel (about a minute on a 128-core pod). One target directory per tree, always (rule 1 below).
+- Data (models, oracles) lives in one tree and is shared through absolute `HYPERION_WEIGHTS_PACKAGE` and `HYPERION_COMPACT_ORACLE`.
+- `HYPERION_CONTEXTS=5,1024,4096,8000` narrows the context lengths of `decode_time_vs_context`; the windows and warm-up are not affected.
+- A new tolerance file (a regenerated oracle) is committed and pushed before the run that uses it.
+- `scripts/gemm-bandwidth.py` turns an Nsight Systems profile into achieved GB/s per GEMM call site: `nsys profile --cuda-graph-trace=node -o decode <test>`, `nsys export --type sqlite decode.nsys-rep`, `python scripts/gemm-bandwidth.py decode.sqlite --model 7b`.
+- Nsight Systems: `apt-get install nsight-systems-2025.5.2` (the CUDA image's apt repo has it); the binary is `/opt/nvidia/nsight-systems/2025.5.2/bin/nsys`.
+- `kubectl exec ... nohup ... &` keeps the exec attached and times out: start long jobs with `(setsid nohup bash script.sh > log 2>&1 < /dev/null &)` and poll the log.
+
 ## Rules learned from incidents
 
 1. **One `CARGO_TARGET_DIR` per build in an A/B comparison.** With one shared target directory cargo saw the second tree's sources as up to date and did not rebuild, so "B" was the A binary and a whole run was void. It was noticed only because the output format was the old one.
