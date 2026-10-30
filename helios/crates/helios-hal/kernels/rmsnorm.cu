@@ -1,9 +1,14 @@
 // RMSNorm over bf16 rows, matching the Hugging Face Qwen2 formulation:
 //   normalised = bf16( x * rsqrt(mean(x^2) + eps) )   (the sum is accumulated in f32)
 //   y          = bf16( weight * normalised )
-// One block per row; blockDim.x must be a power of two. Generated PTX lives next to this
-// file (rmsnorm.ptx); rebuild it with scripts/build-ptx.sh.
+// One block per row; blockDim.x must be a power of two. Built into rmsnorm.fatbin by scripts/build-kernels.sh.
+//
+// A decode step normalises one row of 3584 to 5120 values with one block, so the time is latency, not bandwidth: the loops
+// below load UNROLL values per thread before using any of them, which overlaps the global-memory latencies, and keep the
+// order in which each thread adds its values (increasing index), so the result is bit for bit what a plain loop gives.
 #include <cuda_bf16.h>
+
+#define UNROLL 16
 
 extern "C" __global__ void rmsnorm_bf16(const __nv_bfloat16* __restrict__ x,
                                         const __nv_bfloat16* __restrict__ w,
@@ -15,9 +20,17 @@ extern "C" __global__ void rmsnorm_bf16(const __nv_bfloat16* __restrict__ x,
     __nv_bfloat16* yr = y + row * hidden;
 
     float sum = 0.f;
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-        const float v = __bfloat162float(xr[i]);
-        sum += v * v;
+    for (int base = threadIdx.x; base < hidden; base += blockDim.x * UNROLL) {
+        float v[UNROLL];
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            v[u] = i < hidden ? __bfloat162float(xr[i]) : 0.f;
+        }
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            if (base + u * blockDim.x < hidden) sum += v[u] * v[u];
+        }
     }
     partial[threadIdx.x] = sum;
     __syncthreads();
@@ -27,9 +40,22 @@ extern "C" __global__ void rmsnorm_bf16(const __nv_bfloat16* __restrict__ x,
     }
     const float inv = rsqrtf(partial[0] / static_cast<float>(hidden) + eps);
 
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-        const float normalised = __bfloat162float(__float2bfloat16(__bfloat162float(xr[i]) * inv));
-        yr[i] = __float2bfloat16(__bfloat162float(w[i]) * normalised);
+    for (int base = threadIdx.x; base < hidden; base += blockDim.x * UNROLL) {
+        float xv[UNROLL], wv[UNROLL];
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            xv[u] = i < hidden ? __bfloat162float(xr[i]) : 0.f;
+            wv[u] = i < hidden ? __bfloat162float(w[i]) : 0.f;
+        }
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            if (i < hidden) {
+                const float normalised = __bfloat162float(__float2bfloat16(xv[u] * inv));
+                yr[i] = __float2bfloat16(wv[u] * normalised);
+            }
+        }
     }
 }
 
@@ -49,11 +75,24 @@ extern "C" __global__ void add_rmsnorm_bf16(__nv_bfloat16* __restrict__ h,
     __nv_bfloat16* yr = y + row * hidden;
 
     float sum = 0.f;
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-        const __nv_bfloat16 s = __float2bfloat16(__bfloat162float(hr[i]) + __bfloat162float(dr[i]));
-        hr[i] = s;  // the same thread reads this element again below
-        const float v = __bfloat162float(s);
-        sum += v * v;
+    for (int base = threadIdx.x; base < hidden; base += blockDim.x * UNROLL) {
+        float a[UNROLL], d[UNROLL];
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            a[u] = i < hidden ? __bfloat162float(hr[i]) : 0.f;
+            d[u] = i < hidden ? __bfloat162float(dr[i]) : 0.f;
+        }
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            if (i < hidden) {
+                const __nv_bfloat16 s = __float2bfloat16(a[u] + d[u]);
+                hr[i] = s;  // the same thread reads this element again below
+                const float v = __bfloat162float(s);
+                sum += v * v;
+            }
+        }
     }
     partial[threadIdx.x] = sum;
     __syncthreads();
@@ -63,8 +102,21 @@ extern "C" __global__ void add_rmsnorm_bf16(__nv_bfloat16* __restrict__ h,
     }
     const float inv = rsqrtf(partial[0] / static_cast<float>(hidden) + eps);
 
-    for (int i = threadIdx.x; i < hidden; i += blockDim.x) {
-        const float normalised = __bfloat162float(__float2bfloat16(__bfloat162float(hr[i]) * inv));
-        yr[i] = __float2bfloat16(__bfloat162float(w[i]) * normalised);
+    for (int base = threadIdx.x; base < hidden; base += blockDim.x * UNROLL) {
+        float xv[UNROLL], wv[UNROLL];
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            xv[u] = i < hidden ? __bfloat162float(hr[i]) : 0.f;
+            wv[u] = i < hidden ? __bfloat162float(w[i]) : 0.f;
+        }
+#pragma unroll
+        for (int u = 0; u < UNROLL; ++u) {
+            const int i = base + u * blockDim.x;
+            if (i < hidden) {
+                const float normalised = __bfloat162float(__float2bfloat16(xv[u] * inv));
+                yr[i] = __float2bfloat16(wv[u] * normalised);
+            }
+        }
     }
 }

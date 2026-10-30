@@ -1,6 +1,6 @@
 {
   "source": "rmsnorm.cu",
-  "source_sha256": "9aa0a780db31dea504ecf6615d138cacea9d1024d7e108884b8922b013fe74a5",
+  "source_sha256": "57b27e2ae1a3e416671ad89d4e864d72b78ee7edfea138339a8f59acda6f1deb",
   "nvcc": "release 12.4, V12.4.131",
   "flags": "-fatbin -O3 -gencode arch=compute_80,code=compute_80 -gencode arch=compute_90,code=sm_90"
 }
