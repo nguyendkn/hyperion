@@ -34,7 +34,7 @@ impl Manifest {
                 field(&mut h, &(*dim as u64).to_le_bytes());
             }
         }
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        h.finalize_hex()
     }
 
     /// 64 lowercase hex digits identifying everything a cached block depends on: the payload hashes,
@@ -57,6 +57,6 @@ impl Manifest {
         };
         field(&mut h, format.as_bytes());
         field(&mut h, self.model_config_hash().as_bytes());
-        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        h.finalize_hex()
     }
 }
