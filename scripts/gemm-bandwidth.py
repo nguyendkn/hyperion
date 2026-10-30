@@ -11,8 +11,8 @@ head) as GB/s and as a percentage of the device's peak, taking the median over t
 
 Which kernels are GEMMs: everything in the step that is not one of Hyperion's own kernels (the names below), so the
 cuBLAS and cuBLASLt kernels whatever their generated names. A step starts at the embedding kernel. The number of
-GEMMs per step tells the layout: `7 * layers + 1` is the separate Q, K, V, gate, up projections, `4 * layers + 1`
-the fused ones (QKV and gate/up concatenated). Steps with another count (a prefill, a partial step) are skipped.
+GEMMs per step tells the layout: `7 * layers + 1` is the separate Q, K, V, gate, up projections, `5 * layers + 1` Q, K and V
+concatenated, `4 * layers + 1` QKV and gate/up concatenated. Steps with another count (a prefill, a partial step) are skipped.
 """
 
 from __future__ import annotations
@@ -34,15 +34,19 @@ MODELS = {
 }
 
 
-def sites(d: dict, fused: bool) -> list[tuple[str, int]]:
-    """The GEMMs of one layer in launch order as (name, weight bytes), bf16 weights."""
+LAYOUTS = ("separate", "qkv", "fused")  # 7, 5 and 4 GEMMs per layer
+
+
+def sites(d: dict, layout: str | bool) -> list[tuple[str, int]]:
+    """The GEMMs of one layer in launch order as (name, weight bytes), bf16 weights. `layout`: "separate" (Q, K, V, gate and up
+    each their own), "qkv" (Q, K, V concatenated), "fused" (QKV and gate/up concatenated); True and False mean "fused" and "separate"."""
+    layout = {True: "fused", False: "separate"}.get(layout, layout)
     h, i = d["hidden"], d["intermediate"]
     q, kv = d["heads"] * d["head_dim"], d["kv_heads"] * d["head_dim"]
     bytes_of = lambda out, inn: out * inn * 2  # noqa: E731
-    if fused:
-        return [("qkv", bytes_of(q + 2 * kv, h)), ("o_proj", bytes_of(h, q)), ("gate_up", bytes_of(2 * i, h)), ("down", bytes_of(h, i))]
-    return [("q", bytes_of(q, h)), ("k", bytes_of(kv, h)), ("v", bytes_of(kv, h)), ("o_proj", bytes_of(h, q)),
-            ("gate", bytes_of(i, h)), ("up", bytes_of(i, h)), ("down", bytes_of(h, i))]
+    attention = [("qkv", bytes_of(q + 2 * kv, h))] if layout in ("qkv", "fused") else [("q", bytes_of(q, h)), ("k", bytes_of(kv, h)), ("v", bytes_of(kv, h))]
+    mlp = [("gate_up", bytes_of(2 * i, h))] if layout == "fused" else [("gate", bytes_of(i, h)), ("up", bytes_of(i, h))]
+    return attention + [("o_proj", bytes_of(h, q))] + mlp + [("down", bytes_of(h, i))]
 
 
 def read_kernels(path: str) -> list[tuple[str, int]]:
@@ -66,9 +70,9 @@ def steps(kernels: list[tuple[str, int]]) -> list[list[tuple[str, int]]]:
 
 def analyse(kernels: list[tuple[str, int]], dims: dict, peak_gbps: float, skip: int = 3) -> tuple[str, list[tuple[str, int, float, float, float, int]]]:
     layers = dims["layers"]
-    per_layout = {7 * layers + 1: False, 4 * layers + 1: True}
+    per_layout = {len(sites(dims, layout)) * layers + 1: layout for layout in LAYOUTS}
     seen: dict[int, int] = {}
-    usable: dict[bool, list[list[int]]] = {False: [], True: []}
+    usable: dict[str, list[list[int]]] = {layout: [] for layout in LAYOUTS}
     for step in steps(kernels)[skip:]:
         gemms = [duration for name, duration in step if not OWN_KERNELS.match(name)]
         seen[len(gemms)] = seen.get(len(gemms), 0) + 1
@@ -81,12 +85,11 @@ def analyse(kernels: list[tuple[str, int]], dims: dict, peak_gbps: float, skip: 
             "`nsys stats --report cuda_gpu_kern_sum` and extend OWN_KERNELS or the layout table."
         )
     # A profile can hold a prefill (separate projections) next to many decode steps (fused ones): the layout with the most steps is the decode.
-    fused = len(usable[True]) >= len(usable[False])
-    layout = "fused" if fused else "separate"
-    layer_sites = sites(dims, fused)
+    layout = max(LAYOUTS, key=lambda name: (len(usable[name]), name == "fused"))
+    layer_sites = sites(dims, layout)
     by_site: dict[str, list[float]] = {}
     order: list[str] = []
-    for gemms in usable[fused]:
+    for gemms in usable[layout]:
         for index, duration in enumerate(gemms[:-1]):
             name, _ = layer_sites[index % len(layer_sites)]
             by_site.setdefault(name, []).append(duration)

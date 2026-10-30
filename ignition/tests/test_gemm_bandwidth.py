@@ -18,7 +18,7 @@ spec.loader.exec_module(tool)
 TINY = dict(layers=2, hidden=64, intermediate=128, heads=4, kv_heads=2, head_dim=16, vocab=256)
 
 
-def write_profile(path: Path, steps: int, fused: bool, gemm_us: dict[str, float]) -> None:
+def write_profile(path: Path, steps: int, fused: bool | str, gemm_us: dict[str, float]) -> None:
     """A profile of `steps` decode steps: embedding, per layer the own kernels between cuBLAS-named GEMMs, argmax."""
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT)")
@@ -55,12 +55,12 @@ TIMES = {"qkv": 4.0, "o_proj": 2.0, "gate_up": 8.0, "down": 4.0, "lm_head": 6.0,
          "q": 2.0, "k": 1.0, "v": 1.0, "gate": 4.0, "up": 4.0}
 
 
-@pytest.mark.parametrize("fused", [True, False])
+@pytest.mark.parametrize("fused", ["fused", "qkv", "separate"])
 def test_bandwidth_per_call_site_is_weight_bytes_over_median_time(tmp_path, fused):
     path = tmp_path / "decode.sqlite"
     write_profile(path, steps=8, fused=fused, gemm_us=TIMES)
     layout, rows = tool.analyse(tool.read_kernels(str(path)), TINY, peak_gbps=1000.0)
-    assert layout == ("fused" if fused else "separate")
+    assert layout == fused
     by_name = {name: (nbytes, micros, gbps, percent, count) for name, nbytes, micros, gbps, percent, count in rows}
     for site, nbytes in tool.sites(TINY, fused) + [("lm_head", TINY["vocab"] * TINY["hidden"] * 2)]:
         got_bytes, micros, gbps, percent, count = by_name[site]
