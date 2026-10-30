@@ -14,7 +14,7 @@ use anyhow::{anyhow, Context, Result};
 
 use std::ffi::c_void;
 
-use crate::cuda::{Cublas, CudaDevice, DeviceWeights, KernelModule};
+use crate::cuda::{Cublas, CudaDevice, DeviceWeights, Group, KernelModule};
 use super::forward::Qwen2Dims;
 use super::session::Session;
 use crate::sampling::SamplingConfig;
@@ -39,6 +39,21 @@ pub struct HopperBackend {
     /// Set by a verification run to load a package that needs QK-norm before that path is verified (`QK_NORM_VERIFIED`).
     allow_qk_norm: std::sync::atomic::AtomicBool,
     pub(super) device: Mutex<CudaDevice>,
+}
+
+/// The weight groups the decode step reads as one matrix: per layer `qkv` (Q, K, V rows, and their biases when the model has
+/// them) and `gate_up`. Names are the manifest's tensor names.
+pub(super) fn fused_groups(d: &Qwen2Dims) -> Vec<Group> {
+    let mut groups = Vec::with_capacity(3 * d.layers);
+    for l in 0..d.layers {
+        let n = |part: &str| format!("layers.{l}.{part}");
+        groups.push(Group { name: n("qkv.weight"), members: ["q_proj", "k_proj", "v_proj"].iter().map(|p| n(&format!("self_attn.{p}.weight"))).collect() });
+        if d.qkv_bias {
+            groups.push(Group { name: n("qkv.bias"), members: ["q_proj", "k_proj", "v_proj"].iter().map(|p| n(&format!("self_attn.{p}.bias"))).collect() });
+        }
+        groups.push(Group { name: n("gate_up.weight"), members: ["gate_proj", "up_proj"].iter().map(|p| n(&format!("mlp.{p}.weight"))).collect() });
+    }
+    groups
 }
 
 impl HopperBackend {
@@ -217,7 +232,10 @@ impl ComputeBackend for HopperBackend {
         if let Some(mut old) = self.session.lock().expect("session mutex poisoned").take() {
             old.free(&mut dev);
         }
-        let uploaded = DeviceWeights::upload(&mut dev, &files, &plans)?;
+        // The fused projections of a decode step (Q|K|V and gate|up) are read from one matrix each: the tensors are placed
+        // back to back in one allocation as they are uploaded, so there is no second copy of any weight.
+        let groups = fused_groups(&runtime.0);
+        let uploaded = DeviceWeights::upload_grouped(&mut dev, &files, &plans, &groups)?;
         {
             let mut slot = self.weights.lock().expect("weights mutex poisoned");
             if let Some(mut old) = slot.replace(uploaded) {
@@ -280,5 +298,32 @@ impl ComputeBackend for HopperBackend {
             weights.free(&mut dev)?;
         }
         dev.teardown_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dims(qkv_bias: bool) -> Qwen2Dims {
+        Qwen2Dims { layers: 2, hidden: 64, intermediate: 128, heads: 4, kv_heads: 2, head_dim: 16, vocab: 128, rope_theta: 1e4, rms_eps: 1e-6, tied_head: false, qkv_bias, qk_norm: false }
+    }
+
+    #[test]
+    fn each_layer_fuses_qkv_and_gate_up_in_the_order_the_projections_read_them() {
+        let groups = fused_groups(&dims(true));
+        assert_eq!(groups.len(), 6, "weights, bias and gate/up for two layers");
+        let first = &groups[0];
+        assert_eq!(first.name, "layers.0.qkv.weight");
+        assert_eq!(first.members, ["layers.0.self_attn.q_proj.weight", "layers.0.self_attn.k_proj.weight", "layers.0.self_attn.v_proj.weight"]);
+        assert_eq!(groups[1].members[2], "layers.0.self_attn.v_proj.bias");
+        assert_eq!(groups[2].members, ["layers.0.mlp.gate_proj.weight", "layers.0.mlp.up_proj.weight"], "gate first, then up: the SwiGLU reads them in that order");
+    }
+
+    #[test]
+    fn a_model_without_biases_has_no_bias_group() {
+        let groups = fused_groups(&dims(false));
+        assert_eq!(groups.len(), 4);
+        assert!(groups.iter().all(|g| !g.name.ends_with("qkv.bias")));
     }
 }

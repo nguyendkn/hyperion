@@ -33,4 +33,4 @@ pub use device::CudaDevice;
 pub use module::{Kernel, KernelModule};
 pub use ffi::eval_cuda;
 pub use graph::GraphExec;
-pub use weights::DeviceWeights;
+pub use weights::{DeviceWeights, Group};

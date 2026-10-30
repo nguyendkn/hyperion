@@ -177,8 +177,8 @@ fn session_bytes(d: &Qwen2Dims, splits: usize, chunk: usize) -> (usize, usize) {
         + 2 * d.head_dim * bf // cos, sin
         + d.layers * 2 * kv_dim * bf; // K and V cache
     let qkv_dim = q_dim + 2 * kv_dim;
-    // The concatenated copies of the weights a decode step reads, and the buffer it writes.
-    let fused = d.layers * (qkv_dim * d.hidden * bf + qkv_dim * bf + 2 * d.intermediate * d.hidden * bf) + (qkv_dim + 2 * d.intermediate) * bf;
+    // The buffers a decode step writes its fused projections to (the fused weights themselves are the weights, uploaded in place).
+    let fused = (qkv_dim + 2 * d.intermediate) * bf;
     let fixed = chunk * per_chunk_row + fused + d.vocab * 4 + d.heads * splits * (d.head_dim + 2) * 4 + 4 + 4 + CUBLAS_WORKSPACE_BYTES;
     (fixed, per_token)
 }
@@ -350,22 +350,12 @@ impl Session {
             let mut layers = Vec::with_capacity(d.layers);
             for l in 0..d.layers {
                 let n = |part: &str| format!("layers.{l}.{part}");
-                let (qkv_dim, hidden_bytes) = (q_dim + 2 * kv_dim, hidden * bf);
-                let qkv_w = alloc(dev, qkv_dim * hidden_bytes)?;
-                // The biases exist only for a model that has them (Qwen2); 0 means "no bias" to every launch below.
-                let qkv_b = if d.qkv_bias { alloc(dev, qkv_dim * bf)? } else { 0 };
-                // Row-major [out, hidden] matrices stack by concatenating their bytes.
-                let mut at = (0usize, 0usize);
-                for (part, rows) in [("q_proj", q_dim), ("k_proj", kv_dim), ("v_proj", kv_dim)] {
-                    dev.dtod_async(qkv_w + at.0 as u64, ptr(&n(&format!("self_attn.{part}.weight")))?, rows * hidden_bytes)?;
-                    if d.qkv_bias {
-                        dev.dtod_async(qkv_b + at.1 as u64, ptr(&n(&format!("self_attn.{part}.bias")))?, rows * bf)?;
-                    }
-                    at = (at.0 + rows * hidden_bytes, at.1 + rows * bf);
-                }
-                let gate_up = alloc(dev, 2 * d.intermediate * hidden_bytes)?;
-                dev.dtod_async(gate_up, ptr(&n("mlp.gate_proj.weight"))?, d.intermediate * hidden_bytes)?;
-                dev.dtod_async(gate_up + (d.intermediate * hidden_bytes) as u64, ptr(&n("mlp.up_proj.weight"))?, d.intermediate * hidden_bytes)?;
+                // The fused matrices were laid out by the upload (`fused_groups`): Q, K, V (and their biases) and gate, up sit back to
+                // back in one allocation each, and the separate tensors are views into them. The bias is 0 for a model without one.
+                let group = |name: &str| weights.group(&n(name)).map(|(p, _)| p).ok_or_else(|| anyhow!("fused weights {} were not laid out by the upload", n(name)));
+                let qkv_w = group("qkv.weight")?;
+                let qkv_b = if d.qkv_bias { group("qkv.bias")? } else { 0 };
+                let gate_up = group("gate_up.weight")?;
                 layers.push(LayerWeights {
                     qkv_w,
                     qkv_b,
@@ -749,8 +739,8 @@ mod tests {
         // KV alone is 28 layers x 2 x (4 x 128) x 2 bytes = 57 344 bytes per token; the RoPE tables and the token ring
         // add a few hundred. The activations are a fixed cost of the largest chunk, not of the context.
         assert!((57_344..58_500).contains(&per_token), "{per_token}");
-        // 1.4 GiB of chunk activations plus about 8.5 GiB of concatenated QKV and gate/up weight copies.
-        assert!(fixed > 8 << 30 && fixed < 12 << 30, "{fixed}");
+        // About 1.4 GiB of chunk activations: the fused weights are the weights themselves, not a second copy.
+        assert!(fixed > 800 << 20 && fixed < 3 << 30, "{fixed}");
         let free = (fixed as u64 + per_token as u64 * 1000) * 10 / 9 + 10; // room for about 1000 tokens
         let capacity = plan_capacity(&d, 131_072, free, 66).unwrap();
         assert!((990..=1010).contains(&capacity), "{capacity}");
@@ -768,7 +758,7 @@ mod tests {
         // The 7B weights take about 15.2 GB of an H100's 80, so well over 60 GB is free: the model's full 131 072 tokens fit.
         let (fixed, per_token) = session_bytes(&qwen2_7b(), 66, 4096);
         let total = fixed + per_token * 131_072;
-        assert!(total < 20 * (1 << 30), "7B session at 131072 tokens: {:.2} GiB", total as f64 / (1u64 << 30) as f64);
+        assert!(total < 12 * (1 << 30), "7B session at 131072 tokens: {:.2} GiB", total as f64 / (1u64 << 30) as f64);
         let (fixed, per_token) = session_bytes(&qwen2_half_b(), 66, 4096);
         assert!(fixed + per_token * 32_768 < 2 * (1 << 30));
     }
