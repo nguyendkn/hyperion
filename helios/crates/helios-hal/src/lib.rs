@@ -26,7 +26,7 @@ pub mod backend_factory;
 mod backends;
 
 #[cfg(feature = "sm90")]
-pub use backends::hopper_sm90::{DecodeMode, DecodeProfile, DecodeTiming, HopperBackend, KvCache, Qwen2Dims, UnsupportedModel};
+pub use backends::hopper_sm90::{DecodeMode, DecodeProfile, DecodeTiming, HopperBackend, KvCache, Qwen2Dims, PrefillError, UnsupportedModel};
 pub use backend_factory::{create_backend, BackendKind, CreatedBackend};
 pub use sampling::{sample, Rng, SamplingConfig};
 pub use traits::{ComputeBackend, DevicePointer, DynBackend, HardwareInfo, StopReason, TensorData};

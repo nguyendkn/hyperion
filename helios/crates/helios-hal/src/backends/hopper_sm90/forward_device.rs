@@ -18,7 +18,8 @@ use anyhow::{anyhow, Result};
 use super::backend::HopperBackend;
 use super::decode_profile::{DecodeProfile, DecodeTiming};
 use super::forward::Qwen2Dims;
-use super::session::Session;
+use super::prefill_plan::PrefillError;
+use super::session::{Session, Step};
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{Cublas, CudaDevice};
 use crate::sampling::{sample, Rng, SamplingConfig};
@@ -115,6 +116,40 @@ impl HopperBackend {
         self.run_generation(d, prompt, forced.len(), &[], &SamplingConfig::greedy(), &mut |_| {}, mode, Some(forced), Some(trace), None, None)
     }
 
+    /// Time the prefill of `prompt` (chunked, in `mode`): `(GPU milliseconds between two events, wall milliseconds)`. The
+    /// wall time is the time to first token less the sampling of that token.
+    pub fn time_prefill(&self, d: &Qwen2Dims, prompt: &[u32], mode: DecodeMode) -> Result<(f64, f64)> {
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+        if session.dims != *d {
+            return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
+        }
+        if prompt.len() > session.capacity {
+            return Err(PrefillError::ContextTooLong { requested: prompt.len(), capacity: session.capacity }.into());
+        }
+        let cublas = self.cublas.lock().expect("cublas mutex poisoned");
+        let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
+        let _no_new_gpu_work = dev.forbid_new_gpu_work();
+        session.prefill_timed(&dev, cublas, prompt, mode)
+    }
+
+    /// Logits of the last prompt token from the reference prefill: the whole prompt in one launch with the untiled
+    /// attention kernel, which the chunked prefill is tested against. At most one chunk (4096 tokens) long.
+    pub fn forward_prefill_logits_untiled_reference(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model_weights first"))?;
+        if session.dims != *d {
+            return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
+        }
+        let cublas = self.cublas.lock().expect("cublas mutex poisoned");
+        let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
+        let _no_new_gpu_work = dev.forbid_new_gpu_work();
+        session.prefill_untiled(&dev, cublas, prompt)?;
+        session.read_logits(&dev)
+    }
+
     /// Logits of the last prompt token through the device pipeline (prefill only); the
     /// verification entry point that is compared bit for bit with the host path.
     pub fn forward_prefill_logits_device(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
@@ -187,18 +222,9 @@ impl Session {
         }
         let total = prompt.len() + max_new;
         if total > self.capacity {
-            return Err(anyhow!("prompt + max_new = {total} exceeds the {} tokens of context this model was loaded with", self.capacity));
+            return Err(PrefillError::ContextTooLong { requested: total, capacity: self.capacity }.into());
         }
         let b = &self.b;
-
-        // One forward step over `ids` placed at `start..start + ids.len()`; returns the logits. A step
-        // after the first token is a decode step: the split-K kernels, position on the device.
-        let step = |ids: &[u32], start: usize| -> Result<Vec<f32>> {
-            self.upload(dev, ids, start)?;
-            self.launches(dev, cublas, ids.len(), start, start > 0, None)?;
-            dev.synchronize()?;
-            self.read_logits(dev)
-        };
 
         if trace.is_none() && profile.is_none() && sampling.is_greedy() {
             if max_new == 0 {
@@ -209,9 +235,7 @@ impl Session {
             let ring_base = prompt.len() - 1;
             // Prefill, then token 0 from its logits. The position buffer must hold the last
             // prompt position for the chain; wait for the prefill before overwriting it.
-            self.upload(dev, prompt, 0)?;
-            self.launches(dev, cublas, prompt.len(), 0, false, None)?;
-            dev.synchronize()?;
+            self.prefill(dev, cublas, prompt, mode)?;
             dev.htod(b.positions, &(ring_base as u32).to_le_bytes())?;
             dev.htod(b.ring_base, &(ring_base as u32).to_le_bytes())?;
             self.pick(dev)?;
@@ -234,7 +258,7 @@ impl Session {
                 match mode {
                     DecodeMode::Graph => self.chain_graph()?.launch(dev)?,
                     DecodeMode::Direct => {
-                        self.launches(dev, cublas, 1, 0, true, None)?;
+                        self.launches(dev, cublas, 1, Step::Decode, None)?;
                         self.pick(dev)?;
                     }
                 }
@@ -270,7 +294,8 @@ impl Session {
         }
 
         let mut rng = Rng::new(sampling.seed);
-        let mut logits = step(prompt, 0)?;
+        self.prefill(dev, cublas, prompt, mode)?;
+        let mut logits = self.read_logits(dev)?;
         if let Some(trace) = trace.as_mut() {
             trace.push(logits.clone());
         }
@@ -298,7 +323,7 @@ impl Session {
                 let marks = if timed && mode == DecodeMode::Direct { Some(RefCell::new(StepMarks::start(dev)?)) } else { None };
                 match mode {
                     DecodeMode::Graph => self.logits_graph()?.launch(dev)?,
-                    DecodeMode::Direct => self.launches(dev, cublas, 1, position, true, marks.as_ref())?,
+                    DecodeMode::Direct => self.launches(dev, cublas, 1, Step::Decode, marks.as_ref())?,
                 }
                 let t2 = Instant::now();
                 dev.synchronize()?;

@@ -409,3 +409,114 @@ extern "C" __global__ void attention_combine_bf16(const float* __restrict__ ws, 
     }
     out[(size_t)h * head_dim + d] = __float2bfloat16(acc / total);
 }
+
+// ---- Chunked prefill -------------------------------------------------------------------------
+// A prompt is processed in chunks of a fixed capacity (a power of two, 128 to 4096), one captured graph
+// per capacity. A chunk with fewer real rows than its capacity is padded: its padding rows run through
+// the same kernels, so what makes a graph valid for every chunk is that nothing here depends on a launch
+// argument that changes. Row t sits at absolute position positions[t]; *rows is the number of real rows.
+// Padding rows carry the last real position (a valid table row and cache row to read) and are never
+// written to the cache.
+
+// Append the chunk's K and V rows to the cache: row t goes to cache position positions[t]. One block per
+// row, threads loop over kv_dim. Rows at or beyond *rows are padding and write nothing.
+extern "C" __global__ void kv_append_chunk_bf16(bf16* __restrict__ k_cache, bf16* __restrict__ v_cache,
+                                                const bf16* __restrict__ k, const bf16* __restrict__ v,
+                                                const unsigned int* __restrict__ positions,
+                                                const int* __restrict__ rows, int kv_dim) {
+    const int t = blockIdx.x;
+    if (t >= *rows) return;
+    const size_t at = (size_t)positions[t] * kv_dim;
+    for (int i = threadIdx.x; i < kv_dim; i += blockDim.x) {
+        k_cache[at + i] = k[(size_t)t * kv_dim + i];
+        v_cache[at + i] = v[(size_t)t * kv_dim + i];
+    }
+}
+
+// Block-wide max / sum over exactly 128 threads (four warps). `red` has room for 4 floats. Every thread
+// gets the result; the trailing barrier lets the same buffer be reused at once.
+static __device__ __forceinline__ float block_max_128(float v, float* red) {
+    for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = v;
+    __syncthreads();
+    const float r = fmaxf(fmaxf(red[0], red[1]), fmaxf(red[2], red[3]));
+    __syncthreads();
+    return r;
+}
+
+static __device__ __forceinline__ float block_sum_128(float v, float* red) {
+    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    if ((threadIdx.x & 31) == 0) red[threadIdx.x >> 5] = v;
+    __syncthreads();
+    const float r = (red[0] + red[1]) + (red[2] + red[3]);
+    __syncthreads();
+    return r;
+}
+
+// Causal grouped-query attention of one chunk row for one head per block of 128 threads, over keys
+// 0..=positions[t], with an online softmax over tiles of 128 keys: shared memory is head_dim + 132
+// floats whatever the context length, which is what lifts the 8192 limit of attention_bf16. Scores,
+// softmax statistics and the weighted sum are f32; the output is rounded to bf16 once. head_dim must be a
+// multiple of 8 and at most 256 (the host admits 64 and 128). q is [rows, heads, head_dim]; the caches
+// are [positions, kv_heads, head_dim].
+extern "C" __global__ void attention_chunk_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
+                                                const bf16* __restrict__ v_cache, bf16* __restrict__ out,
+                                                const unsigned int* __restrict__ positions,
+                                                int heads, int kv_heads, int head_dim) {
+    extern __shared__ float shared[];
+    float* qs = shared;                // [head_dim]
+    float* p = shared + head_dim;      // [128]: scores, then weights, of the current tile
+    float* red = p + 128;              // [4]
+    const int t = blockIdx.x / heads;
+    const int h = blockIdx.x % heads;
+    const int kvh = h / (heads / kv_heads);
+    const int last = (int)positions[t];  // inclusive
+    const size_t row_stride = (size_t)kv_heads * head_dim;
+    const bf16* qrow = q + (size_t)blockIdx.x * head_dim;
+    for (int d = threadIdx.x; d < head_dim; d += blockDim.x) qs[d] = rd(qrow[d]);
+    __syncthreads();
+    const float scale = 1.f / sqrtf((float)head_dim);
+
+    float m = -INFINITY, l = 0.f;
+    float acc0 = 0.f, acc1 = 0.f;  // output dimensions threadIdx.x and threadIdx.x + 128
+    for (int base = 0; base <= last; base += 128) {
+        const int j = base + threadIdx.x;
+        float s = -INFINITY;
+        if (j <= last) {
+            const bf16* krow = k_cache + (size_t)j * row_stride + (size_t)kvh * head_dim;
+            float dot = 0.f;
+            for (int d = 0; d < head_dim; d += 8) {
+                const uint4 raw = *reinterpret_cast<const uint4*>(krow + d);
+                const bf16* kp = reinterpret_cast<const bf16*>(&raw);
+#pragma unroll
+                for (int e = 0; e < 8; ++e) dot += qs[d + e] * rd(kp[e]);
+            }
+            s = dot * scale;
+        }
+        const float tile_max = block_max_128(s, red);
+        const float m_new = fmaxf(m, tile_max);  // finite: key `base` is always valid
+        const float e = (j <= last) ? expf(s - m_new) : 0.f;
+        p[threadIdx.x] = e;
+        const float tile_sum = block_sum_128(e, red);  // also orders the writes to p
+        const float correction = expf(m - m_new);      // 0 on the first tile (m = -inf)
+        l = l * correction + tile_sum;
+        acc0 *= correction;
+        acc1 *= correction;
+        const int count = min(128, last - base + 1);
+        if (threadIdx.x < head_dim) {
+            for (int i = 0; i < count; ++i) {
+                acc0 += p[i] * rd(v_cache[(size_t)(base + i) * row_stride + (size_t)kvh * head_dim + threadIdx.x]);
+            }
+        }
+        if (threadIdx.x + 128 < head_dim) {
+            for (int i = 0; i < count; ++i) {
+                acc1 += p[i] * rd(v_cache[(size_t)(base + i) * row_stride + (size_t)kvh * head_dim + threadIdx.x + 128]);
+            }
+        }
+        __syncthreads();  // p is rewritten by the next tile
+        m = m_new;
+    }
+    bf16* orow = out + (size_t)blockIdx.x * head_dim;
+    if (threadIdx.x < head_dim) orow[threadIdx.x] = __float2bfloat16(acc0 / l);
+    if (threadIdx.x + 128 < head_dim) orow[threadIdx.x + 128] = __float2bfloat16(acc1 / l);
+}

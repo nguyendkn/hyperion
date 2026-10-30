@@ -22,5 +22,8 @@ mod session;
 
 pub use backend::HopperBackend;
 pub use forward::{KvCache, Qwen2Dims, UnsupportedModel};
+pub use prefill_plan::PrefillError;
+mod ops_chunk_attention;
+mod prefill_plan;
 pub use decode_profile::{DecodeProfile, DecodeTiming};
 pub use forward_device::DecodeMode;

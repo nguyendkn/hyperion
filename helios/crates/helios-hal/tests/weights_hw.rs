@@ -640,7 +640,7 @@ fn decode_time_vs_context() {
     let dims = qwen2_dims(&package);
     let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
-    for context in [5usize, 1024, 4096, 8000] {
+    for context in [5usize, 1024, 4096, 8000, 16000] {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
         let (direct, graph) = measure_modes(&backend, &dims, &prompt, SAMPLES);
         // GPU time per group over 32 steps at this context (direct, logits path).
@@ -838,7 +838,7 @@ fn long_context_decode_logits_match_prefill_logits() {
     let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
     let bound = 0.5f32;
-    for context in [5usize, 1024, 4096, 8000] {
+    for context in [5usize, 1024, 4096, 8000, 16000] {
         let prompt: Vec<u32> = (0..context).map(|i| seed[i % seed.len()]).collect();
         // trace[0]: prefill logits of the prompt; trace[1]: logits of one decode step that feeds the greedy token.
         let mut trace = Vec::new();
@@ -851,6 +851,157 @@ fn long_context_decode_logits_match_prefill_logits() {
         let argmax = |v: &[f32]| v.iter().enumerate().fold(0, |b, (i, x)| if *x > v[b] { i } else { b });
         println!("context {context:>5}: max |decode - prefill| logit diff {diff:.4} (bound {bound}); argmax decode {} prefill {}", argmax(&trace[1]), argmax(&prefill));
         assert!(diff <= bound, "context {context}: logit difference {diff} exceeds the declared bound {bound}");
+    }
+    backend.shutdown().unwrap();
+}
+
+/// The chunked prefill attention kernel against a float64 reference at context lengths from 1 to 32768, which the
+/// untiled kernel cannot reach (it stops at 8192). Same criteria as the split-K decode kernel, declared before the first
+/// run: `ulp` is one bf16 step at the largest reference output (`max|ref| / 128`), and the kernel passes at a length when
+/// its worst error against the reference is at most `2 * ulp`; five launches on the same input must give identical bits.
+/// The query rows are the last 8 positions of the context (fewer when it is shorter), plus a padding row repeating the
+/// last position, which must equal the row it repeats.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn chunk_attention_matches_reference_and_is_repeatable() {
+    use helios_hal::reference::{attention, bf16_to_f32};
+    let (_, _, backend) = loaded_backend();
+    let worst = |a: &[u16], b: &[u16]| a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((bf16_to_f32(*x) - bf16_to_f32(*y)).abs()));
+    // Qwen2.5-0.5B (14 heads over 2 KV heads of 64 dims) and Qwen2.5-7B (28 over 4 of 128).
+    for (heads, kv_heads, d) in [(14usize, 2usize, 64usize), (28, 4, 128)] {
+        for len in [1usize, 5, 129, 1024, 4096, 8000, 8193, 32768] {
+            let rows = len.min(8);
+            let q_start = len - rows;
+            let q = noise(rows * heads * d, len as u32 + 1, 2.0);
+            let k = noise(len * kv_heads * d, len as u32 + 2, 2.0);
+            let v = noise(len * kv_heads * d, len as u32 + 3, 3.0);
+            let reference = attention(&q, &k, &v, rows, len, heads, kv_heads, d, q_start);
+            let ulp = reference.iter().map(|x| bf16_to_f32(*x).abs()).fold(0.0f32, f32::max) / 128.0;
+            let positions: Vec<u32> = (q_start..len).map(|p| p as u32).collect();
+            let out = backend.attention_chunk_bf16(&q, &k, &v, &positions, len, heads, kv_heads, d).expect("chunk kernel");
+            let err = worst(&out, &reference);
+            for run in 1..5 {
+                let again = backend.attention_chunk_bf16(&q, &k, &v, &positions, len, heads, kv_heads, d).unwrap();
+                assert!(again == out, "{heads}x{kv_heads}x{d} len {len}: launch {run} differs from the first, bit for bit");
+            }
+            // A padding row: the last row's query again at the same position gives the same output.
+            let mut padded_q = q.clone();
+            padded_q.extend_from_slice(&q[(rows - 1) * heads * d..]);
+            let mut padded_positions = positions.clone();
+            padded_positions.push(*positions.last().unwrap());
+            let padded = backend.attention_chunk_bf16(&padded_q, &k, &v, &padded_positions, len, heads, kv_heads, d).unwrap();
+            assert!(padded[..rows * heads * d] == out[..] && padded[rows * heads * d..] == out[(rows - 1) * heads * d..], "padding row differs");
+            println!("heads {heads}/{kv_heads} d {d} len {len:>5}: err {err:.5}, 2 ulp {:.5}; 5 launches identical", 2.0 * ulp);
+            assert!(err <= 2.0 * ulp, "{heads}x{kv_heads}x{d} len {len}: error {err} exceeds 2 ulp {}", 2.0 * ulp);
+        }
+    }
+    backend.shutdown().unwrap();
+}
+
+/// The chunked prefill against the reference prefill (the whole prompt in one launch with the untiled kernel), on the
+/// loaded model, for prompts that fit one chunk: 1 and 127 and 129 tokens (the padding cases), 1000 and 4096. Both run
+/// the same kernels but the attention; the bound is the one declared for decode against prefill in this file, before the
+/// first run: max absolute logit difference <= 0.5. The argmax of both is printed.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn chunked_prefill_matches_the_untiled_reference() {
+    let package = package();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = seed_prompt_ids();
+    let (_, _, backend) = loaded_backend();
+    let bound = 0.5f32;
+    let argmax = |v: &[f32]| v.iter().enumerate().fold(0, |b, (i, x)| if *x > v[b] { i } else { b });
+    for len in [1usize, 127, 129, 1000, 4096] {
+        let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
+        let chunked = backend.forward_prefill_logits_device(&dims, &prompt).expect("chunked prefill");
+        let reference = backend.forward_prefill_logits_untiled_reference(&dims, &prompt).expect("untiled prefill");
+        let diff = chunked.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        println!("prompt {len:>5}: max |chunked - untiled| logit diff {diff:.4} (bound {bound}); argmax chunked {} untiled {}", argmax(&chunked), argmax(&reference));
+        assert!(diff <= bound, "prompt {len}: {diff} exceeds the declared bound {bound}");
+    }
+    backend.shutdown().unwrap();
+}
+
+/// The graph of each chunk capacity replays bit for bit what direct launches of the same chunk compute: the logits of
+/// prompts that use one chunk of each capacity (1, 129, 1000), a full chunk and a partial one (4097), several (9000) and
+/// the longest this model can hold (up to 16384 and the session capacity).
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn chunked_prefill_graph_equals_direct_bit_for_bit() {
+    use helios_hal::{DecodeMode, SamplingConfig};
+    let package = package();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = seed_prompt_ids();
+    let (_, _, backend) = loaded_backend();
+    let capacity = backend.context_capacity().expect("a session");
+    for len in [1usize, 129, 1000, 4096, 4097, 9000, 16384] {
+        if len + 1 > capacity {
+            println!("prompt {len}: skipped, the session holds {capacity} tokens");
+            continue;
+        }
+        let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
+        let mut direct = Vec::new();
+        let mut graph = Vec::new();
+        backend.generate_traced(&dims, &prompt, 1, &[], &SamplingConfig::greedy(), DecodeMode::Direct, Some(&mut direct)).unwrap();
+        backend.generate_traced(&dims, &prompt, 1, &[], &SamplingConfig::greedy(), DecodeMode::Graph, Some(&mut graph)).unwrap();
+        assert!(direct == graph, "prompt {len}: the graph's logits differ from direct launches");
+        println!("prompt {len:>5}: chunk graphs equal direct launches bit for bit");
+    }
+    backend.shutdown().unwrap();
+}
+
+/// A prompt longer than the old 8192-token limit runs end to end: prefill in chunks, then greedy decoding, with the graph
+/// and the direct path producing the same tokens, and the time to first token printed.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn a_prompt_beyond_8192_tokens_runs_end_to_end() {
+    use helios_hal::{DecodeMode, SamplingConfig};
+    let package = package();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = seed_prompt_ids();
+    let (_, _, backend) = loaded_backend();
+    let capacity = backend.context_capacity().expect("a session");
+    assert!(capacity > 8192, "the session holds {capacity} tokens");
+    let len = 20_000usize.min(capacity - 16);
+    let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
+    let mut tokens = Vec::new();
+    for mode in [DecodeMode::Direct, DecodeMode::Graph] {
+        let mut got = Vec::new();
+        backend.generate_mode(&dims, &prompt, 8, &[], &SamplingConfig::greedy(), mode, &mut |t| got.push(t)).expect("generation beyond 8192");
+        assert_eq!(got.len(), 8);
+        tokens.push(got);
+    }
+    println!("prompt {len}: tokens {:?}", tokens[0]);
+    assert_eq!(tokens[0], tokens[1], "graph and direct decode after a long chunked prefill");
+    backend.shutdown().unwrap();
+}
+
+/// Time to prefill a prompt (ms) by length, for direct launches and the chunk graphs: GPU milliseconds between two events
+/// around the whole prefill and the wall time (what a client waits before the first token), median [p10, p90] of 5 runs
+/// after one warm-up.
+#[test]
+#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
+fn prefill_time_vs_context() {
+    use helios_hal::DecodeMode;
+    let package = package();
+    let dims = qwen2_dims(&package);
+    let seed: Vec<u32> = seed_prompt_ids();
+    let (_, _, backend) = loaded_backend();
+    let capacity = backend.context_capacity().expect("a session");
+    for len in [1024usize, 4096, 8192, 16384] {
+        if len > capacity {
+            println!("prefill {len}: skipped, the session holds {capacity} tokens");
+            continue;
+        }
+        let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
+        let mut line = format!("prefill {len:>5} tokens:");
+        for (name, mode) in [("direct", DecodeMode::Direct), ("graph", DecodeMode::Graph)] {
+            backend.time_prefill(&dims, &prompt, mode).expect("warm-up");
+            let runs: Vec<(f64, f64)> = (0..5).map(|_| backend.time_prefill(&dims, &prompt, mode).expect("timed prefill")).collect();
+            let (gpu, wall) = (spread(runs.iter().map(|r| r.0).collect()), spread(runs.iter().map(|r| r.1).collect()));
+            line += &format!(" {name} gpu {gpu} wall {wall};");
+        }
+        println!("{line} (ms)");
     }
     backend.shutdown().unwrap();
 }
