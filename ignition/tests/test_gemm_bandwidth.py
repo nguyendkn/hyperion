@@ -93,3 +93,24 @@ def test_own_kernels_are_never_counted_as_gemms():
         assert tool.OWN_KERNELS.match(name), name
     for name in ["sm90_xmma_gemm_bf16bf16_bf16f32_f32_tn_n_tilesize64x64x64", "gemv2T_kernel_val", "cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x64_64x6_tn_align8", "void cublasLt::splitKreduce_kernel"]:
         assert not tool.OWN_KERNELS.match(name), name
+
+
+def test_a_prefill_with_separate_projections_next_to_many_fused_decode_steps_does_not_change_the_layout(tmp_path):
+    path = tmp_path / "decode.sqlite"
+    write_profile(path, steps=12, fused=True, gemm_us=TIMES)
+    db = sqlite3.connect(path)
+    # One extra piece with the separate-projection GEMM count (a prefill chunk plus its output head), appended at the end.
+    ids = {name: i for i, name in db.execute("SELECT id, value FROM StringIds")}
+    at = db.execute("SELECT MAX(end) FROM CUPTI_ACTIVITY_KIND_KERNEL").fetchone()[0] + 100
+    rows = [("embedding_gather_bf16", 2000)] + [("sm90_xmma_gemv_q", 9000)] * (7 * TINY["layers"] + 1)
+    for name, nanos in rows:
+        if name not in ids:
+            ids[name] = max(ids.values()) + 1
+            db.execute("INSERT INTO StringIds VALUES (?, ?)", (ids[name], name))
+        db.execute("INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?, ?, ?, ?)", (ids[name], ids[name], at, at + nanos))
+        at += nanos + 100
+    db.commit()
+    db.close()
+    layout, rows = tool.analyse(tool.read_kernels(str(path)), TINY, peak_gbps=1000.0)
+    assert layout == "fused"
+    assert {name for name, *_ in rows} == {"qkv", "o_proj", "gate_up", "down", "lm_head"}

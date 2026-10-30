@@ -67,20 +67,26 @@ def steps(kernels: list[tuple[str, int]]) -> list[list[tuple[str, int]]]:
 def analyse(kernels: list[tuple[str, int]], dims: dict, peak_gbps: float, skip: int = 3) -> tuple[str, list[tuple[str, int, float, float, float, int]]]:
     layers = dims["layers"]
     per_layout = {7 * layers + 1: False, 4 * layers + 1: True}
-    by_site: dict[str, list[float]] = {}
-    order: list[str] = []
-    layout = None
-    usable = 0
     seen: dict[int, int] = {}
+    usable: dict[bool, list[list[int]]] = {False: [], True: []}
     for step in steps(kernels)[skip:]:
         gemms = [duration for name, duration in step if not OWN_KERNELS.match(name)]
         seen[len(gemms)] = seen.get(len(gemms), 0) + 1
-        if len(gemms) not in per_layout:
-            continue
-        fused = per_layout[len(gemms)]
-        layout = "fused" if fused else "separate"
-        layer_sites = sites(dims, fused)
-        usable += 1
+        if len(gemms) in per_layout:
+            usable[per_layout[len(gemms)]].append(gemms)
+    if not any(usable.values()):
+        raise SystemExit(
+            f"no decode step with {sorted(per_layout)} GEMMs found (after skipping {skip} steps); GEMM kernels per step seen: {seen or 'no steps'}. "
+            "A library that splits a product over two kernels (a GEMM and a split-K reduction) changes the count: list the kernel names with "
+            "`nsys stats --report cuda_gpu_kern_sum` and extend OWN_KERNELS or the layout table."
+        )
+    # A profile can hold a prefill (separate projections) next to many decode steps (fused ones): the layout with the most steps is the decode.
+    fused = len(usable[True]) >= len(usable[False])
+    layout = "fused" if fused else "separate"
+    layer_sites = sites(dims, fused)
+    by_site: dict[str, list[float]] = {}
+    order: list[str] = []
+    for gemms in usable[fused]:
         for index, duration in enumerate(gemms[:-1]):
             name, _ = layer_sites[index % len(layer_sites)]
             by_site.setdefault(name, []).append(duration)
@@ -89,18 +95,11 @@ def analyse(kernels: list[tuple[str, int]], dims: dict, peak_gbps: float, skip: 
         by_site.setdefault("lm_head", []).append(gemms[-1])
         if "lm_head" not in order:
             order.append("lm_head")
-    if not usable:
-        raise SystemExit(
-            f"no decode step with {sorted(per_layout)} GEMMs found (after skipping {skip} steps); GEMM kernels per step seen: {seen or 'no steps'}. "
-            "A library that splits a product over two kernels (a GEMM and a split-K reduction) changes the count: list the kernel names with "
-            "`nsys stats --report cuda_gpu_kern_sum` and extend OWN_KERNELS or the layout table."
-        )
-    all_sites = {name: nbytes for name, nbytes in sites(dims, layout == "fused")}
+    all_sites = {name: nbytes for name, nbytes in layer_sites}
     all_sites["lm_head"] = dims["vocab"] * dims["hidden"] * 2
     result = []
     for name in order:
-        durations = by_site[name]
-        median_ns = statistics.median(durations)
+        median_ns = statistics.median(by_site[name])
         gbps = all_sites[name] / median_ns  # bytes per ns is GB/s
         count = layers if name != "lm_head" else 1
         result.append((name, all_sites[name], median_ns / 1000.0, gbps, 100.0 * gbps / peak_gbps, count))
