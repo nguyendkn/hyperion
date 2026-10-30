@@ -964,6 +964,88 @@ fn mma_attention_matches_reference_and_is_repeatable() {
     backend.shutdown().unwrap();
 }
 
+/// ADR 0002's rule for decision 17, declared before the first measurement: the page-major KV layout is adopted when decode attention
+/// at 8192 and at 32768 tokens of context is within 5 percent of layer-major pages on this GPU; otherwise pages stay layer-major.
+/// Qwen2.5-7B shapes (28 layers, 28 query heads over 4 KV heads, head_dim 128), 64-token pages placed by a seeded shuffle (not contiguous),
+/// one sweep = the split and combine kernels of all 28 layers, median of 30 sweeps after 3 warm-ups, CUDA events. The contiguous layout of
+/// today's decode step is timed as the reference. All three layouts must give the bit-identical attention output for layer 0.
+#[test]
+#[ignore = "needs an H100 (no weights)"]
+fn page_layout_microbenchmark() {
+    use helios_hal::PageLayout;
+    let backend = HopperBackend::new().expect("an H100 must be present");
+    backend.initialize_device().unwrap();
+    let (layers, heads, kv_heads, d) = (28usize, 28usize, 4usize, 128usize);
+    println!("BUILD revision={}", std::env::var("HYPERION_REVISION").unwrap_or_else(|_| "unknown".into()));
+    for ctx in [8192usize, 32768] {
+        let run = |layout| backend.bench_decode_attention_layout(layout, ctx, layers, heads, kv_heads, d, 30).expect("benchmark");
+        let contiguous = run(PageLayout::Contiguous);
+        let layer_major = run(PageLayout::LayerMajor);
+        let page_major = run(PageLayout::PageMajor);
+        assert!(layer_major.layer0_output == contiguous.layer0_output, "ctx {ctx}: layer-major pages differ from the contiguous buffer");
+        assert!(page_major.layer0_output == contiguous.layer0_output, "ctx {ctx}: page-major differs from the contiguous buffer");
+        let ratio = page_major.ms_per_sweep / layer_major.ms_per_sweep;
+        println!(
+            "context {ctx:>5}: contiguous {:.3} ms/sweep, layer-major pages {:.3}, page-major {:.3}; page-major / layer-major = {ratio:.4} ({} the 5% budget)",
+            contiguous.ms_per_sweep,
+            layer_major.ms_per_sweep,
+            page_major.ms_per_sweep,
+            if ratio <= 1.05 { "within" } else { "OUTSIDE" }
+        );
+    }
+    backend.shutdown().unwrap();
+}
+
+/// The memory items of ADR 0002's verification plan on the real driver: the allocation granule, the time to map physical memory into a
+/// reserved range per granule and per GiB, a request beyond the free memory answered with a typed error (never a panic), and the refusal
+/// of reserving or mapping while the device is serving (the "no new GPU work" rule).
+#[test]
+#[ignore = "needs an H100 (no weights)"]
+fn vmm_granule_map_time_and_refusals() {
+    use helios_hal::cuda::{CudaDevice, VmmRange};
+    let mut dev = CudaDevice::probe().expect("an H100 must be present");
+    let (min, recommended) = helios_hal::cuda::vmm::granularity(&dev).expect("granularity");
+    let (free_before, total) = dev.memory_info().unwrap();
+    println!("granule: minimum {min} bytes, recommended {recommended} bytes; {:.2} GiB free of {:.2} GiB", free_before as f64 / 2f64.powi(30), total as f64 / 2f64.powi(30));
+    let mut range = VmmRange::reserve(&dev, 8 << 30).expect("reserve 8 GiB of addresses");
+    let (free_reserved, _) = dev.memory_info().unwrap();
+    println!("reserved {} bytes of addresses at {:#x}; free memory changed by {} bytes (no physical memory is used)", range.reserved_bytes(), range.base(), free_before as i64 - free_reserved as i64);
+    assert!(free_before.abs_diff(free_reserved) < (64 << 20), "reserving must not consume physical memory");
+    let granule = range.granule();
+    let started = std::time::Instant::now();
+    let mut granules = 0usize;
+    while range.mapped_bytes() < (1 << 30) {
+        range.map(&dev, granule).expect("map one granule");
+        granules += 1;
+    }
+    let one_gib = started.elapsed();
+    println!("mapped {granules} granules ({} MiB) one by one in {one_gib:.2?}: {:.1} us per granule", range.mapped_bytes() >> 20, one_gib.as_secs_f64() * 1e6 / granules as f64);
+    let started = std::time::Instant::now();
+    range.map(&dev, 4 << 30).expect("map 4 GiB in one call");
+    println!("mapped 4 GiB in one call in {:.2?}", started.elapsed());
+    // Writable and readable through the mapped addresses.
+    dev.htod(range.base(), &[7u8; 256]).expect("write through the mapped range");
+    let mut back = [0u8; 256];
+    dev.dtoh(&mut back, range.base()).unwrap();
+    assert_eq!(back, [7u8; 256]);
+    // Asking for more than the device has is a typed error, not a crash.
+    let free_now = dev.memory_info().unwrap().0 as usize;
+    let mut greedy = VmmRange::reserve(&dev, free_now + (4 << 30)).expect("reserving addresses beyond the memory is fine");
+    let error = greedy.map(&dev, (free_now + (2 << 30)) / granule * granule).expect_err("more than the free memory must fail");
+    println!("a mapping beyond the free memory is refused: {error}");
+    // No new GPU work while serving.
+    let serving = dev.forbid_new_gpu_work();
+    let refused = VmmRange::reserve(&dev, 1 << 30).err().expect("reserving while serving is refused");
+    assert!(refused.to_string().contains("not allowed while serving"), "{refused}");
+    let refused = range.map(&dev, granule).err().expect("mapping while serving is refused");
+    assert!(refused.to_string().contains("not allowed while serving"), "{refused}");
+    drop(serving);
+    println!("reserve and map are refused while serving: {refused}");
+    drop(greedy);
+    drop(range);
+    dev.teardown().unwrap();
+}
+
 /// The chunked prefill against the reference prefill (the whole prompt in one launch with the untiled kernel), on the
 /// loaded model, for prompts that fit one chunk: 1 and 127 and 129 tokens (the padding cases), 1000 and 4096. Both run
 /// the same kernels but the attention; the bound is the one declared for decode against prefill in this file, before the

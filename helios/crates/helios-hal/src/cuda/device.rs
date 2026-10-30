@@ -121,6 +121,11 @@ impl CudaDevice {
 
     /// Format the probed capability as "sm_<major><minor>", matching the
     /// manifest's `target_arch` convention.
+    /// The driver's handle of this device (its ordinal), for calls that name a device.
+    pub fn ordinal(&self) -> i32 {
+        self.device
+    }
+
     pub fn compute_capability_string(&self) -> String {
         format!("sm_{}{}", self.cap_major, self.cap_minor)
     }

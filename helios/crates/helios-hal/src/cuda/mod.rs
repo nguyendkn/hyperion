@@ -16,6 +16,7 @@ pub mod loader;
 pub mod module;
 pub mod profile;
 pub mod sys;
+pub mod vmm;
 pub mod work_guard;
 pub mod weights;
 
@@ -33,4 +34,5 @@ pub use device::CudaDevice;
 pub use module::{Kernel, KernelModule};
 pub use ffi::eval_cuda;
 pub use graph::GraphExec;
+pub use vmm::VmmRange;
 pub use weights::{DeviceWeights, Group};

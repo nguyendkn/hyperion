@@ -32,6 +32,39 @@ pub const CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT: c_int = 16;
 pub const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: c_int = 75;
 pub const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: c_int = 76;
 pub const CU_STREAM_CAPTURE_MODE_THREAD_LOCAL: c_int = 1;
+pub const CU_MEM_ALLOCATION_TYPE_PINNED: c_int = 1;
+pub const CU_MEM_LOCATION_TYPE_DEVICE: c_int = 1;
+pub const CU_MEM_ALLOC_GRANULARITY_MINIMUM: c_int = 0;
+pub const CU_MEM_ALLOC_GRANULARITY_RECOMMENDED: c_int = 1;
+pub const CU_MEM_ACCESS_FLAGS_PROT_READWRITE: c_int = 3;
+
+/// `CUmemLocation`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CUmemLocation {
+    pub kind: c_int,
+    pub id: c_int,
+}
+
+/// `CUmemAllocationProp` (32 bytes): the type of allocation, its location and flags.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CUmemAllocationProp {
+    pub kind: c_int,
+    pub requested_handle_types: c_int,
+    pub location: CUmemLocation,
+    pub win32_handle_meta_data: *mut c_void,
+    /// `allocFlags`: compression type, GPUDirect RDMA capability, usage, 4 reserved bytes.
+    pub alloc_flags: [u8; 8],
+}
+
+/// `CUmemAccessDesc`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CUmemAccessDesc {
+    pub location: CUmemLocation,
+    pub flags: c_int,
+}
 
 #[cfg(windows)]
 const DRIVER_LIBRARIES: &[&str] = &["nvcuda.dll"];
@@ -110,6 +143,14 @@ driver_api! {
     cuMemAlloc_v2(pointer: *mut CUdeviceptr, bytes: usize);
     cuMemFree_v2(pointer: CUdeviceptr);
     cuMemGetInfo_v2(free: *mut usize, total: *mut usize);
+    cuMemGetAllocationGranularity(granularity: *mut usize, prop: *const CUmemAllocationProp, option: c_int);
+    cuMemAddressReserve(pointer: *mut CUdeviceptr, size: usize, alignment: usize, address: CUdeviceptr, flags: c_ulonglong);
+    cuMemAddressFree(pointer: CUdeviceptr, size: usize);
+    cuMemCreate(handle: *mut c_ulonglong, size: usize, prop: *const CUmemAllocationProp, flags: c_ulonglong);
+    cuMemRelease(handle: c_ulonglong);
+    cuMemMap(pointer: CUdeviceptr, size: usize, offset: usize, handle: c_ulonglong, flags: c_ulonglong);
+    cuMemUnmap(pointer: CUdeviceptr, size: usize);
+    cuMemSetAccess(pointer: CUdeviceptr, size: usize, desc: *const CUmemAccessDesc, count: usize);
     cuMemcpyHtoD_v2(destination: CUdeviceptr, source: *const c_void, bytes: usize);
     cuMemcpyDtoH_v2(destination: *mut c_void, source: CUdeviceptr, bytes: usize);
     cuMemcpyDtoDAsync_v2(destination: CUdeviceptr, source: CUdeviceptr, bytes: usize, stream: CUstream);
@@ -137,6 +178,13 @@ driver_api! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_vmm_structs_have_the_sizes_the_driver_header_gives_them() {
+        assert_eq!(std::mem::size_of::<CUmemLocation>(), 8);
+        assert_eq!(std::mem::size_of::<CUmemAllocationProp>(), 32);
+        assert_eq!(std::mem::size_of::<CUmemAccessDesc>(), 12);
+    }
 
     #[test]
     fn without_a_driver_the_error_is_typed_and_calls_report_not_initialized() {

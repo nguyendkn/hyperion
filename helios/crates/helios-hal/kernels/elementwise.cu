@@ -221,11 +221,24 @@ static __device__ __forceinline__ void unpack8(const uint4 raw, float out[8]) {
     }
 }
 
-template <int HD>
+// Where the K (which = 0) or V (which = 1) row of position j and KV head g lives. LAYOUT 0: one contiguous [position][kv_head][head_dim]
+// buffer per layer (what the decode step uses today). LAYOUT 1 (layer-major pages): the same, cut into pages of 64 positions placed by
+// `table[position / 64]` inside this layer's K (or V) pool. LAYOUT 2 (page-major): one pool for every layer, a page holding
+// [layer][k|v][token][kv_head][head_dim], `base` being the pool for K and V alike. These variants exist to measure the cost of the page
+// layouts of ADR 0002 against each other; the arithmetic and its order are identical in all three.
+template <int HD, int LAYOUT>
+static __device__ __forceinline__ const bf16* kv_row(const bf16* base, const int* table, int layer, int layers, int kv_heads, int j, int g, int which) {
+    if (LAYOUT == 0) return base + ((size_t)j * kv_heads + g) * HD;
+    const int page = table[j >> 6], tok = j & 63;
+    if (LAYOUT == 1) return base + (((size_t)page * 64 + tok) * kv_heads + g) * HD;
+    return base + ((((size_t)page * layers + layer) * 2 + which) * 64 + tok) * (size_t)kv_heads * HD + (size_t)g * HD;
+}
+
+template <int HD, int LAYOUT>
 static __device__ __forceinline__ void attention_split_impl(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
                                                             const bf16* __restrict__ v_cache, float* __restrict__ ws,
                                                             const int* __restrict__ pos, int heads, int kv_heads,
-                                                            int splits) {
+                                                            int splits, const int* __restrict__ table, int layer, int layers) {
     constexpr int NV = HD / 8;            // 16-byte pieces per row
     constexpr int TPR = HD / 8;           // threads that together read one V row
     constexpr int ROWS = SPLIT_TILE / TPR;  // V rows read at the same time by the block
@@ -270,7 +283,7 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
 #pragma unroll
         for (int h = 0; h < MAX_GROUP; ++h) dots[h] = 0.f;
         if (threadIdx.x < n) {
-            const uint4* krow = reinterpret_cast<const uint4*>(k_cache + ((size_t)(base + threadIdx.x) * kv_heads + g) * HD);
+            const uint4* krow = reinterpret_cast<const uint4*>(kv_row<HD, LAYOUT>(k_cache, table, layer, layers, kv_heads, base + threadIdx.x, g, 0));
             uint4 raw[NV];
 #pragma unroll
             for (int v = 0; v < NV; ++v) raw[v] = krow[v];
@@ -327,7 +340,7 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
         // Weighted sum of V: each thread owns 8 dimensions of every ROWS-th position.
         for (int j = row; j < n; j += ROWS) {
             float f[8];
-            unpack8(*reinterpret_cast<const uint4*>(v_cache + ((size_t)(base + j) * kv_heads + g) * HD + col * 8), f);
+            unpack8(*reinterpret_cast<const uint4*>(kv_row<HD, LAYOUT>(v_cache, table, layer, layers, kv_heads, base + j, g, 1) + col * 8), f);
 #pragma unroll
             for (int h = 0; h < MAX_GROUP; ++h)
                 if (h < group) {
@@ -370,13 +383,13 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
 extern "C" __global__ void attention_split_64_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
                                                     const bf16* __restrict__ v_cache, float* __restrict__ ws,
                                                     const int* __restrict__ pos, int heads, int kv_heads, int splits) {
-    attention_split_impl<64>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits);
+    attention_split_impl<64, 0>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits, nullptr, 0, 0);
 }
 
 extern "C" __global__ void attention_split_128_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
                                                     const bf16* __restrict__ v_cache, float* __restrict__ ws,
                                                     const int* __restrict__ pos, int heads, int kv_heads, int splits) {
-    attention_split_impl<128>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits);
+    attention_split_impl<128, 0>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits, nullptr, 0, 0);
 }
 
 // Merge the splits of every query head: out = sum_s exp(m_s - M) acc_s / sum_s exp(m_s - M) l_s, in
@@ -698,3 +711,16 @@ extern "C" __global__ void attention_mma_128_bf16(const bf16* __restrict__ q, co
                                                   bf16* __restrict__ out, const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
     attention_mma_impl<128>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads);
 }
+
+// Page-table variants of the decode attention (see kv_row): the same kernel reading K and V through a device page table. For the layout
+// benchmark of ADR 0002 only; they are not used by the decode step.
+#define PAGED_ENTRY(HD, LAYOUT, NAME)                                                                                         \
+    extern "C" __global__ void NAME(const bf16* __restrict__ q, const bf16* __restrict__ k_cache, const bf16* __restrict__ v_cache, \
+                                    float* __restrict__ ws, const int* __restrict__ pos, int heads, int kv_heads, int splits,    \
+                                    const int* __restrict__ table, int layer, int layers) {                                      \
+        attention_split_impl<HD, LAYOUT>(q, k_cache, v_cache, ws, pos, heads, kv_heads, splits, table, layer, layers);          \
+    }
+PAGED_ENTRY(64, 1, attention_split_paged_lm_64_bf16)
+PAGED_ENTRY(128, 1, attention_split_paged_lm_128_bf16)
+PAGED_ENTRY(64, 2, attention_split_paged_pm_64_bf16)
+PAGED_ENTRY(128, 2, attention_split_paged_pm_128_bf16)
