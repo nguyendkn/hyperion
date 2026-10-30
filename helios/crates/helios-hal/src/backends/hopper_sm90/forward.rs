@@ -31,7 +31,16 @@ pub struct Qwen2Dims {
     /// `tie_word_embeddings`: the output head is the embedding matrix. When false the model has its
     /// own `lm_head.weight` (Qwen2.5-7B and larger).
     pub tied_head: bool,
+    /// Q, K and V have a bias (Qwen2); Qwen3 has none.
+    pub qkv_bias: bool,
+    /// Q and K are RMS-normalised per head before RoPE (Qwen3).
+    pub qk_norm: bool,
 }
+
+/// Whether the QK-norm forward path has passed an oracle comparison on a GPU. Until it has, a package that needs it is
+/// refused with [`UnsupportedModel::QkNorm`]; a verification run can opt in with
+/// [`HopperBackend::allow_unverified_qk_norm`](super::HopperBackend::allow_unverified_qk_norm).
+pub const QK_NORM_VERIFIED: bool = false;
 
 /// Per-layer K/V history (after RoPE) of one sequence, `[len, kv_heads, head_dim]` bf16 bits.
 /// Prefill fills it, every decode step appends one position.
@@ -69,11 +78,13 @@ impl Qwen2Dims {
     /// variant of an operation the forward pass does not implement is refused with a typed
     /// [`UnsupportedModel`]: nothing is guessed and nothing is read from files beside the package.
     pub fn from_manifest(model: &ModelConfig) -> std::result::Result<Self, UnsupportedModel> {
-        if model.qk_norm {
+        Self::from_manifest_allowing(model, QK_NORM_VERIFIED)
+    }
+
+    /// [`Self::from_manifest`], with QK-norm accepted when `allow_qk_norm` is true (a verification run of that path).
+    pub fn from_manifest_allowing(model: &ModelConfig, allow_qk_norm: bool) -> std::result::Result<Self, UnsupportedModel> {
+        if model.qk_norm && !allow_qk_norm {
             return Err(UnsupportedModel::QkNorm);
-        }
-        if !model.qkv_bias {
-            return Err(UnsupportedModel::NoQkvBias);
         }
         let default_scale = 1.0 / f64::from(model.head_dim).sqrt();
         if (model.effective_attention_scale() - default_scale).abs() > 1e-12 {
@@ -92,6 +103,8 @@ impl Qwen2Dims {
             rope_theta: model.rope_theta,
             rms_eps: model.rms_norm_eps as f32,
             tied_head: model.tie_word_embeddings,
+            qkv_bias: model.qkv_bias,
+            qk_norm: model.qk_norm,
         })
     }
 }
@@ -102,8 +115,6 @@ impl Qwen2Dims {
 pub enum UnsupportedModel {
     #[error("the model normalises Q and K per head (qk_norm): the sm90 forward pass does not implement it yet")]
     QkNorm,
-    #[error("the model has no bias on the Q, K and V projections: the sm90 forward pass always applies one")]
-    NoQkvBias,
     #[error("the model's attention scale is {scale}, the sm90 kernels implement 1/sqrt(head_dim) = {expected}")]
     AttentionScale { scale: f64, expected: f64 },
 }
@@ -273,9 +284,14 @@ mod tests {
         let mut model = untied();
         model.qk_norm = true;
         assert_eq!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::QkNorm));
+        // A model without Q/K/V biases (Qwen3) is fine; its QK-norm is what is refused until it is verified.
         let mut model = untied();
         model.qkv_bias = false;
-        assert_eq!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::NoQkvBias));
+        assert!(Qwen2Dims::from_manifest(&model).is_ok());
+        model.qk_norm = true;
+        assert_eq!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::QkNorm));
+        let dims = Qwen2Dims::from_manifest_allowing(&model, true).expect("a verification run may opt in");
+        assert!(dims.qk_norm && !dims.qkv_bias);
         let mut model = untied();
         model.attention_scale = Some(0.25);
         assert!(matches!(Qwen2Dims::from_manifest(&model), Err(UnsupportedModel::AttentionScale { .. })));

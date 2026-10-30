@@ -22,7 +22,13 @@ use hyperion_specification::Manifest;
 fn qwen2_dims(package: &std::path::Path) -> helios_hal::Qwen2Dims {
     let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap())
         .unwrap_or_else(|e| panic!("manifest of {}: {e}", package.display()));
-    helios_hal::Qwen2Dims::from_manifest(&manifest.model).expect("a model the sm90 forward pass implements")
+    helios_hal::Qwen2Dims::from_manifest_allowing(&manifest.model, allow_unverified_qk_norm()).expect("a model the sm90 forward pass implements")
+}
+
+/// `HYPERION_ALLOW_UNVERIFIED_QK_NORM=1` lets a run load a package that needs QK-norm (Qwen3) before that path has passed an
+/// oracle comparison; it is the run that does the verifying.
+fn allow_unverified_qk_norm() -> bool {
+    std::env::var_os("HYPERION_ALLOW_UNVERIFIED_QK_NORM").is_some()
 }
 
 /// The prompt ids the timing tests repeat: the first prompt of the compact oracle when
@@ -201,9 +207,12 @@ fn loaded_backend() -> (PathBuf, hyperion_specification::v1::Manifest, HopperBac
     // The revision the pod script packaged (scripts/pod-lib.sh sets it), so a result names its build.
     println!("BUILD revision={}", std::env::var("HYPERION_REVISION").unwrap_or_else(|_| "unknown".into()));
     let package = package();
-    let Manifest::V1(manifest) =
-        serde_json::from_slice(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+    let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap())
+        .unwrap_or_else(|e| panic!("manifest of {}: {e}", package.display()));
     let backend = HopperBackend::new().expect("an H100 must be present");
+    if allow_unverified_qk_norm() {
+        backend.allow_unverified_qk_norm();
+    }
     let started = std::time::Instant::now();
     backend.load_model_weights(&package, &manifest).expect("upload");
     println!(

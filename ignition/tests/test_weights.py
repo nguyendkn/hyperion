@@ -152,7 +152,8 @@ def test_real_header_maps_every_tensor(model_id):
     cfg_dir = TESTDATA / "models" / model_id
     # The fixture check comes first: without the downloaded files this test skips visibly, it does not fail.
     header = model_header(model_id)
-    cfg = model_config_from_hf(cfg_dir, qkv_bias=True)
+    qwen3 = REGISTRY[model_id]["compiler"] == "qwen3"  # no QKV bias, per-head Q/K norm weights
+    cfg = model_config_from_hf(cfg_dir, qkv_bias=not qwen3, qk_norm=qwen3)
     entries = read_safetensors_header(header)
     layers = map_qwen2_layers(entries, cfg, tie_word_embeddings=cfg.tie_word_embeddings)
     assert len(layers) == len(entries)

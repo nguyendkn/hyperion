@@ -173,9 +173,44 @@ pub fn rmsnorm(x: &[u16], weight: &[u16], tokens: usize, hidden: usize, eps: f32
     y
 }
 
+/// Qwen3's QK-norm: RMSNorm over each head of `x` (`[tokens, heads, head_dim]`) with one weight vector of `head_dim`
+/// elements shared by every head and token; the same arithmetic as [`rmsnorm`] with one row per (token, head).
+pub fn qk_norm(x: &[u16], weight: &[u16], tokens: usize, heads: usize, head_dim: usize, eps: f32) -> Vec<u16> {
+    assert_eq!(x.len(), tokens * heads * head_dim, "input must be [tokens, heads, head_dim]");
+    rmsnorm(x, weight, tokens * heads, head_dim, eps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qk_norm_normalises_each_head_on_its_own() {
+        // Two tokens, two heads of 4 dimensions: scaling one head must not change the others, and each head's
+        // output has unit mean square (before the weight).
+        let values: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, -1.0, 0.5, 2.0, -3.0, 0.25, 0.5, 0.75, 1.0, 8.0, -8.0, 4.0, -4.0];
+        let x: Vec<u16> = values.iter().map(|v| f32_to_bf16(*v)).collect();
+        let ones = vec![f32_to_bf16(1.0); 4];
+        let y = qk_norm(&x, &ones, 2, 2, 4, 1e-6);
+        for head in 0..4 {
+            let row: Vec<f32> = y[head * 4..head * 4 + 4].iter().map(|b| bf16_to_f32(*b)).collect();
+            let mean_square = row.iter().map(|v| v * v).sum::<f32>() / 4.0;
+            assert!((mean_square - 1.0).abs() < 0.02, "head {head}: {mean_square}");
+        }
+        let mut scaled = x.clone();
+        for v in &mut scaled[..4] {
+            *v = f32_to_bf16(bf16_to_f32(*v) * 4.0);
+        }
+        let y2 = qk_norm(&scaled, &ones, 2, 2, 4, 1e-6);
+        assert_eq!(y[4..], y2[4..], "the other heads are untouched");
+        assert_eq!(y[..4], y2[..4], "RMSNorm is invariant to the scale of its own head (a power of two here)");
+        // The weight multiplies every head the same way.
+        let twos = vec![f32_to_bf16(2.0); 4];
+        let doubled = qk_norm(&x, &twos, 2, 2, 4, 1e-6);
+        for (a, b) in y.iter().zip(&doubled) {
+            assert_eq!(f32_to_bf16(bf16_to_f32(*a) * 2.0), *b);
+        }
+    }
 
     #[test]
     fn bf16_round_trips_values_that_fit_in_eight_bits_of_mantissa() {

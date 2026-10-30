@@ -36,6 +36,8 @@ pub struct HopperBackend {
     pub(super) weights: Mutex<Option<DeviceWeights>>,
     /// Model dimensions and the tokens that end a generation, taken from the manifest at load time.
     runtime: Mutex<Option<(Qwen2Dims, Vec<u32>)>>,
+    /// Set by a verification run to load a package that needs QK-norm before that path is verified (`QK_NORM_VERIFIED`).
+    allow_qk_norm: std::sync::atomic::AtomicBool,
     pub(super) device: Mutex<CudaDevice>,
 }
 
@@ -43,7 +45,13 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), device: Mutex::new(CudaDevice::probe()?) })
+    }
+
+    /// Let this backend load a package that needs QK-norm although that path has not been verified against an oracle yet
+    /// (`QK_NORM_VERIFIED`): for the run that does the verifying. Call it before `load_model_weights`.
+    pub fn allow_unverified_qk_norm(&self) {
+        self.allow_qk_norm.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Copy one uploaded tensor back to the host. A verification aid for hardware
@@ -201,7 +209,8 @@ impl ComputeBackend for HopperBackend {
 
         // Everything the forward pass needs to know about the model is in the signed manifest; nothing is
         // read from files beside the package. A model the pass does not implement is a typed refusal.
-        let runtime = (Qwen2Dims::from_manifest(&manifest.model)?, manifest.generation.eos_token_ids.clone());
+        let allow_qk_norm = self.allow_qk_norm.load(std::sync::atomic::Ordering::Relaxed);
+        let runtime = (Qwen2Dims::from_manifest_allowing(&manifest.model, allow_qk_norm || super::forward::QK_NORM_VERIFIED)?, manifest.generation.eos_token_ids.clone());
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
         // A model loaded before is released first (its session refers to its weights).

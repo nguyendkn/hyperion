@@ -96,6 +96,9 @@ pub(super) struct LayerWeights {
     /// Q, K and V weight rows (and biases) concatenated at load: one matrix multiply serves a decode step.
     qkv_w: u64,
     qkv_b: u64,
+    /// Per-head RMSNorm weights of Q and K (Qwen3); 0 when the model has none.
+    q_norm: u64,
+    k_norm: u64,
     /// Gate and up weight rows concatenated at load: one matrix multiply serves the MLP input of a decode step.
     gate_up: u64,
     o_w: u64,
@@ -349,12 +352,15 @@ impl Session {
                 let n = |part: &str| format!("layers.{l}.{part}");
                 let (qkv_dim, hidden_bytes) = (q_dim + 2 * kv_dim, hidden * bf);
                 let qkv_w = alloc(dev, qkv_dim * hidden_bytes)?;
-                let qkv_b = alloc(dev, qkv_dim * bf)?;
+                // The biases exist only for a model that has them (Qwen2); 0 means "no bias" to every launch below.
+                let qkv_b = if d.qkv_bias { alloc(dev, qkv_dim * bf)? } else { 0 };
                 // Row-major [out, hidden] matrices stack by concatenating their bytes.
                 let mut at = (0usize, 0usize);
                 for (part, rows) in [("q_proj", q_dim), ("k_proj", kv_dim), ("v_proj", kv_dim)] {
                     dev.dtod_async(qkv_w + at.0 as u64, ptr(&n(&format!("self_attn.{part}.weight")))?, rows * hidden_bytes)?;
-                    dev.dtod_async(qkv_b + at.1 as u64, ptr(&n(&format!("self_attn.{part}.bias")))?, rows * bf)?;
+                    if d.qkv_bias {
+                        dev.dtod_async(qkv_b + at.1 as u64, ptr(&n(&format!("self_attn.{part}.bias")))?, rows * bf)?;
+                    }
                     at = (at.0 + rows * hidden_bytes, at.1 + rows * bf);
                 }
                 let gate_up = alloc(dev, 2 * d.intermediate * hidden_bytes)?;
@@ -366,11 +372,13 @@ impl Session {
                     gate_up,
                     input_norm: ptr(&n("input_layernorm.weight"))?,
                     q_w: ptr(&n("self_attn.q_proj.weight"))?,
-                    q_b: ptr(&n("self_attn.q_proj.bias"))?,
+                    q_norm: if d.qk_norm { ptr(&n("self_attn.q_norm.weight"))? } else { 0 },
+                    k_norm: if d.qk_norm { ptr(&n("self_attn.k_norm.weight"))? } else { 0 },
+                    q_b: if d.qkv_bias { ptr(&n("self_attn.q_proj.bias"))? } else { 0 },
                     k_w: ptr(&n("self_attn.k_proj.weight"))?,
-                    k_b: ptr(&n("self_attn.k_proj.bias"))?,
+                    k_b: if d.qkv_bias { ptr(&n("self_attn.k_proj.bias"))? } else { 0 },
                     v_w: ptr(&n("self_attn.v_proj.weight"))?,
-                    v_b: ptr(&n("self_attn.v_proj.bias"))?,
+                    v_b: if d.qkv_bias { ptr(&n("self_attn.v_proj.bias"))? } else { 0 },
                     o_w: ptr(&n("self_attn.o_proj.weight"))?,
                     post_norm: ptr(&n("post_attention_layernorm.weight"))?,
                     gate: ptr(&n("mlp.gate_proj.weight"))?,
@@ -511,6 +519,9 @@ impl Session {
         let norm = |input: u64, weight: u64, output: u64, rows: u32| {
             launch(dev, k.rmsnorm, rows, ROW_BLOCK, ROW_BLOCK * 4, &[Arg::Ptr(input), Arg::Ptr(weight), Arg::Ptr(output), Arg::Int(hidden_i), Arg::Float(d.rms_eps)])
         };
+        let norm_heads = |x: u64, weight: u64, rows: u32| {
+            launch(dev, k.rmsnorm, rows, ROW_BLOCK, ROW_BLOCK * 4, &[Arg::Ptr(x), Arg::Ptr(weight), Arg::Ptr(x), Arg::Int(hd_i), Arg::Float(d.rms_eps)])
+        };
         // h = bf16(h + delta), then x = RMSNorm(h) * weight: the residual add and the norm that follows it.
         let add_norm = |delta: u64, weight: u64| {
             launch(dev, k.add_rmsnorm, ti, ROW_BLOCK, ROW_BLOCK * 4, &[Arg::Ptr(b.h), Arg::Ptr(delta), Arg::Ptr(weight), Arg::Ptr(b.x), Arg::Int(hidden_i), Arg::Float(d.rms_eps)])
@@ -549,6 +560,12 @@ impl Session {
                 (b.q, b.k, b.v)
             };
             mark("qkv_proj")?;
+            if d.qk_norm {
+                // Per-head RMSNorm of Q and K before RoPE (Qwen3): the row norm kernel with head_dim as the row width, in place.
+                norm_heads(q_p, w.q_norm, ti * u32::try_from(heads)?)?;
+                norm_heads(k_p, w.k_norm, ti * u32::try_from(kv_heads)?)?;
+                mark("qk_norm")?;
+            }
             // RoPE in place: each thread owns a (i, i + half) pair, so reading and writing
             // the same buffer is safe.
             launch(dev, k.rope, ti * u32::try_from(heads)?, ROPE_BLOCK, 0, &[Arg::Ptr(q_p), Arg::Ptr(b.cos), Arg::Ptr(b.sin), Arg::Ptr(b.positions), Arg::Ptr(q_p), Arg::Int(heads_i), Arg::Int(hd_i)])?;
@@ -707,12 +724,12 @@ mod tests {
 
     /// Qwen2.5-7B as published: 28 layers, 28 heads, 4 KV heads, head_dim 128, MLP 18944, vocab 152064.
     fn qwen2_7b() -> Qwen2Dims {
-        Qwen2Dims { layers: 28, hidden: 3584, intermediate: 18944, heads: 28, kv_heads: 4, head_dim: 128, vocab: 152_064, rope_theta: 1e6, rms_eps: 1e-6, tied_head: false }
+        Qwen2Dims { layers: 28, hidden: 3584, intermediate: 18944, heads: 28, kv_heads: 4, head_dim: 128, vocab: 152_064, rope_theta: 1e6, rms_eps: 1e-6, tied_head: false, qkv_bias: true, qk_norm: false }
     }
 
     /// Qwen2.5-0.5B: 24 layers, 14 heads, 2 KV heads, head_dim 64, MLP 4864, vocab 151936.
     fn qwen2_half_b() -> Qwen2Dims {
-        Qwen2Dims { layers: 24, hidden: 896, intermediate: 4864, heads: 14, kv_heads: 2, head_dim: 64, vocab: 151_936, rope_theta: 1e6, rms_eps: 1e-6, tied_head: true }
+        Qwen2Dims { layers: 24, hidden: 896, intermediate: 4864, heads: 14, kv_heads: 2, head_dim: 64, vocab: 151_936, rope_theta: 1e6, rms_eps: 1e-6, tied_head: true, qkv_bias: true, qk_norm: false }
     }
 
     const GIB: u64 = 1 << 30;

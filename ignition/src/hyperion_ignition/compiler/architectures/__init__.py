@@ -5,4 +5,5 @@ line below."""
 
 from . import llama  # noqa: F401
 from . import qwen  # noqa: F401
+from . import qwen3  # noqa: F401
 from . import deepseek  # noqa: F401

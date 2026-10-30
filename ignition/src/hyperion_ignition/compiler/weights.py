@@ -175,7 +175,9 @@ def _read_sharded(source: Path, index: Path, hash_payloads: bool) -> Checkpoint:
 
 
 def _qwen2_expected(cfg: ModelConfig, tie_word_embeddings: bool) -> dict[str, tuple[int | None, ...]]:
-    """Expected HF tensor names -> shape with None for dims that depend on hidden size."""
+    """Expected HF tensor names -> shape with None for dims that depend on hidden size. The Qwen2 and Qwen3 decoders
+    differ in two optional groups, both stated by the manifest's `ModelConfig`: Q/K/V biases (`qkv_bias`) and the
+    per-head Q/K norm weights (`qk_norm`)."""
     q_rows = cfg.num_attention_heads * cfg.head_dim
     kv_rows = cfg.num_kv_heads * cfg.head_dim
     expected: dict[str, tuple[int | None, ...]] = {
@@ -188,16 +190,18 @@ def _qwen2_expected(cfg: ModelConfig, tie_word_embeddings: bool) -> dict[str, tu
             p + "input_layernorm.weight": (None,),
             p + "post_attention_layernorm.weight": (None,),
             p + "self_attn.q_proj.weight": (q_rows, None),
-            p + "self_attn.q_proj.bias": (q_rows,),
             p + "self_attn.k_proj.weight": (kv_rows, None),
-            p + "self_attn.k_proj.bias": (kv_rows,),
             p + "self_attn.v_proj.weight": (kv_rows, None),
-            p + "self_attn.v_proj.bias": (kv_rows,),
             p + "self_attn.o_proj.weight": (None, q_rows),
             p + "mlp.gate_proj.weight": (None, None),
             p + "mlp.up_proj.weight": (None, None),
             p + "mlp.down_proj.weight": (None, None),
         })
+        if cfg.qkv_bias:
+            expected.update({p + "self_attn.q_proj.bias": (q_rows,), p + "self_attn.k_proj.bias": (kv_rows,), p + "self_attn.v_proj.bias": (kv_rows,)})
+        if cfg.qk_norm:
+            # Qwen3 normalises Q and K per head with one weight vector of head_dim each.
+            expected.update({p + "self_attn.q_norm.weight": (cfg.head_dim,), p + "self_attn.k_norm.weight": (cfg.head_dim,)})
     if not tie_word_embeddings:
         expected["lm_head.weight"] = (cfg.vocab_size, None)
     return expected
@@ -212,6 +216,10 @@ def _graph_index(name: str, num_layers: int) -> int:
 
 def map_qwen2_layers(entries: dict[str, TensorEntry], cfg: ModelConfig, *, tie_word_embeddings: bool) -> list[LayerMap]:
     expected = _qwen2_expected(cfg, tie_word_embeddings)
+    if tie_word_embeddings and "lm_head.weight" in entries:
+        # A checkpoint with tied embeddings may still carry the output head as a second copy of the embedding matrix
+        # (Qwen3-0.6B does). It is mapped, its shape checked, and a runtime that ties the head simply does not read it.
+        expected["lm_head.weight"] = (cfg.vocab_size, None)
     missing = sorted(set(expected) - set(entries))
     if missing:
         raise ValueError(f"checkpoint is missing {len(missing)} expected tensor(s): {', '.join(missing[:5])}")
