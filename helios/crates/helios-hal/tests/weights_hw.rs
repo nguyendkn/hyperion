@@ -1003,7 +1003,7 @@ fn page_layout_microbenchmark() {
 #[ignore = "needs an H100 (no weights)"]
 fn vmm_granule_map_time_and_refusals() {
     use helios_hal::cuda::{CudaDevice, VmmRange};
-    let mut dev = CudaDevice::probe().expect("an H100 must be present");
+    let dev = CudaDevice::probe().expect("an H100 must be present");
     let (min, recommended) = helios_hal::cuda::vmm::granularity(&dev).expect("granularity");
     let (free_before, total) = dev.memory_info().unwrap();
     println!("granule: minimum {min} bytes, recommended {recommended} bytes; {:.2} GiB free of {:.2} GiB", free_before as f64 / 2f64.powi(30), total as f64 / 2f64.powi(30));

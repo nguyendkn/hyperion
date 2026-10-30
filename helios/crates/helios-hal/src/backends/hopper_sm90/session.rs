@@ -124,6 +124,8 @@ pub(super) struct Kernels {
     attention_combine: Kernel,
     /// Prefill attention on tensor cores (`attention_mma_{head_dim}_bf16`).
     attention_mma: Kernel,
+    /// The f32 SIMT chunk attention that preceded it, kept as a verification switch (`HYPERION_PREFILL_ATTENTION=reference`).
+    attention_chunk: Kernel,
     kv_append: Kernel,
     kv_append_chunk: Kernel,
     argmax: Kernel,
@@ -212,6 +214,8 @@ pub(super) struct Session {
     pub(super) capacity: usize,
     /// Largest prefill chunk: the row count the activation buffers were sized for.
     pub(super) chunk_rows: usize,
+    /// Verification switch: run the previous f32 chunk attention instead of the tensor-core kernel (`HYPERION_PREFILL_ATTENTION=reference`).
+    reference_prefill_attention: bool,
     kernels: Kernels,
     layers: Vec<LayerWeights>,
     embed: u64,
@@ -340,6 +344,7 @@ impl Session {
             attention_split: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, &format!("attention_split_{hd}_bf16"))?,
             attention_combine: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "attention_combine_bf16")?,
             attention_mma: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, &format!("attention_mma_{hd}_bf16"))?,
+            attention_chunk: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "attention_chunk_bf16")?,
             kv_append: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "kv_append_bf16")?,
             kv_append_chunk: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "kv_append_chunk_bf16")?,
             argmax: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "argmax_chain_bf16")?,
@@ -389,6 +394,7 @@ impl Session {
             dims: d,
             capacity,
             chunk_rows,
+            reference_prefill_attention: std::env::var("HYPERION_PREFILL_ATTENTION").is_ok_and(|v| v == "reference"),
             kernels,
             layers,
             embed,
@@ -589,6 +595,17 @@ impl Session {
             if chunk {
                 launch(dev, k.kv_append_chunk, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(k_p), Arg::Ptr(v_p), Arg::Ptr(b.positions), Arg::Ptr(b.rows), Arg::Int(i32::try_from(kv_dim)?)])?;
                 mark("kv_append")?;
+                if self.reference_prefill_attention {
+                    launch(
+                        dev,
+                        k.attention_chunk,
+                        ti * u32::try_from(heads)?,
+                        128,
+                        u32::try_from((hd + 128 + 4) * 4)?,
+                        &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(heads_i), Arg::Int(kv_heads_i), Arg::Int(hd_i)],
+                    )?;
+                    mark("attention")?;
+                } else {
                 // Tensor-core attention: one block per 64 (chunk row, query head) pairs of a KV head, all K/V tiles loaded once per group.
                 let (blocks, kv_rows) = mma_grid(t, heads, kv_heads).ok_or_else(|| anyhow!("{heads} heads do not divide over {kv_heads} KV heads"))?;
                 launch_grid(
@@ -600,6 +617,7 @@ impl Session {
                     &[Arg::Ptr(q_p), Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Int(i32::try_from(t)?), Arg::Int(heads_i), Arg::Int(kv_heads_i)],
                 )?;
                 mark("attention")?;
+                }
             } else if dynamic {
                 launch(dev, k.kv_append, grid_for(kv_dim)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(k_cache), Arg::Ptr(v_cache), Arg::Ptr(k_p), Arg::Ptr(v_p), Arg::Ptr(b.positions), Arg::Int(i32::try_from(kv_dim)?)])?;
                 mark("kv_append")?;
