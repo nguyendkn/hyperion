@@ -107,6 +107,8 @@ pub(super) struct LayerWeights {
 
 pub(super) struct Kernels {
     rmsnorm: Kernel,
+    /// `h += delta` followed by the RMSNorm of the new `h`, in one pass (bit-identical to `add` then `rmsnorm`).
+    add_rmsnorm: Kernel,
     embedding: Kernel,
     add: Kernel,
     swiglu: Kernel,
@@ -322,6 +324,7 @@ impl Session {
 
         let kernels = Kernels {
             rmsnorm: backend.kernel(dev, "rmsnorm", RMSNORM_IMAGE, "rmsnorm_bf16")?,
+            add_rmsnorm: backend.kernel(dev, "rmsnorm", RMSNORM_IMAGE, "add_rmsnorm_bf16")?,
             embedding: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "embedding_gather_bf16")?,
             add: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "add_bf16")?,
             swiglu: backend.kernel(dev, "elementwise", ELEMENTWISE_IMAGE, "swiglu_bf16")?,
@@ -508,6 +511,10 @@ impl Session {
         let norm = |input: u64, weight: u64, output: u64, rows: u32| {
             launch(dev, k.rmsnorm, rows, ROW_BLOCK, ROW_BLOCK * 4, &[Arg::Ptr(input), Arg::Ptr(weight), Arg::Ptr(output), Arg::Int(hidden_i), Arg::Float(d.rms_eps)])
         };
+        // h = bf16(h + delta), then x = RMSNorm(h) * weight: the residual add and the norm that follows it.
+        let add_norm = |delta: u64, weight: u64| {
+            launch(dev, k.add_rmsnorm, ti, ROW_BLOCK, ROW_BLOCK * 4, &[Arg::Ptr(b.h), Arg::Ptr(delta), Arg::Ptr(weight), Arg::Ptr(b.x), Arg::Int(hidden_i), Arg::Float(d.rms_eps)])
+        };
         // y = bf16(x * W^T + bias), x [t, inn] -> out [t, out]
         let linear = |w: u64, bias: u64, x: u64, out_ptr: u64, out: usize, inn: usize| -> Result<()> {
             cublas.linear_bf16_f32(w, x, b.y_f32, t, out, inn)?;
@@ -527,9 +534,9 @@ impl Session {
 
         launch(dev, k.embedding, ti, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.ids), Arg::Ptr(self.embed), Arg::Ptr(b.h), Arg::Int(hidden_i)])?;
         mark("embedding")?;
+        norm(b.h, self.layers[0].input_norm, b.x, ti)?;
+        mark("norm")?;
         for (l, w) in self.layers.iter().enumerate() {
-            norm(b.h, w.input_norm, b.x, ti)?;
-            mark("norm")?;
             // A decode step is one row: Q, K and V are the three consecutive parts of one fused projection.
             let (q_p, k_p, v_p) = if dynamic {
                 let qkv_dim = q_dim + 2 * kv_dim;
@@ -592,11 +599,9 @@ impl Session {
             }
             project(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
             mark("o_proj")?;
-            launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.o), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
-            mark("residual")?;
+            add_norm(b.o, w.post_norm)?;
+            mark("residual_norm")?;
 
-            norm(b.h, w.post_norm, b.x, ti)?;
-            mark("norm")?;
             // A decode step is one row: gate and up are the two consecutive halves of one fused projection.
             let (gate_p, up_p) = if dynamic {
                 project(w.gate_up, 0, b.x, b.gate_up, 2 * d.intermediate, hidden)?;
@@ -611,8 +616,12 @@ impl Session {
             mark("mlp_act")?;
             project(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
             mark("mlp_down")?;
-            launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.down), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?;
-            mark("residual")?;
+            match self.layers.get(l + 1) {
+                // The residual add and the next layer's input norm.
+                Some(next) => add_norm(b.down, next.input_norm)?,
+                None => launch(dev, k.add, grid_for(t * hidden)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.h), Arg::Ptr(b.down), Arg::Ptr(b.h), Arg::Int(i32::try_from(t * hidden)?)])?,
+            }
+            mark("residual_norm")?;
         }
 
         if chunk {
