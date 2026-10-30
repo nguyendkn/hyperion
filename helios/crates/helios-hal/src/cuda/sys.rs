@@ -157,6 +157,7 @@ driver_api! {
     cuStreamCreate(stream: *mut CUstream, flags: c_uint);
     cuStreamDestroy_v2(stream: CUstream);
     cuStreamSynchronize(stream: CUstream);
+    cuStreamQuery(stream: CUstream);
     cuStreamBeginCapture_v2(stream: CUstream, mode: c_int);
     cuStreamEndCapture(stream: CUstream, graph: *mut CUgraph);
     cuModuleLoadData(module: *mut CUmodule, image: *const c_void);

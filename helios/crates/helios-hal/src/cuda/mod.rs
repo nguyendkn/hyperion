@@ -14,6 +14,7 @@ mod ffi;
 pub mod graph;
 pub mod loader;
 pub mod module;
+pub mod nccl;
 pub mod profile;
 pub mod sys;
 pub mod vmm;
@@ -28,7 +29,8 @@ pub fn loaded_libraries() -> String {
     let driver = sys::loaded_driver().map_or_else(|| "driver library not loaded".to_string(), |(name, version)| format!("driver library {name} (CUDA driver version {version})"));
     let cublas = cublas::loaded_library().map_or_else(|| "cuBLAS library not loaded".to_string(), |name| format!("cuBLAS library {name}"));
     let lt = cublaslt::loaded_library().map_or_else(|| "cuBLASLt library not loaded".to_string(), |name| format!("cuBLASLt library {name}"));
-    format!("{driver}; {cublas}; {lt}")
+    let nccl = nccl::loaded_library().map_or_else(|| "NCCL library not loaded".to_string(), |name| format!("NCCL library {name}"));
+    format!("{driver}; {cublas}; {lt}; {nccl}")
 }
 pub use device::CudaDevice;
 pub use module::{Kernel, KernelModule};

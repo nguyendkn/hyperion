@@ -1,6 +1,6 @@
 # 0005: manifest fields for tensor parallelism (sharding plan, supported TP sizes, deployment)
 
-Status: **accepted** (owner review, 2026-10-30). Design only: the `specification/` edit and the loader are a separate step (phase 03, second group), and nothing here is implemented. Plan: phase 13 D2 and phase 03 requirement 4; owner decisions 3 ("add now") and 20 (shard at load). Related: ADR 0003 (payload table), 0006, 0010.
+Status: **accepted** (owner review, 2026-10-30). **Implemented 2026-10-30 (autonomous run W1.5): the manifest fields (`sharding` per tensor, `parallelism.supported_tp_sizes`), the Ignition writer, the schema and goldens, the rank-slice computation (`helios-hal/src/sharding.rs`), vocabulary padding as a function, pipeline stage layers and the deployment checks before any CUDA call. Not implemented: the sharded weight upload on a device, per-rank fused groups on a device, the masked embedding gather and the vocab-parallel head (they need a GPU).** Plan: phase 13 D2 and phase 03 requirement 4; owner decisions 3 ("add now") and 20 (shard at load). Related: ADR 0003 (payload table), 0006, 0010.
 
 ## Context
 `specification/v1` stays editable only until the first released package. Fields that describe how a model may be split across GPUs are cheap to add now and force a `v2` later. Weights stay canonical (unsharded safetensors, ADR 0003); Hyperion captures graphs at load, so one package can serve several TP sizes if each rank reads its own slices at load.

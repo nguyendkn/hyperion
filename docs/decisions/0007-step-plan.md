@@ -1,6 +1,6 @@
 # 0007: the scheduler's output is a serialisable StepPlan
 
-Status: **accepted** (owner review, 2026-10-30). Design only: nothing is implemented. Plan: phase 13 D4 and phase 07 (serving). Related: ADR 0004 (ranks), 0006 (trait), 0002 (page tables).
+Status: **accepted** (owner review, 2026-10-30). **The binary encoding is implemented 2026-10-30 (`helios-hal/src/step.rs`, golden file `tests/data/step-plan-v1.bin`, hash check, typed decode errors); no scheduler emits plans yet and no backend but the stub executes them.** Plan: phase 13 D4 and phase 07 (serving). Related: ADR 0004 (ranks), 0006 (trait), 0002 (page tables).
 
 ## Context
 Today `helios-core::scheduler` runs one request at a time and calls `generate`, which owns the sequence state inside the backend. With batching, prefix sharing and several ranks, the scheduler must say what each step does, and every rank must do the same thing: a decode graph that contains a collective is launched by all ranks together (ADR 0004). A plan that exists only as arguments of a local call cannot cross threads or nodes.

@@ -1,6 +1,6 @@
 # 0006: one merged change of the `ComputeBackend` trait
 
-Status: **accepted** (owner review, 2026-10-30) as the design of the single change. **Not implemented**: step C3 is a separate session, and the trait is not touched by this document. Plan: phase 05 (decoupling, capabilities), phase 12 step 6 (ADR 0002), phase 13 D3 (ranks, device group, communicator), phase 07 (StepPlan). Related: ADR 0004 (ranks), 0005 (manifest), 0007 (StepPlan), 0009 (NCCL).
+Status: **accepted** (owner review, 2026-10-30) as the design of the single change. **Implemented 2026-10-30 (autonomous run W1.1, commit `fa92cc9`)** exactly as designed: stub complete, sm90 implements `capabilities`, `initialize_device`, `load_model`, `generate`, `shutdown` and returns `HalError::Unsupported` for `reserve_kv`, `capture_graphs`, `commit_kv`, `submit_step`, `take_output` until the page-index KV pool (ADR 0002) exists; sm120 returns `Unsupported` for the chain. Plan: phase 05 (decoupling, capabilities), phase 12 step 6 (ADR 0002), phase 13 D3 (ranks, device group, communicator), phase 07 (StepPlan). Related: ADR 0004 (ranks), 0005 (manifest), 0007 (StepPlan), 0009 (NCCL).
 
 ## Context
 The trait is the most stability-sensitive file in the workspace and changing it twice is the costly mistake. Everything that wants to change it is known now:

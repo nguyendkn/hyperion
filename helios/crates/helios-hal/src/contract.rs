@@ -5,6 +5,23 @@
 //! The tokens carry an opaque backend-private payload. Only this crate can make them (the constructors are `pub(crate)`), so code outside
 //! the HAL (`helios-core`, `helios-cli`) can obtain a [`KvPool`] only from `commit_kv` and a [`StepTicket`] only from `submit_step`: a
 //! backend cannot be driven with an unmapped or half-mapped pool, and nothing maps memory after the pool exists.
+//!
+//! Outside this crate a pool cannot be made by hand, so a step cannot be submitted without going through the load order:
+//!
+//! ```compile_fail
+//! use helios_hal::{KvPool, KvPoolInfo};
+//! let info = KvPoolInfo { page_tokens: 64, pages: 1, bytes_per_page: 0, free_before: 0, free_after: 0 };
+//! let _pool = KvPool::new("stub", info, ()); // `KvPool::new` is `pub(crate)`
+//! ```
+//!
+//! and a reservation (virtual addresses only, nothing mapped) is not a pool:
+//!
+//! ```compile_fail
+//! use helios_hal::{ComputeBackend, KvReservation, StepPlan};
+//! fn serve(backend: &dyn ComputeBackend, reservation: &KvReservation, plan: &StepPlan) {
+//!     let _ = backend.submit_step(reservation, plan); // expected `&KvPool`
+//! }
+//! ```
 
 use std::any::Any;
 use std::path::PathBuf;

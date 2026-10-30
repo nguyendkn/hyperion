@@ -1,6 +1,6 @@
 # 0009: NCCL is loaded at run time and used inside graphs
 
-Status: **accepted** (owner review, 2026-10-30). Design only: nothing is implemented. Plan: phase 13 D6 and milestones M1 to M3; owner decision 22. Related: ADR 0004, 0006.
+Status: **accepted** (owner review, 2026-10-30). **The loader (`cuda/nccl.rs`), the version rendezvous check, the `NCCL_*` environment record and the typed collective timeout are written 2026-10-30; only the loader failure path and the pure logic ran (Windows, stub); every call into a real NCCL is type-checked only.** Plan: phase 13 D6 and milestones M1 to M3; owner decision 22. Related: ADR 0004, 0006.
 
 ## Context
 Tensor parallelism needs all-reduce after the attention output and MLP down projections, and all-gather for vocabulary-parallel logits, inside the captured decode and prefill graphs. On an HGX H100 node (NVLink and NVSwitch) NCCL is the right default transport; across nodes it uses InfiniBand. The CUDA driver and cuBLAS are already loaded at run time (no link-time dependency, typed `LoadError`); NCCL follows the same pattern.
