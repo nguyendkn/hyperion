@@ -1056,25 +1056,33 @@ fn vmm_granule_map_time_and_refusals() {
     dev.teardown().unwrap();
 }
 
-/// The chunked prefill through the page-major pool against the host path (the contiguous cache and the untiled attention kernel of
-/// `forward.rs`, which the device path no longer has), on the loaded model: 1 and 127 and 129 tokens (the padding cases), 1000 and 4096. The bound
-/// is the one declared for decode against prefill in this file, before the first run: max absolute logit difference <= 0.5. The argmax of both is
-/// printed.
+/// The chunked prefill through the page-major pool against the same logits reached by the decode path (the prompt without its last token, then that
+/// token as one teacher-forced decode step: split-K attention through the page tables instead of the tensor-core prefill kernel), on the loaded
+/// model: 2 and 127 and 129 tokens (the padding cases), 1000 and 4096. The bound is the one declared for decode against prefill in this file,
+/// before the first run: max absolute logit difference <= 0.5. The argmax of both is printed. (The legacy host path was the first choice of
+/// reference and was dropped: at 127 tokens it disagrees with both device paths and with the oracle-verified decode, so it is the odd one out.)
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
-fn paged_chunked_prefill_matches_the_host_path() {
+fn paged_chunked_prefill_matches_the_decode_path() {
     let package = package();
     let dims = qwen2_dims(&package);
     let seed: Vec<u32> = seed_prompt_ids();
     let (_, _, backend) = loaded_backend();
     let bound = 0.5f32;
     let argmax = |v: &[f32]| v.iter().enumerate().fold(0, |b, (i, x)| if *x > v[b] { i } else { b });
-    for len in [1usize, 127, 129, 1000, 4096] {
+    for len in [2usize, 127, 129, 1000, 4096] {
         let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
         let chunked = backend.forward_prefill_logits_device(&dims, &prompt).expect("chunked prefill");
-        let reference = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
+        let mut trace = Vec::new();
+        backend.generate_forced(&dims, &prompt[..len - 1], &[prompt[len - 1], 0], helios_hal::DecodeMode::Direct, &mut trace).expect("decode path");
+        let reference = trace.swap_remove(1);
+        if len <= 1000 {
+            let host = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
+            let host_diff = host.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            println!("INFO prompt {len:>5}: legacy host path vs the decode path: max |logit difference| {host_diff:.4}");
+        }
         let diff = chunked.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-        println!("prompt {len:>5}: max |paged chunked - host| logit diff {diff:.4} (bound {bound}); argmax paged {} host {}", argmax(&chunked), argmax(&reference));
+        println!("prompt {len:>5}: max |paged chunked prefill - decode path| logit diff {diff:.4} (bound {bound}); argmax prefill {} decode {}", argmax(&chunked), argmax(&reference));
         assert!(diff <= bound, "prompt {len}: {diff} exceeds the declared bound {bound}");
     }
     backend.shutdown().unwrap();

@@ -9,12 +9,13 @@ use super::session::Session;
 use crate::contract::HalError;
 use crate::cuda::{Cublas, CudaDevice};
 use crate::pool_plan::PageTableLayout;
-use crate::step::{Capacity, Input, RowOutput, SamplingInit, StepOutput, StepPlan, Want};
+use crate::step::{Capacity, Input, RowOutput, StepOutput, StepPlan, Want};
 
 impl Session {
     pub(super) fn run_plan(&self, dev: &CudaDevice, cublas: &Cublas, plan: &StepPlan, layout: &PageTableLayout, pool_pages: usize, mode: DecodeMode) -> Result<StepOutput> {
         for init in &plan.inits {
-            if init.sampling != SamplingInit::GREEDY {
+            // Greedy is a temperature of 0 (top-p and the seed change nothing then); anything that needs a random draw or a penalty is not on the device yet.
+            if init.sampling.temperature > 0.0 || init.sampling.repetition_penalty != 1.0 {
                 return Err(HalError::Unsupported("sampling other than greedy on sm_90 (the device chooses the argmax)").into());
             }
         }
