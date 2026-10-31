@@ -15,8 +15,11 @@ pub mod api;
 pub mod cache;
 pub mod error;
 pub mod inflight;
+pub mod kv;
 pub mod scheduler;
+pub mod simulator;
 pub mod state;
+pub mod step_scheduler;
 pub mod chat_template;
 pub mod tokenizer;
 
