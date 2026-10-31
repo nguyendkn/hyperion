@@ -209,6 +209,9 @@ extern "C" __global__ void argmax_chain_bf16(const float* __restrict__ logits, i
 // work for and the combine kernel merges only those.
 #define SPLIT_MIN_CHUNK 64
 #define MAX_GROUP 8  // query heads per KV head
+// Pages one split of a page-table decode step can span (a split holds at most ~4000 positions for a 131072-token context on any GPU of 132 SMs
+// or more with at most 4 KV heads; the host refuses a shape that would need more).
+#define MAX_SPLIT_PAGES 96
 
 // Eight bf16 values of a 16-byte load as floats.
 static __device__ __forceinline__ void unpack8(const uint4 raw, float out[8]) {
@@ -251,10 +254,8 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
     __shared__ float wsum[MAX_GROUP][SPLIT_TILE / 32];
     __shared__ float m_run[MAX_GROUP];
     __shared__ float l_run[MAX_GROUP];
-    __shared__ int tile_pg[4];
+    __shared__ int tile_pg[MAX_SPLIT_PAGES];
 
-    // A table whose first entry is NO_PAGE (-1) holds nothing: the warm-up launches that run before the pool is mapped skip every access.
-    if (LAYOUT != 0 && table[0] < 0) return;
     const int g = blockIdx.x / splits;
     const int s = blockIdx.x % splits;
     const int group = heads / kv_heads;
@@ -263,6 +264,14 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
     if (s * chunk >= len) return;  // no positions for this split (uniform across the block)
     const int lo = s * chunk;
     const int hi = min(len, lo + chunk);
+    const int pg0 = lo >> 6;
+    if (LAYOUT != 0) {
+        // The physical pages of every page this split reads, loaded once into shared memory (issued here, before the query loads, so the two
+        // overlap): a lookup in the global table for every K or V row would put a dependent load in front of each row load.
+        const int npg = ((hi - 1) >> 6) - pg0 + 1;
+        if (npg > MAX_SPLIT_PAGES) __trap();
+        for (int i = threadIdx.x; i < npg; i += SPLIT_TILE) tile_pg[i] = table[pg0 + i];
+    }
     const float scale = 1.f / sqrtf((float)HD);
     const int lane = threadIdx.x & 31;
     const int warp = threadIdx.x >> 5;
@@ -280,15 +289,11 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
 #pragma unroll
         for (int e = 0; e < 8; ++e) acc[h][e] = 0.f;
     __syncthreads();
+    // A first page of NO_PAGE (-1) means the table holds nothing: the warm-up launches that run before the pool is mapped skip every access.
+    if (LAYOUT != 0 && tile_pg[0] < 0) return;
 
     for (int base = lo; base < hi; base += SPLIT_TILE) {
         const int n = min(SPLIT_TILE, hi - base);
-        const int pg0 = base >> 6;
-        if (LAYOUT != 0) {
-            // A tile of 128 positions starting anywhere touches at most three pages; one page past the sequence is never read.
-            if (threadIdx.x < 3) tile_pg[threadIdx.x] = ((pg0 + (int)threadIdx.x) << 6) < len ? table[pg0 + threadIdx.x] : 0;
-            __syncthreads();
-        }
         // Scores of this thread's position for every query head of the group.
         float dots[MAX_GROUP];
 #pragma unroll

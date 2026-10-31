@@ -37,6 +37,8 @@ pub(super) const MMA_ATTENTION_BLOCK: u32 = 128;
 const CUBLAS_WORKSPACE_BYTES: usize = 32 * 1024 * 1024;
 /// Tokens per page of the pool; the kernels have it built in.
 pub(super) const PAGE_TOKENS: usize = 64;
+/// Pages one split of the decode attention keeps in shared memory (`MAX_SPLIT_PAGES` in `elementwise.cu`).
+const MAX_SPLIT_PAGES: usize = 96;
 /// Entries of the per-row token ring the argmax kernel writes (indexed by position modulo this).
 pub(super) const RING: usize = 64;
 /// Table deltas a step may carry beyond one full table (a decode step adds at most one page per row).
@@ -245,6 +247,12 @@ impl Session {
         }
         // One block per (KV head, split): enough splits to give every SM a block, whatever the context.
         let splits = split_count(dev.multiprocessor_count(), kv_heads);
+        // A split of the decode attention keeps the physical pages it reads in shared memory (`MAX_SPLIT_PAGES` of the kernel): refuse a context
+        // that would need more, never mis-compute it.
+        let split_pages = max_seq_len.div_ceil(splits).max(64).div_ceil(PAGE_TOKENS) + 2;
+        if split_pages > MAX_SPLIT_PAGES {
+            return Err(anyhow!("a context of {max_seq_len} tokens over {splits} splits needs {split_pages} pages per split; the decode attention holds {MAX_SPLIT_PAGES}"));
+        }
         let chunk_rows = largest_chunk(max_seq_len);
         let (free, total) = dev.memory_info()?;
         let need = session_bytes(&dims, splits, chunk_rows, max_batch, max_seq_len);
