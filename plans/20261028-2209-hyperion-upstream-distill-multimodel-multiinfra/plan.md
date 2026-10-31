@@ -97,6 +97,7 @@ Gate: phase 03 blocks on 1,3,5,6,7 (asked once there; 04/06 read the ADR). Phase
 22. Phase 13: collectives = NCCL only vs NCCL + custom small-message all-reduce? Rec: NCCL only until M2 measures the all-reduce share. Consequence: custom = latency gain at decode, more kernel code.
 
 ## Unresolved questions
+- vLLM/SGLang drop-in compatibility is deferred: see `plans/20261031-1457-vllm-sglang-drop-in-compat/plan.md` section "Activation".
 - Coverage tools (cargo-llvm-cov + nightly llvm-tools, diff-cover) are installed by phase 01; if Rust branch data cannot be produced here the gate says 'branch gate UNVERIFIED on this host' and records it per the ledger rule.
 - Upstream recipe sizes/tolerances unread; logprob K vs Hopper graphs deferred to 09.
 - Decode batching has a GPU side (phase 12 step 8) and a scheduler side (phase 07) but no detailed plan yet; phase 11 needs both.

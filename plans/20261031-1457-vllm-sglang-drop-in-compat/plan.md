@@ -1,7 +1,7 @@
 ---
 title: "vLLM / SGLang drop-in launch compatibility"
 description: "Swap `vllm serve` / `sglang.launch_server` for `hyperion` with every arg unchanged: each flag supported, planned, warned or rejected with a clear error; auto-build + cache of the signed bundle; OpenAI/vLLM/SGLang HTTP parity."
-status: pending
+status: deferred
 priority: P1
 effort: ~40-44d (Windows layers 01-07 ~25d; GPU-gated 08, 10 ~12-16d; 09 optional ~3d)
 lane: high-risk
@@ -17,6 +17,20 @@ Goal: user replaces `vllm serve ...` or `python -m sglang.launch_server ...` by 
 Owner decision 2026-10-31: model loading = AUTO-BUILD + CACHE. `hyperion serve <hf-id|path>`: first run calls Ignition (optional Python subprocess, build time only) -> signed bundle in a cache dir; later runs load directly. Helios stays Python-free; rules 1-7 of project CLAUDE.md unchanged.
 
 Rules: ideas only from vLLM/SGLang docs (memory: upstream-ideas-only); no mocks on main; `[U]`/`[MEM]` tags in research are UNVERIFIED until phase 01 closes them. Evidence tags (SSOT): `[RUN]` executed on this Windows host; `[RUN on stub]` against the stub backend (named test double); `[RUN on local HTTP server]` against a real local protocol peer; `[TYPE-CHECK]` compiled only; `[NEEDS-GPU]` / `[NEEDS-NETWORK]` / `[NEEDS-TOOL]` not runnable here; `blocked-by sm90 KV` = needs old-plan paged-KV on sm90. Related plan: `plans/20261028-2209-hyperion-upstream-distill-multimodel-multiinfra/` (old 06 signing, old 07 serving, old 13 multi-GPU) - referenced by id, not duplicated.
+
+## Activation
+Deferred 2026-10-31 (owner): nothing in this plan is implemented until the trigger below.
+- **Trigger:** the owner states that vLLM/SGLang compatibility is needed now.
+- **First slice, "compat-lite" (~8-10 days), folded into old phase 07:**
+  - phase 01 (pins + real fixtures);
+  - phase 03 core (`/v1/models`, basic `/v1/completions`, content parts, stop, seed, usage, stream_options, per-style error JSON, API key auth);
+  - phase 04 (metrics);
+  - a minimal `hyperion serve` flag table (about 10 supported flags; every other flag rejected with a typed error naming the reason).
+- **Later slices:** auto-build (phases 05-07) after old phase 06 signing; phases 08 and 10 after batching and TP=2; phase 09 only on a concrete customer request.
+- **Design notes to keep:**
+  - CD9: vLLM-style default host matches vLLM, with a loud warning when no API key;
+  - CD8: reject unsupported sampling fields with 400;
+  - no YAML `--config` in compat-lite.
 
 ## Shared command templates (SSOT; phases cite by name, add only scope args)
 Step 0 once per host: `pip install -e "ignition[test]" diff-cover` (pytest, pytest-cov, diff-cover not installed here). Precondition for every CMD-DIFF: `git rev-parse origin/main` succeeds, else report "diff gate UNVERIFIED".
