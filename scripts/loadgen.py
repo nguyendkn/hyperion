@@ -114,7 +114,8 @@ def calibrate(args, host, port, path, headers):
 
 
 def run_level(args, host, port, path, headers, concurrency, words):
-    rng = random.Random(args.seed)
+    # Prompts differ from level to level as well as inside a level: a server with a prefix cache would otherwise answer the later levels from the cache.
+    rng = random.Random(args.seed * 1000 + concurrency)
     bodies = [body_for(args, words, rng, args.output_tokens) for _ in range(args.requests)]
     results, lock = [], threading.Lock()
     queue, qlock = list(range(len(bodies))), threading.Lock()
