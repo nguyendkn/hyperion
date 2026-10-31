@@ -29,8 +29,10 @@ const INGRESS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_mill
 /// How long the handler waits for the *first* stream event from the
 /// scheduler. Once the first event arrives we trust the scheduler is alive
 /// for this request and drop the timeout on subsequent reads (a decode loop
-/// can legitimately run long). The first-event latency is a liveness probe.
-const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// can legitimately run long). With continuous batching a request also waits in the scheduler queue (and behind the prefills of the requests
+/// before it) until its first token, so the bound covers a full queue of long prompts: measured, 32 requests of 8192 tokens on the 7B wait up to
+/// about 10 s. The first-event latency stays a liveness probe, not a latency limit.
+const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Shared state threaded through every handler. Combines the engine lifecycle
 /// (`StateMachine`), the tokenizer loaded from the package, and the ingress

@@ -13,6 +13,9 @@ use crate::kv::{KvConfig, KvManager};
 use crate::scheduler::{InferenceRequest, PlanPath, Scheduler, StreamEvent};
 use crate::step_scheduler::{Request, SeqEvent, StepScheduler};
 
+/// Steps between two `scheduler steps` log lines.
+const STEP_LOG_EVERY: u32 = 512;
+
 type Sinks = HashMap<u64, mpsc::UnboundedSender<StreamEvent>>;
 
 impl Scheduler {
@@ -21,6 +24,8 @@ impl Scheduler {
         let kv = KvManager::new(KvConfig { pages: info.pages, page_tokens: info.page_tokens, hash_block_tokens: plan_path.hash_block_tokens, identity: plan_path.identity })?;
         let mut machine = StepScheduler::new(plan_path.step, kv);
         let mut sinks: Sinks = HashMap::new();
+        // Wall time in the backend (submit, device, take) against the whole loop, logged every STEP_LOG_EVERY steps: the host share of a step.
+        let (mut in_backend, mut steps, mut window_start, mut decode_rows) = (std::time::Duration::ZERO, 0u32, std::time::Instant::now(), 0usize);
         loop {
             // Take in what has arrived; when nothing is running, wait for the next request (or the end).
             while machine.has_room() {
@@ -69,12 +74,21 @@ impl Scheduler {
                 route(&mut sinks, machine.take_events());
                 continue;
             };
+            decode_rows += if matches!(plan.capacity, helios_hal::Capacity::Decode { .. }) { plan.rows.len() } else { 0 };
+            let backend_started = std::time::Instant::now();
             let (backend, pool) = (self.backend.clone(), plan_path.pool.clone());
             let step = tokio::task::spawn_blocking(move || -> anyhow::Result<StepOutput> {
                 let ticket = backend.submit_step(&pool, &plan)?;
                 backend.take_output(ticket)
             })
             .await;
+            in_backend += backend_started.elapsed();
+            steps += 1;
+            if steps == STEP_LOG_EVERY {
+                let wall = window_start.elapsed();
+                tracing::info!(steps, backend_ms_per_step = in_backend.as_secs_f64() * 1e3 / steps as f64, loop_ms_per_step = wall.as_secs_f64() * 1e3 / steps as f64, mean_rows_per_step = decode_rows as f64 / steps as f64, "scheduler steps");
+                (in_backend, steps, window_start, decode_rows) = (std::time::Duration::ZERO, 0, std::time::Instant::now(), 0);
+            }
             let events = match step {
                 Ok(Ok(output)) => machine.complete(&output),
                 Ok(Err(error)) => machine.fail_pending(&format!("{error:#}")),
