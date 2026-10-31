@@ -63,6 +63,7 @@ impl Scheduler {
             for id in gone {
                 machine.cancel(id);
                 sinks.remove(&id);
+                tracing::info!(request = id, running = machine.running(), pages_used = machine.kv().pages_used(), "client went away: sequence cancelled, its pages freed");
             }
             let Some(plan) = machine.next_plan() else {
                 route(&mut sinks, machine.take_events());
