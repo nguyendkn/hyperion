@@ -227,9 +227,11 @@ static __device__ __forceinline__ void unpack8(const uint4 raw, float out[8]) {
 // [layer][k|v][token][kv_head][head_dim], `base` being the pool for K and V alike. These variants exist to measure the cost of the page
 // layouts of ADR 0002 against each other; the arithmetic and its order are identical in all three.
 template <int HD, int LAYOUT>
-static __device__ __forceinline__ const bf16* kv_row(const bf16* base, const int* table, int layer, int layers, int kv_heads, int j, int g, int which) {
+static __device__ __forceinline__ const bf16* kv_row(const bf16* base, const int* tile_pages, int pg0, int layer, int layers, int kv_heads, int j, int g, int which) {
     if (LAYOUT == 0) return base + ((size_t)j * kv_heads + g) * HD;
-    const int page = table[j >> 6], tok = j & 63;
+    // `tile_pages` holds the physical pages of the pages a tile of positions touches, loaded once per tile into shared memory: a lookup in the
+    // global table for every row would put a dependent load in front of each K and V load.
+    const int page = tile_pages[(j >> 6) - pg0], tok = j & 63;
     if (LAYOUT == 1) return base + (((size_t)page * 64 + tok) * kv_heads + g) * HD;
     return base + ((((size_t)page * layers + layer) * 2 + which) * 64 + tok) * (size_t)kv_heads * HD + (size_t)g * HD;
 }
@@ -249,6 +251,7 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
     __shared__ float wsum[MAX_GROUP][SPLIT_TILE / 32];
     __shared__ float m_run[MAX_GROUP];
     __shared__ float l_run[MAX_GROUP];
+    __shared__ int tile_pg[4];
 
     // A table whose first entry is NO_PAGE (-1) holds nothing: the warm-up launches that run before the pool is mapped skip every access.
     if (LAYOUT != 0 && table[0] < 0) return;
@@ -280,12 +283,18 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
 
     for (int base = lo; base < hi; base += SPLIT_TILE) {
         const int n = min(SPLIT_TILE, hi - base);
+        const int pg0 = base >> 6;
+        if (LAYOUT != 0) {
+            // A tile of 128 positions starting anywhere touches at most three pages; one page past the sequence is never read.
+            if (threadIdx.x < 3) tile_pg[threadIdx.x] = ((pg0 + (int)threadIdx.x) << 6) < len ? table[pg0 + threadIdx.x] : 0;
+            __syncthreads();
+        }
         // Scores of this thread's position for every query head of the group.
         float dots[MAX_GROUP];
 #pragma unroll
         for (int h = 0; h < MAX_GROUP; ++h) dots[h] = 0.f;
         if (threadIdx.x < n) {
-            const uint4* krow = reinterpret_cast<const uint4*>(kv_row<HD, LAYOUT>(k_cache, table, layer, layers, kv_heads, base + threadIdx.x, g, 0));
+            const uint4* krow = reinterpret_cast<const uint4*>(kv_row<HD, LAYOUT>(k_cache, tile_pg, pg0, layer, layers, kv_heads, base + threadIdx.x, g, 0));
             uint4 raw[NV];
 #pragma unroll
             for (int v = 0; v < NV; ++v) raw[v] = krow[v];
@@ -342,7 +351,7 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
         // Weighted sum of V: each thread owns 8 dimensions of every ROWS-th position.
         for (int j = row; j < n; j += ROWS) {
             float f[8];
-            unpack8(*reinterpret_cast<const uint4*>(kv_row<HD, LAYOUT>(v_cache, table, layer, layers, kv_heads, base + j, g, 1) + col * 8), f);
+            unpack8(*reinterpret_cast<const uint4*>(kv_row<HD, LAYOUT>(v_cache, tile_pg, pg0, layer, layers, kv_heads, base + j, g, 1) + col * 8), f);
 #pragma unroll
             for (int h = 0; h < MAX_GROUP; ++h)
                 if (h < group) {
