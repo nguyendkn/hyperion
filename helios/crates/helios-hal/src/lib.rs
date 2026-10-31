@@ -16,10 +16,12 @@
 
 pub mod contract;
 pub mod multi_rank_comm;
+pub mod pool_plan;
 pub mod prefill_capacities;
 pub mod multi_rank_stub;
 pub mod sharding;
 pub mod step;
+pub mod step_ledger;
 pub mod traits;
 #[cfg(feature = "cuda")]
 pub mod cuda;
