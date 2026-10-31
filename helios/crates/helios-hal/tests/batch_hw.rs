@@ -268,3 +268,102 @@ fn decode_step_time_by_bucket() {
     }
     backend.shutdown().unwrap();
 }
+
+/// Teacher-forced run of `rows` sequences (row i is oracle prompt `i % prompts`) in decode buckets of `rows`: every prompt is prefilled (chunks of
+/// 4096) with the logits of its last token asked for, then the oracle's own tokens are fed one per step to all rows together. Returns, per row, the
+/// logits after the prompt and after each forced token but the last (what `generate_forced` traces).
+fn forced_batch(backend: &HopperBackend, pool: &KvPool, oracle: &helios_hal::oracle::CompactOracle, rows: usize, n: usize) -> Vec<Vec<Vec<f32>>> {
+    let take = |plan: &StepPlan| {
+        let ticket = backend.submit_step(pool, plan).expect("submit_step");
+        backend.take_output(ticket).expect("take_output")
+    };
+    let prompts = &oracle.prompts;
+    let mut next_page = 0u32;
+    let mut step = 0u64;
+    let mut seqs = Vec::new();
+    let mut traces = vec![Vec::new(); rows];
+    for r in 0..rows {
+        let prompt = &prompts[r % prompts.len()];
+        let pages: Vec<u32> = (next_page..next_page + (prompt.ids.len() + n).div_ceil(PAGE) as u32).collect();
+        next_page += pages.len() as u32;
+        let mut start = 0;
+        while start < prompt.ids.len() {
+            let end = (start + 4096).min(prompt.ids.len());
+            let last = end == prompt.ids.len();
+            step += 1;
+            let plan = StepPlan {
+                step,
+                capacity: Capacity::Prefill { rows: chunk_capacity(end - start) },
+                rows: vec![Row { slot: r as u32, input: Input::Tokens(prompt.ids[start..end].to_vec()), n_tokens: (end - start) as u32, position: start as u32, table_len: end.div_ceil(PAGE) as u32, want: if last { Want::Logits } else { Want::Nothing } }],
+                deltas: if start == 0 { pages.iter().enumerate().map(|(i, &page)| PageDelta { slot: r as u32, index: i as u32, page }).collect() } else { Vec::new() },
+                inits: if start == 0 { vec![SlotInit { slot: r as u32, sampling: SamplingInit::GREEDY, max_new_tokens: n as u32 }] } else { Vec::new() },
+            };
+            let out = take(&plan);
+            if last {
+                traces[r].push(out.rows[0].logits.clone().expect("logits"));
+            }
+            start = end;
+        }
+        seqs.push(prompt);
+    }
+    let bucket = rows.next_power_of_two() as u16;
+    for k in 1..n {
+        step += 1;
+        let plan_rows = (0..rows)
+            .map(|r| {
+                let p = seqs[r];
+                Row { slot: r as u32, input: Input::Tokens(vec![p.generated_ids[k - 1]]), n_tokens: 1, position: (p.ids.len() + k - 1) as u32, table_len: (p.ids.len() + k).div_ceil(PAGE) as u32, want: Want::Logits }
+            })
+            .collect();
+        let out = take(&StepPlan { step, capacity: Capacity::Decode { bucket }, rows: plan_rows, deltas: Vec::new(), inits: Vec::new() });
+        for (r, row) in out.rows.iter().enumerate() {
+            traces[r].push(row.logits.clone().expect("logits"));
+        }
+    }
+    traces
+}
+
+/// P4(c): every row of a batch of 8 and of 32 passes the oracle rules of the compact oracle (teacher-forced, the declared tolerance, the tie-group
+/// rule), exactly as the single-sequence test does. Rows are the oracle prompts in turn, so the rows of a batch have different lengths.
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn every_row_of_a_batch_passes_the_oracle() {
+    use helios_hal::oracle::compare_at;
+    let path = std::env::var_os("HYPERION_COMPACT_ORACLE").expect("set HYPERION_COMPACT_ORACLE");
+    let oracle = helios_hal::oracle::CompactOracle::from_json(&std::fs::read(path).unwrap()).expect("compact oracle");
+    let n = oracle.generated_tokens.min(oracle.prompts.iter().map(|p| p.generated_ids.len().min(p.reference.len())).min().unwrap());
+    let total_tokens: usize = (0..32).map(|r| (oracle.prompts[r % oracle.prompts.len()].ids.len() + n).div_ceil(PAGE) * PAGE).sum();
+    let (backend, pool) = open(32, total_tokens / PAGE + 8);
+    println!("tolerance declared in the oracle: top-k logits {}, logsumexp {}", oracle.tolerance.max_abs_top_logits, oracle.tolerance.max_abs_logsumexp);
+    let mut failures = Vec::new();
+    for rows in [8usize, 32] {
+        let traces = forced_batch(&backend, &pool, &oracle, rows, n);
+        let (mut overall, mut worst_at, mut bf16_max) = (0f32, String::new(), 0f32);
+        for (r, trace) in traces.iter().enumerate() {
+            let prompt = &oracle.prompts[r % oracle.prompts.len()];
+            assert_eq!(trace.len(), n, "row {r} produced {} of {n} positions", trace.len());
+            let mut worst = 0f32;
+            for (i, (logits, record)) in trace.iter().zip(&prompt.reference).enumerate() {
+                let c = compare_at(logits, record, &oracle.tolerance, prompt.bf16_deviation.as_ref().map(|d| d[i].0)).expect("comparison");
+                worst = worst.max(c.max_abs_top_logits);
+                bf16_max = bf16_max.max(prompt.bf16_deviation.as_ref().map_or(0.0, |d| d[i].0));
+                if c.max_abs_top_logits > overall {
+                    overall = c.max_abs_top_logits;
+                    worst_at = format!("row {r} ({}, {} prompt tokens), step {i}", prompt.label, prompt.ids.len());
+                }
+                if !c.within(&oracle.tolerance) {
+                    failures.push(format!("batch {rows} row {r} ({}): step {i}: top-k diff {:.4} (tolerance {}), logsumexp diff {:.4}, argmax ok {}", prompt.label, c.max_abs_top_logits, oracle.tolerance.max_abs_top_logits, c.abs_logsumexp, c.argmax_ok));
+                }
+            }
+            println!("ORACLE batch {rows:>2} row {r:>2} {:<40} {} prompt tokens: max top-k logit diff {worst:.4}", prompt.label, prompt.ids.len());
+        }
+        println!(
+            "ORACLE BATCH {rows} SUMMARY: max top-k logit diff {overall:.4} at {worst_at}; tolerance {}; ratio to the tolerance {:.2}; ratio to the HF bf16 deviation over the compared positions ({bf16_max:.4}): {:.2}",
+            oracle.tolerance.max_abs_top_logits,
+            overall / oracle.tolerance.max_abs_top_logits,
+            overall / bf16_max.max(f32::MIN_POSITIVE)
+        );
+    }
+    backend.shutdown().unwrap();
+    assert!(failures.is_empty(), "{} failure(s); do not loosen the tolerance and rerun:\n{}", failures.len(), failures.join("\n"));
+}
