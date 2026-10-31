@@ -22,7 +22,13 @@ use hyperion_specification::Manifest;
 fn qwen2_dims(package: &std::path::Path) -> helios_hal::Qwen2Dims {
     let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap())
         .unwrap_or_else(|e| panic!("manifest of {}: {e}", package.display()));
-    helios_hal::Qwen2Dims::from_manifest_allowing(&manifest.model, allow_unverified_qk_norm()).expect("a model the sm90 forward pass implements")
+    // Qwen3 (QK-norm) is verified (`QK_NORM_VERIFIED`), so `from_manifest` accepts it; the env switch stays for a future unverified model.
+    if allow_unverified_qk_norm() {
+        helios_hal::Qwen2Dims::from_manifest_allowing(&manifest.model, true)
+    } else {
+        helios_hal::Qwen2Dims::from_manifest(&manifest.model)
+    }
+    .expect("a model the sm90 forward pass implements")
 }
 
 /// `HYPERION_ALLOW_UNVERIFIED_QK_NORM=1` lets a run load a package that needs QK-norm (Qwen3) before that path has passed an
@@ -1332,6 +1338,78 @@ fn cublaslt_algorithm_benchmark() {
                 Some(us) => println!("cublaslt {name} 1x{out}x{inn}: {us:.2} us  {algorithm}"),
                 None => println!("cublaslt {name} 1x{out}x{inn}: cannot run  {algorithm}"),
             }
+        }
+    }
+    backend.shutdown().unwrap();
+}
+
+/// A seeded permutation of `0..n`.
+fn shuffled_table(n: usize, seed: u64) -> Vec<i32> {
+    let mut order: Vec<i32> = (0..n as i32).collect();
+    let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+    for i in (1..n).rev() {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        order.swap(i, (state >> 33) as usize % (i + 1));
+    }
+    order
+}
+
+/// The page-major KV kernels (ADR 0002), declared before the first run:
+/// 1. with a table of `-1` entries and a pool address that is not mapped, all four kernels return without a fault (the warm-up launches before
+///    the pool exists depend on it);
+/// 2. appending rows through a shuffled page table puts every K and V row at the address the layout formula gives and changes nothing else,
+///    for the prefill-chunk kernel and the decode kernel alike, and a row whose page is `-1` is not written;
+/// 3. the tensor-core prefill attention reading the pool through the table equals the contiguous kernel bit for bit (same arithmetic, same
+///    order), for both model shapes and lengths 1 to 32768, as layer 1 of a 3-layer pool.
+#[test]
+#[ignore = "needs an H100 (no weights)"]
+fn paged_kernels_skip_missing_pages_append_where_the_layout_says_and_match_the_contiguous_attention() {
+    let (_, _, backend) = loaded_backend();
+    backend.paged_kernels_skip_a_table_without_pages(2, 64, 14).expect("64-dim kernels skip a table without pages");
+    backend.paged_kernels_skip_a_table_without_pages(4, 128, 28).expect("128-dim kernels skip a table without pages");
+    println!("all four paged kernels skip a table of NO_PAGE entries without touching the unmapped pool");
+
+    let (kv_heads, d, layers, layer, pages) = (4usize, 128usize, 3usize, 1usize, 24usize);
+    let kv_dim = kv_heads * d;
+    let mut table = shuffled_table(pages, 5);
+    table[2] = -1; // logical page 2 (positions 128..191) has no physical page
+    for chunk in [true, false] {
+        let positions: Vec<u32> = (0..200u32).chain([700u32, 1023]).collect();
+        let k = noise(positions.len() * kv_dim, 11, 2.0);
+        let v = noise(positions.len() * kv_dim, 12, 3.0);
+        let pool = backend.kv_append_paged_bf16(chunk, pages, layers, layer, kv_heads, d, &table, &k, &v, &positions).expect("append");
+        let mut expected = vec![0xEEEEu16; pool.len()];
+        let mut written = 0usize;
+        for (row, &p) in positions.iter().enumerate() {
+            let physical = table[p as usize / 64];
+            if physical < 0 {
+                continue;
+            }
+            written += 1;
+            let base = ((physical as usize * layers + layer) * 2 * 64 + p as usize % 64) * kv_dim;
+            expected[base..base + kv_dim].copy_from_slice(&k[row * kv_dim..(row + 1) * kv_dim]);
+            expected[base + 64 * kv_dim..base + 65 * kv_dim].copy_from_slice(&v[row * kv_dim..(row + 1) * kv_dim]);
+        }
+        assert!(written > 100 && written < positions.len(), "some rows land and the rows of the missing page do not ({written} of {})", positions.len());
+        assert!(pool == expected, "{} kernel: the pool differs from the layout formula", if chunk { "chunk" } else { "decode" });
+        println!("{} append kernel: {written} rows at their layout addresses, the {} rows of the NO_PAGE page untouched", if chunk { "chunk" } else { "decode" }, positions.len() - written);
+    }
+
+    for (heads, kv_heads, d) in [(14usize, 2usize, 64usize), (28, 4, 128)] {
+        for len in [1usize, 127, 128, 129, 4096, 8192, 16384, 32768] {
+            let rows = len.min(72);
+            let q_start = len - rows;
+            let q = noise(rows * heads * d, len as u32 + 1, 2.0);
+            let k = noise(len * kv_heads * d, len as u32 + 2, 2.0);
+            let v = noise(len * kv_heads * d, len as u32 + 3, 3.0);
+            let positions: Vec<u32> = (q_start..len).map(|p| p as u32).collect();
+            let logical = len.div_ceil(64);
+            // Physical pages are a shuffle of more pages than the sequence uses: nothing is contiguous, and unused pages exist.
+            let table: Vec<i32> = shuffled_table(logical + 9, len as u64)[..logical].to_vec();
+            let contiguous = backend.attention_mma_bf16(&q, &k, &v, &positions, len, heads, kv_heads, d).expect("contiguous kernel");
+            let paged = backend.attention_mma_paged_bf16(3, 1, &table, &q, &k, &v, &positions, len, heads, kv_heads, d).expect("paged kernel");
+            assert!(paged == contiguous, "{heads}/{kv_heads} d {d} len {len}: the paged attention differs from the contiguous one");
+            println!("heads {heads}/{kv_heads} d {d} len {len:>5}: paged == contiguous, bit for bit");
         }
     }
     backend.shutdown().unwrap();

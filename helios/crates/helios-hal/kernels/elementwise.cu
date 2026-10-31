@@ -250,6 +250,8 @@ static __device__ __forceinline__ void attention_split_impl(const bf16* __restri
     __shared__ float m_run[MAX_GROUP];
     __shared__ float l_run[MAX_GROUP];
 
+    // A table whose first entry is NO_PAGE (-1) holds nothing: the warm-up launches that run before the pool is mapped skip every access.
+    if (LAYOUT != 0 && table[0] < 0) return;
     const int g = blockIdx.x / splits;
     const int s = blockIdx.x % splits;
     const int group = heads / kv_heads;
@@ -555,10 +557,14 @@ static __device__ __forceinline__ unsigned pack_bf16x2(float lo, float hi) {
     return *reinterpret_cast<const unsigned*>(&v);
 }
 
-template <int HD>
+// PAGED: K and V are read through a device page table out of the page-major pool (`k_cache` and `v_cache` are then the same pointer); the
+// arithmetic and its order are the same as for the contiguous cache.
+template <int HD, bool PAGED>
 static __device__ __forceinline__ void attention_mma_impl(const bf16* __restrict__ q, const bf16* __restrict__ k_cache,
                                                           const bf16* __restrict__ v_cache, bf16* __restrict__ out,
-                                                          const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
+                                                          const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads,
+                                                          const int* __restrict__ table, int layer, int layers) {
+    if (PAGED && table[0] < 0) return;  // NO_PAGE: a warm-up launch before the pool is mapped
     constexpr int KT = HD / 16;   // k steps of the Q K^T product
     constexpr int NT = 8;         // n tiles of 8 keys in a 64-key tile
     constexpr int OT = HD / 8;    // n tiles of the output
@@ -605,9 +611,16 @@ static __device__ __forceinline__ void attention_mma_impl(const bf16* __restrict
             const int j = kb + r;
             uint4 kv = make_uint4(0, 0, 0, 0), vv = make_uint4(0, 0, 0, 0);
             if (j < kmax) {
-                const size_t at = ((size_t)j * kv_heads + kvh) * HD + cc * 8;
-                kv = *reinterpret_cast<const uint4*>(k_cache + at);
-                vv = *reinterpret_cast<const uint4*>(v_cache + at);
+                if (PAGED) {
+                    const size_t page = (size_t)table[j >> 6];
+                    const size_t row = (((page * layers + layer) * 2) * 64 + (j & 63)) * (size_t)kv_heads * HD + (size_t)kvh * HD + cc * 8;
+                    kv = *reinterpret_cast<const uint4*>(k_cache + row);
+                    vv = *reinterpret_cast<const uint4*>(v_cache + row + (size_t)64 * kv_heads * HD);
+                } else {
+                    const size_t at = ((size_t)j * kv_heads + kvh) * HD + cc * 8;
+                    kv = *reinterpret_cast<const uint4*>(k_cache + at);
+                    vv = *reinterpret_cast<const uint4*>(v_cache + at);
+                }
             }
             *reinterpret_cast<uint4*>(ks + r * LD + cc * 8) = kv;
             *reinterpret_cast<uint4*>(vs + r * LD + cc * 8) = vv;
@@ -704,16 +717,59 @@ static __device__ __forceinline__ void attention_mma_impl(const bf16* __restrict
 // grid (ceil(rows * heads / kv_heads / 64), kv_heads), 128 threads, no dynamic shared memory.
 extern "C" __global__ void attention_mma_64_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache, const bf16* __restrict__ v_cache,
                                                  bf16* __restrict__ out, const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
-    attention_mma_impl<64>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads);
+    attention_mma_impl<64, false>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads, nullptr, 0, 0);
 }
 
 extern "C" __global__ void attention_mma_128_bf16(const bf16* __restrict__ q, const bf16* __restrict__ k_cache, const bf16* __restrict__ v_cache,
                                                   bf16* __restrict__ out, const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads) {
-    attention_mma_impl<128>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads);
+    attention_mma_impl<128, false>(q, k_cache, v_cache, out, positions, rows, heads, kv_heads, nullptr, 0, 0);
+}
+
+// The prefill attention reading the page-major pool through the page table of the sequence (`pool` is both the K and the V pointer).
+extern "C" __global__ void attention_mma_paged_64_bf16(const bf16* __restrict__ q, const bf16* __restrict__ pool, bf16* __restrict__ out,
+                                                       const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads,
+                                                       const int* __restrict__ table, int layer, int layers) {
+    attention_mma_impl<64, true>(q, pool, pool, out, positions, rows, heads, kv_heads, table, layer, layers);
+}
+
+extern "C" __global__ void attention_mma_paged_128_bf16(const bf16* __restrict__ q, const bf16* __restrict__ pool, bf16* __restrict__ out,
+                                                        const unsigned int* __restrict__ positions, int rows, int heads, int kv_heads,
+                                                        const int* __restrict__ table, int layer, int layers) {
+    attention_mma_impl<128, true>(q, pool, pool, out, positions, rows, heads, kv_heads, table, layer, layers);
+}
+
+// Append this step's K and V (one token at *pos) to the page-major pool through the page table. The row of page p, layer l is
+// [k|v][token][kv_head][head_dim]; a NO_PAGE entry (-1) is skipped (a warm-up launch before the pool is mapped).
+extern "C" __global__ void kv_append_paged_bf16(bf16* __restrict__ pool, const int* __restrict__ table, const bf16* __restrict__ k,
+                                                const bf16* __restrict__ v, const int* __restrict__ pos, int kv_dim, int layer, int layers) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= kv_dim) return;
+    const int p = *pos;
+    const int page = table[p >> 6];
+    if (page < 0) return;
+    const size_t base = (((size_t)page * layers + layer) * 2 * 64 + (p & 63)) * (size_t)kv_dim + i;
+    pool[base] = k[i];
+    pool[base + (size_t)64 * kv_dim] = v[i];
+}
+
+// The same for the rows of a prefill chunk: row t goes to position positions[t]; rows past *rows are padding and write nothing.
+extern "C" __global__ void kv_append_chunk_paged_bf16(bf16* __restrict__ pool, const int* __restrict__ table, const bf16* __restrict__ k,
+                                                      const bf16* __restrict__ v, const unsigned int* __restrict__ positions,
+                                                      const int* __restrict__ rows, int kv_dim, int layer, int layers) {
+    const int t = blockIdx.x;
+    if (t >= *rows) return;
+    const int p = (int)positions[t];
+    const int page = table[p >> 6];
+    if (page < 0) return;
+    const size_t base = (((size_t)page * layers + layer) * 2 * 64 + (p & 63)) * (size_t)kv_dim;
+    for (int i = threadIdx.x; i < kv_dim; i += blockDim.x) {
+        pool[base + i] = k[(size_t)t * kv_dim + i];
+        pool[base + (size_t)64 * kv_dim + i] = v[(size_t)t * kv_dim + i];
+    }
 }
 
 // Page-table variants of the decode attention (see kv_row): the same kernel reading K and V through a device page table. For the layout
-// benchmark of ADR 0002 only; they are not used by the decode step.
+// benchmark of ADR 0002 and, in the page-major form, by the decode step.
 #define PAGED_ENTRY(HD, LAYOUT, NAME)                                                                                         \
     extern "C" __global__ void NAME(const bf16* __restrict__ q, const bf16* __restrict__ k_cache, const bf16* __restrict__ v_cache, \
                                     float* __restrict__ ws, const int* __restrict__ pos, int heads, int kv_heads, int splits,    \
