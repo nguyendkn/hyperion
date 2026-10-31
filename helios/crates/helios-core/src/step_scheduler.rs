@@ -157,8 +157,11 @@ impl StepScheduler {
         (prompt + max_new as usize).min(self.cfg.max_seq_len).div_ceil(self.kv.config().page_tokens)
     }
 
+    /// Pages the running sequences hold or may still grow into: each shared page once (the pinned pages), plus every sequence's remaining
+    /// private growth up to its worst case.
     fn committed_pages(&self) -> usize {
-        self.active.iter().map(|a| self.worst_pages(a.prompt.len(), a.max_new)).sum()
+        let growth: usize = self.active.iter().map(|a| self.worst_pages(a.prompt.len(), a.max_new).saturating_sub(self.kv.table(a.id).map_or(0, <[_]>::len))).sum();
+        self.kv.pages_pinned() + growth
     }
 
     fn admit_waiting(&mut self) {
@@ -169,10 +172,12 @@ impl StepScheduler {
                 self.outbox.push(SeqEvent::Failed { id: request.id, message: format!("a prompt of {} tokens does not fit a context of {}", request.tokens.len(), self.cfg.max_seq_len) });
                 continue;
             }
-            // Admission control: a running sequence must never run out of pages while it decodes, so a request enters only when the worst-case
-            // pages of every running sequence and of this one (prompt plus every token it may generate) fit the pool. Shared prefix pages are
-            // counted per sequence, which is conservative. A lone request is always tried: it either fits or fails cleanly.
-            if !self.active.is_empty() && self.committed_pages() + self.worst_pages(request.tokens.len(), request.max_new) > self.kv.config().pages {
+            // Admission control: a running sequence must never run out of pages while it decodes, so a request enters only when the pages the
+            // running sequences hold or may grow into, plus this request's worst case (prompt plus every token it may generate), fit the pool.
+            // Pages shared through the prefix cache count once: those a running sequence already holds cost this request nothing. A lone
+            // request is always tried: it either fits or fails cleanly.
+            let new_pages = self.worst_pages(request.tokens.len(), request.max_new).saturating_sub(self.kv.pinned_pages_shared_with(&request.tokens));
+            if !self.active.is_empty() && self.committed_pages() + new_pages > self.kv.config().pages {
                 break;
             }
             match self.kv.admit(request.id, &request.tokens) {

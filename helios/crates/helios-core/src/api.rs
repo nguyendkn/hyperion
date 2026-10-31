@@ -47,6 +47,8 @@ pub struct AppState {
     pub ingress_tx: Option<IngressSender>,
     /// Requests being served; the CLI waits on it before it stops the scheduler.
     pub inflight: InflightTracker,
+    /// `max_tokens` when the client omits it, capped by the context left after the prompt (`--default-max-tokens`).
+    pub default_max_tokens: u32,
 }
 
 impl From<Arc<StateMachine>> for AppState {
@@ -59,6 +61,7 @@ impl From<Arc<StateMachine>> for AppState {
             tokenizer: None,
             ingress_tx: None,
             inflight: InflightTracker::new(),
+            default_max_tokens: DEFAULT_MAX_TOKENS,
         }
     }
 }
@@ -95,8 +98,9 @@ async fn health(axum::extract::State(app): axum::extract::State<AppState>) -> ax
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: u32,
+    /// Omitted: `min(context left after the prompt, AppState::default_max_tokens)`.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
@@ -104,10 +108,38 @@ pub struct ChatCompletionRequest {
     /// `true`: answer as server-sent events, one chunk per piece of text.
     #[serde(default)]
     pub stream: bool,
+    /// `{"include_usage": true}` adds a final chunk with the token counts to a streamed answer.
+    #[serde(default)]
+    pub stream_options: Option<StreamOptions>,
 }
 
-fn default_max_tokens() -> u32 {
-    1024
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StreamOptions {
+    #[serde(default)]
+    pub include_usage: bool,
+}
+
+/// The default of `--default-max-tokens`.
+pub const DEFAULT_MAX_TOKENS: u32 = 1024;
+
+/// OpenAI `usage`: prompt and completion tokens as the server counted them.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+impl Usage {
+    pub fn new(prompt: usize, completion: usize) -> Self {
+        Self { prompt_tokens: prompt as u32, completion_tokens: completion as u32, total_tokens: (prompt + completion) as u32 }
+    }
+}
+
+/// The `max_tokens` a request runs with: its own value, else the configured default capped by the context that is left after the prompt
+/// (at least one token: a prompt that fills the context was already refused by the tokenizer).
+pub fn effective_max_tokens(requested: Option<u32>, default: u32, context: usize, prompt: usize) -> u32 {
+    requested.unwrap_or_else(|| default.min(context.saturating_sub(prompt) as u32).max(1))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -121,6 +153,7 @@ pub struct ChatCompletionResponse {
     pub id: String,
     pub model: String,
     pub choices: Vec<Choice>,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -209,7 +242,7 @@ async fn serve_chat(
         sampling_params: SamplingParams {
             temperature: req.temperature,
             top_p: req.top_p,
-            max_tokens: req.max_tokens,
+            max_tokens: effective_max_tokens(req.max_tokens, app.default_max_tokens, tok.max_length(), ids.len()),
         },
         response_tx,
     };
@@ -240,7 +273,8 @@ async fn serve_chat(
             tracing::error!(error = %msg, "scheduler error before the first token");
             return Err(ApiError::GenerationFailed);
         }
-        return Ok(stream_response(tok.clone(), req.model.clone(), first, response_rx, guard).into_response());
+        let include_usage = req.stream_options.as_ref().is_some_and(|o| o.include_usage);
+        return Ok(stream_response(tok.clone(), req.model.clone(), first, response_rx, guard, ids.len(), include_usage).into_response());
     }
 
     let mut generated: Vec<u32> = Vec::new();
@@ -289,6 +323,7 @@ async fn serve_chat(
             },
             finish_reason,
         }],
+        usage: Usage::new(ids.len(), generated.len()),
     };
 
     Ok((axum::http::StatusCode::OK, axum::Json(resp)).into_response())
@@ -305,6 +340,11 @@ pub fn chunk_json(id: &str, model: &str, delta: serde_json::Value, finish_reason
     .to_string()
 }
 
+/// The closing chunk of `stream_options.include_usage`: no choices, the counts.
+pub fn usage_chunk_json(id: &str, model: &str, usage: Usage) -> String {
+    serde_json::json!({ "id": id, "object": "chat.completion.chunk", "model": model, "choices": [], "usage": usage }).to_string()
+}
+
 /// Answer with server-sent events: a role chunk, one content chunk per piece of decoded text, a
 /// final chunk carrying `finish_reason`, then `data: [DONE]`. A task owns the scheduler's event
 /// stream and the incremental detokeniser; if the client disconnects, its sends fail and the task
@@ -315,6 +355,8 @@ fn stream_response(
     first: StreamEvent,
     mut events: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
     guard: crate::inflight::InflightGuard,
+    prompt_tokens: usize,
+    include_usage: bool,
 ) -> impl IntoResponse {
     let (tx, out) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
     let id = format!("chatcmpl-{}", chrono_like_id());
@@ -326,11 +368,13 @@ fn stream_response(
             return;
         }
         let mut decoder = StreamDecoder::new();
+        let mut completion = 0usize;
         let mut finish = "stop".to_string();
         let mut current = Some(first);
         loop {
             match current.take() {
                 Some(StreamEvent::Tokens(ids)) => {
+                    completion += ids.len();
                     for token in ids {
                         match decoder.push(&tok, token).await {
                             Ok(text) if !text.is_empty() => {
@@ -370,6 +414,9 @@ fn stream_response(
             }
         }
         send(chunk_json(&id, &model, serde_json::json!({}), Some(&finish)));
+        if include_usage {
+            send(usage_chunk_json(&id, &model, Usage::new(prompt_tokens, completion)));
+        }
         send("[DONE]".into());
     });
     Sse::new(tokio_stream::wrappers::UnboundedReceiverStream::new(out))

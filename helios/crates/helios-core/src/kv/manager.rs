@@ -127,6 +127,28 @@ impl KvManager {
     pub fn pages_used(&self) -> usize {
         self.cfg.pages - self.free_pages.len()
     }
+    /// Pages held by a running sequence or shared by one, each counted once however many sequences share it.
+    pub fn pages_pinned(&self) -> usize {
+        self.blocks.iter().filter(|b| b.pins > 0).map(|b| b.pages.len()).sum()
+    }
+
+    /// Of the pages the cache would share with `prompt`, how many a running sequence already holds (no side effects). Same chain and same
+    /// last-token rule as [`admit`](Self::admit).
+    pub fn pinned_pages_shared_with(&self, prompt: &[u32]) -> usize {
+        let b = self.cfg.hash_block_tokens;
+        let mut hits: Vec<BlockId> = Vec::new();
+        for (i, hash) in chain(&self.cfg.identity, b, prompt).iter().enumerate() {
+            match self.index.get(hash) {
+                Some(&id) if self.blocks[id].tokens == prompt[i * b..(i + 1) * b] => hits.push(id),
+                _ => break,
+            }
+        }
+        while !hits.is_empty() && hits.len() * b >= prompt.len() {
+            hits.pop();
+        }
+        hits.iter().filter(|&&id| self.blocks[id].pins > 0).map(|&id| self.blocks[id].pages.len()).sum()
+    }
+
     pub fn stats(&self) -> KvStats {
         self.stats
     }

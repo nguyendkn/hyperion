@@ -67,6 +67,11 @@ struct Cli {
     /// larger value costs graph memory. A power of two from 1 to 32.
     #[arg(long, default_value_t = 32)]
     max_batch: usize,
+
+    /// `max_tokens` for a request that omits it: this many tokens or what is left of the context after the prompt, whichever is smaller.
+    /// Admission reserves pages for the prompt plus this value.
+    #[arg(long, default_value_t = helios_core::api::DEFAULT_MAX_TOKENS)]
+    default_max_tokens: u32,
 }
 
 /// Bytes of KV cache one sequence of `tokens` needs: K and V, per layer, per
@@ -264,6 +269,7 @@ async fn main() -> Result<()> {
         tokenizer,
         ingress_tx: Some(ingress_tx),
         inflight: helios_core::inflight::InflightTracker::new(),
+        default_max_tokens: cli.default_max_tokens,
     };
     let inflight = app_state.inflight.clone();
     let app = helios_core::api::router().with_state(app_state);

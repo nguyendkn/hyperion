@@ -2,9 +2,11 @@
 """Load generator for `POST /v1/chat/completions` (standard library only).
 
 Runs `--requests` streaming requests per concurrency level with a fixed prompt size and `max_tokens`, and reports TTFT p50/p90, inter-token latency
-p50/p90, output tokens/s (total and per request) and errors, as JSON. The prompt is `--input-tokens` words drawn by `--seed` from a fixed list of
-common one-token English words, so the prompt length in tokens is close to, not exactly, the word count (the server's `prompt_tokens` is reported when
-the stream carries a usage record). One streamed chunk is counted as one token: the scheduler streams one token per event.
+p50/p90, output tokens/s (total and per request) and errors, as JSON. Every request sets `stream_options.include_usage`, and all token counts come
+from the server's `usage` record, never from counting chunks. The prompt is built from `--seed`-drawn common English words; a calibration request
+first measures the server's `prompt_tokens` and the word count is scaled until the prompt is within `--tolerance` tokens of `--input-tokens`
+(the achieved count is in the report). Inter-token latency of a request is (last chunk - first chunk) / (completion_tokens - 1), then p50/p90 over
+requests, because one chunk may carry less than one token of text.
 
   python scripts/loadgen.py --url http://127.0.0.1:8080 --input-tokens 512 --output-tokens 256 --concurrency 1,2,4,8,16,32 --out loadgen.json
 """
@@ -42,6 +44,7 @@ def one_request(host, port, path, body, headers, results, lock):
     stamps = []
     error = None
     prompt_tokens = None
+    completion_tokens = None
     try:
         conn = http.client.HTTPConnection(host, port, timeout=600)
         conn.request("POST", path, body=body, headers=headers)
@@ -62,6 +65,7 @@ def one_request(host, port, path, body, headers, results, lock):
                 event = json.loads(data)
                 if event.get("usage"):
                     prompt_tokens = event["usage"].get("prompt_tokens")
+                    completion_tokens = event["usage"].get("completion_tokens")
                 for choice in event.get("choices", []):
                     if choice.get("delta", {}).get("content"):
                         stamps.append(time.perf_counter())
@@ -70,7 +74,7 @@ def one_request(host, port, path, body, headers, results, lock):
         error = f"{type(exc).__name__}: {exc}"
     end = time.perf_counter()
     with lock:
-        results.append({"start": start, "end": end, "stamps": stamps, "error": error, "prompt_tokens": prompt_tokens})
+        results.append({"start": start, "end": end, "stamps": stamps, "error": error, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
 
 
 def percentile(values, q):
@@ -80,20 +84,38 @@ def percentile(values, q):
     return ordered[min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))]
 
 
-def run_level(args, host, port, path, headers, concurrency):
+def body_for(args, words, rng, max_tokens):
+    payload = {
+        "model": args.model,
+        "messages": [{"role": "user", "content": prompt_for(rng, words)}],
+        "max_tokens": max_tokens,
+        "stream": True,
+        "temperature": 0,
+        "stream_options": {"include_usage": True},
+    }
+    return json.dumps(payload).encode()
+
+
+def calibrate(args, host, port, path, headers):
+    """Words per prompt that give `--input-tokens` tokens by the server's own count. Returns (words, achieved tokens)."""
+    words = args.input_tokens
+    achieved = None
+    for _ in range(4):
+        results = []
+        one_request(host, port, path, body_for(args, words, random.Random(args.seed), 1), headers, results, threading.Lock())
+        r = results[0]
+        if r["error"] or r["prompt_tokens"] is None:
+            raise SystemExit(f"calibration request failed: {r['error'] or 'the server sent no usage record'}")
+        achieved = r["prompt_tokens"]
+        if abs(achieved - args.input_tokens) <= args.tolerance:
+            break
+        words = max(1, round(words * args.input_tokens / achieved))
+    return words, achieved
+
+
+def run_level(args, host, port, path, headers, concurrency, words):
     rng = random.Random(args.seed)
-    bodies = []
-    for _ in range(args.requests):
-        payload = {
-            "model": args.model,
-            "messages": [{"role": "user", "content": prompt_for(rng, args.input_tokens)}],
-            "max_tokens": args.output_tokens,
-            "stream": True,
-            "temperature": 0,
-        }
-        if args.stream_usage:
-            payload["stream_options"] = {"include_usage": True}
-        bodies.append(json.dumps(payload).encode())
+    bodies = [body_for(args, words, rng, args.output_tokens) for _ in range(args.requests)]
     results, lock = [], threading.Lock()
     queue, qlock = list(range(len(bodies))), threading.Lock()
 
@@ -112,24 +134,25 @@ def run_level(args, host, port, path, headers, concurrency):
     for t in threads:
         t.join()
     wall = time.perf_counter() - began
-    good = [r for r in results if r["error"] is None and r["stamps"]]
+    good = [r for r in results if r["error"] is None and r["stamps"] and r["completion_tokens"]]
     ttft = [r["stamps"][0] - r["start"] for r in good]
-    itl = [b - a for r in good for a, b in zip(r["stamps"], r["stamps"][1:])]
-    tokens = sum(len(r["stamps"]) for r in good)
-    per_request = [len(r["stamps"]) / (r["stamps"][-1] - r["start"]) for r in good if r["stamps"][-1] > r["start"]]
+    itl = [(r["stamps"][-1] - r["stamps"][0]) / (r["completion_tokens"] - 1) for r in good if r["completion_tokens"] > 1]
+    tokens = sum(r["completion_tokens"] for r in good)
+    per_request = [r["completion_tokens"] / (r["end"] - r["start"]) for r in good if r["end"] > r["start"]]
     ms = lambda v: None if v is None else round(v * 1000, 3)
     return {
         "concurrency": concurrency,
         "requests": len(results),
         "errors": [r["error"] for r in results if r["error"]][:5],
-        "error_count": sum(1 for r in results if r["error"]),
+        "error_count": sum(1 for r in results if r["error"] or r["completion_tokens"] is None),
         "output_tokens": tokens,
         "wall_s": round(wall, 3),
         "ttft_ms": {"p50": ms(percentile(ttft, 0.5)), "p90": ms(percentile(ttft, 0.9))},
         "itl_ms": {"p50": ms(percentile(itl, 0.5)), "p90": ms(percentile(itl, 0.9))},
         "tokens_per_s_total": round(tokens / wall, 2) if wall > 0 else None,
         "tokens_per_s_per_request": round(statistics.median(per_request), 2) if per_request else None,
-        "prompt_tokens": next((r["prompt_tokens"] for r in good if r["prompt_tokens"] is not None), None),
+        "prompt_tokens": sorted({r["prompt_tokens"] for r in good}),
+        "completion_tokens": sorted({r["completion_tokens"] for r in good}),
     }
 
 
@@ -142,7 +165,7 @@ def main():
     ap.add_argument("--concurrency", default="1,2,4,8,16,32", help="comma-separated levels")
     ap.add_argument("--requests", type=int, default=0, help="requests per level (default: 4 x the concurrency, at least 8)")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--stream-usage", action="store_true", help="ask for a usage record in the stream (stream_options.include_usage)")
+    ap.add_argument("--tolerance", type=int, default=8, help="accepted distance of the prompt from --input-tokens, in server tokens")
     ap.add_argument("--api-key", default=None)
     ap.add_argument("--out", default=None, help="write the JSON report here (default: stdout only)")
     args = ap.parse_args()
@@ -153,11 +176,13 @@ def main():
     if args.api_key:
         headers["Authorization"] = f"Bearer {args.api_key}"
     levels = [int(x) for x in args.concurrency.split(",") if x]
-    report = {"url": args.url, "input_words": args.input_tokens, "output_tokens": args.output_tokens, "seed": args.seed, "levels": []}
+    words, achieved = calibrate(args, host, port, path, headers)
+    report = {"url": args.url, "target_input_tokens": args.input_tokens, "prompt_words": words, "prompt_tokens": achieved, "output_tokens": args.output_tokens, "seed": args.seed, "levels": []}
+    print(json.dumps({k: report[k] for k in ("target_input_tokens", "prompt_words", "prompt_tokens")}), flush=True)
     base_requests = args.requests
     for level in levels:
         args.requests = base_requests or max(8, 4 * level)
-        result = run_level(args, host, port, path, headers, level)
+        result = run_level(args, host, port, path, headers, level, words)
         report["levels"].append(result)
         print(json.dumps(result), flush=True)
     if args.out:

@@ -13,6 +13,28 @@ How hardware runs are done and what went wrong before. Every number recorded fro
 - Profilers: install `nsight-systems-20xx.y.z` (the `-target` package has no CLI); use `--cuda-graph-trace=node` to see kernels inside graphs. `ncu` needs GPU counter access, which the pod does not grant (`ERR_NVGPUCTRPERM`).
 - From Windows: set `MSYS_NO_PATHCONV=1`; `kubectl cp` reads a `C:` path as a remote spec, so run it from the file's directory with a relative name.
 
+## Persistent cache (PVC `hyperion-cache`, 200 GiB)
+
+- Create once with `bash scripts/pod-spec.sh pvc | kubectl apply -f -`; reuse it after that. It is mounted at `/cache` by `scripts/pod-spec.sh pod <gpus> <hours>`. **Never delete it without the owner**; every report lists its state (`kubectl get pvc hyperion-cache`, and `du -sh /cache/*` from a pod).
+- After `. scripts/pod-lib.sh`, `use_cache` sets `CARGO_TARGET_DIR=/cache/target/<rev12>` (one directory per revision, so A/B builds never share one), `HF_HOME=/cache/hf`, `HYPERION_PACKAGES=/cache/packages`, and `CARGO_HOME`/`RUSTUP_HOME` under `/cache` so a second session skips the toolchain download and the dependency build. It prints a `CACHE target=...` line; keep it with the `BUILD revision=... sha256=...` line.
+- Weights and oracles are fetched into `/cache` only on a miss (`python scripts/fetch-model-fixtures.py <id> --weights` verifies sha256 and resumes); a session never re-downloads what is there. A package built into `/cache/packages` is keyed by the revision and the model id.
+- Pod deadline and cleanup: `activeDeadlineSeconds` is set by `pod-spec.sh`, and the caller sets `trap 'kubectl delete pod hyperion-work --ignore-not-found' EXIT` before applying. At the end of a session delete the pod, check `kubectl get pods` is empty, and leave the PVC.
+
+## Kernel bring-up with compute-sanitizer
+
+`compute-sanitizer` ships with the CUDA devel image (`/usr/local/cuda/bin`). Run a new kernel on the smallest case first, one tool at a time (they are slow and exclusive):
+
+```
+compute-sanitizer --tool memcheck  --error-exitcode 1 <test-exe> <test-name> --ignored --nocapture
+compute-sanitizer --tool racecheck --error-exitcode 1 <test-exe> <test-name> --ignored --nocapture
+compute-sanitizer --tool initcheck --error-exitcode 1 <test-exe> <test-name> --ignored --nocapture
+```
+
+- Use a debug-info build of the kernels for readable reports (`nvcc -lineinfo`); the committed fatbin is not rebuilt for this.
+- Run the paged-kernel unit tests (lengths 1, 63, 64, 65, 129) under all three before any end-to-end run; then the same for bucket 8.
+- A graph-captured launch is checked through its direct-launch twin: sanitizer does not step inside a replayed graph.
+- Record the tool, the test name and "0 errors" (or the report) in the ledger row with the tag `[RUN on H100]`.
+
 ## Qwen2.5-7B session (planned; nothing here has run on a GPU yet)
 
 Local CPU venv for dry-running `gen-oracle-large.py` and other oracle scripts without a GPU: `%LOCALAPPDATA%\hyperion\venvs\oracle` (Python 3.12, CPU torch, transformers, safetensors). Not a scratch venv — keep it across sessions instead of recreating it in `%TEMP%\hyperion-scratch\`.

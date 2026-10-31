@@ -57,3 +57,6 @@ Compile-level test that a stub variant with different capabilities needs no edit
 
 ## Clarification 2026-10-31 (no trait change)
 The multi-rank stub implements `Communicator` unchanged (`helios-hal/src/multi_rank_comm.rs`): a buffer is an opaque `u64`, a device address for NCCL and a handle into a host arena for the stub. Only the doc comment of the trait says so; no signature changed, so the narrow amendment of the 2026-10-31 run (A3) was not used. The stub moves `F32` buffers only; other element types are `HalError::Unsupported`.
+
+## Amendment 2026-11-01: `KvSpec.max_batch` (data field, no method change; owner-approved)
+`KvSpec` gains `max_batch: usize` (default 1): the largest decode bucket, a power of two from 1 to 32 (`--max-batch`). `reserve_kv` and `capture_graphs` read it: a decode graph is captured for each of 1, 2, 4, ... `max_batch` before the pool is mapped, so the graph memory is part of what `commit_kv` measures. No method signature of `ComputeBackend` or `Communicator` changes; a backend that has no batched path ignores the field and reports `Capabilities` accordingly. The bucket list itself is computed by `helios_hal::decode_buckets`, shared by the backend and the scheduler.

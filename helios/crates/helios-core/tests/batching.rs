@@ -207,3 +207,18 @@ fn shared_blocks_stay_while_any_row_uses_them_and_pages_return_when_all_are_done
     assert!(report.hit_rate > 0.5, "{}", report.hit_rate);
     assert!(report.peak_pages < 8 * 11, "the shared prefix was not duplicated per row: {} pages", report.peak_pages);
 }
+
+#[test]
+fn a_shared_prefix_is_reserved_once_against_the_pool() {
+    // A 4096-token prefix is 64 pages. Eight sequences with 40 private prompt tokens and 20 new tokens need 2 private pages each: 64 + 16 = 80
+    // pages. A pool of 100 pages holds all eight only if the prefix counts once (counting it per sequence needs 8 x 66 = 528).
+    let prefix: Vec<u32> = (0..4096).collect();
+    let mut requests = vec![TraceRequest { arrive: 0, tokens: prefix.iter().copied().chain(900_000..900_040).collect(), max_new: 20, cancel_at: None }];
+    for i in 1..8u32 {
+        requests.push(TraceRequest { arrive: 20, tokens: prefix.iter().copied().chain(900_000 + i * 100..900_000 + i * 100 + 40).collect(), max_new: 20, cancel_at: None });
+    }
+    let report = run_with(&Trace { requests }, 64 * 100, 8, 16, 1);
+    assert_eq!((report.finished, report.failed), (8, 0));
+    assert!(report.peak_running >= 7, "the prefix did not hold the others back: {}", report.peak_running);
+    assert!(report.peak_pages <= 100);
+}

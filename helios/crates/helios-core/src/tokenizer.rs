@@ -66,6 +66,11 @@ impl PromptTokenizer {
         }
     }
 
+    /// The longest prompt (and context) this tokenizer accepts.
+    pub fn max_length(&self) -> usize {
+        self.max_length
+    }
+
     /// Format prompts with the model's chat template instead of the plain join.
     pub fn with_chat_template(mut self, template: ChatTemplate) -> Self {
         self.chat_template = Some(Arc::new(template));
