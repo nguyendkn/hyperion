@@ -184,6 +184,7 @@ impl StepScheduler {
                 Ok(admission) => {
                     let request = self.queue.pop_front().expect("front");
                     let slot = self.free_slot().expect("a slot is free");
+                    tracing::info!(request = request.id, prompt_tokens = request.tokens.len(), cached_tokens = admission.cached_tokens, running = self.active.len() + 1, queued = self.queue.len().saturating_sub(1), "request admitted");
                     let table = admission.table.iter().enumerate().map(|(i, p)| (i, *p)).collect();
                     self.active.push(Active { id: request.id, slot, prompt: request.tokens, generated: Vec::new(), max_new: request.max_new, sampling: request.sampling, phase: Phase::Prefill { next: admission.cached_tokens }, announce: Some(table) });
                 }
