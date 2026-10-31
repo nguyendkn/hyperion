@@ -125,7 +125,6 @@ impl HopperBackend {
         if session.dims != *d {
             return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
         }
-        self.claim_pool(super::backend::PoolUse::Generate)?;
         let cublas = self.cublas.lock().expect("cublas mutex poisoned");
         let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
         let _no_new_gpu_work = dev.forbid_new_gpu_work();
@@ -172,7 +171,6 @@ impl HopperBackend {
         }
         let cublas = self.cublas.lock().expect("cublas mutex poisoned");
         let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
-        self.claim_pool(super::backend::PoolUse::Generate)?;
         // Everything the generation uses was built before the pool was mapped; refuse to build anything now.
         let _no_new_gpu_work = dev.forbid_new_gpu_work();
         session.generate(&dev, cublas, prompt, max_new, eos, sampling, on_token, mode, forced, trace, profile, timing)

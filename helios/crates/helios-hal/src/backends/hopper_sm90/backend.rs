@@ -36,13 +36,6 @@ pub(super) const RMSNORM_IMAGE: &[u8] = include_bytes!("../../../kernels/rmsnorm
 /// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
 pub(super) const ROW_BLOCK: u32 = 256;
 
-/// Who uses the KV pool: the `generate` path (slot 0, pages 0..n) or the scheduler through `submit_step`. They never share it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum PoolUse {
-    Generate,
-    Plan,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KvState {
     Reserved,
@@ -91,7 +84,6 @@ pub struct HopperBackend {
     kv: Mutex<Option<KvLifecycle>>,
     /// The maximum sequence length of the model loaded, for the page tables and the RoPE tables.
     model_max_seq: Mutex<usize>,
-    pool_use: Mutex<Option<PoolUse>>,
     ledger: Mutex<StepLedger>,
     pub(super) device: Mutex<CudaDevice>,
 }
@@ -115,20 +107,7 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), pool_use: Mutex::new(None), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(CudaDevice::probe()?) })
-    }
-
-    /// Take the KV pool for `want`; refused when the other user has it (the generate path and the scheduler never share the pool pages).
-    pub(super) fn claim_pool(&self, want: PoolUse) -> Result<()> {
-        let mut current = self.pool_use.lock().expect("pool-use mutex poisoned");
-        match *current {
-            None => {
-                *current = Some(want);
-                Ok(())
-            }
-            Some(have) if have == want => Ok(()),
-            Some(_) => Err(HalError::Invalid("the KV pool is used either by generate() or by submit_step(), not both in one load".into()).into()),
-        }
+        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(CudaDevice::probe()?) })
     }
 
     /// The whole load order after `load_model` with the defaults of a single-sequence user: reserve, capture the graphs for buckets up to
@@ -360,7 +339,6 @@ impl ComputeBackend for HopperBackend {
         }
         // A pool of an earlier model goes with its session.
         *self.kv.lock().expect("kv mutex poisoned") = None;
-        *self.pool_use.lock().expect("pool-use mutex poisoned") = None;
         *self.ledger.lock().expect("ledger mutex poisoned") = StepLedger::new(2);
         *self.model_max_seq.lock().expect("max-seq mutex poisoned") = config.model.max_seq_len as usize;
         *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
@@ -385,7 +363,6 @@ impl ComputeBackend for HopperBackend {
         // The range may be as large as the whole device: only addresses are used.
         let range = VmmRange::reserve(&dev, dev.total_vram_bytes() as usize)?;
         let base = range.base();
-        *self.pool_use.lock().expect("pool-use mutex poisoned") = None;
         *self.kv.lock().expect("kv mutex poisoned") = Some(KvLifecycle { range, state: KvState::Reserved, max_batch: spec.max_batch, growth: 0 });
         Ok(KvReservation::new(NAME, Reserved { base, max_batch: spec.max_batch }))
     }
@@ -442,7 +419,6 @@ impl ComputeBackend for HopperBackend {
     fn submit_step(&self, pool: &KvPool, plan: &StepPlan) -> Result<StepTicket> {
         let handle = pool.payload::<PoolHandle>(NAME)?;
         plan.validate()?;
-        self.claim_pool(PoolUse::Plan)?;
         let ticket = self.ledger.lock().expect("ledger mutex poisoned").submit()?;
         let run = || -> Result<StepOutput> {
             let dev = self.device.lock().expect("device mutex poisoned");

@@ -67,7 +67,7 @@ fn chunk_capacity(tokens: usize) -> u32 {
 /// Returns, per sequence, the logits after the prompt's first sampled token was fed and after each later step.
 fn run(backend: &HopperBackend, pool: &KvPool, seqs: &[Seq], bucket: u16, steps: usize) -> Vec<Vec<Vec<f32>>> {
     let mut step = 0u64;
-    let mut take = |plan: &StepPlan| {
+    let take = |plan: &StepPlan| {
         let ticket = backend.submit_step(pool, plan).expect("submit_step");
         backend.take_output(ticket).expect("take_output")
     };
@@ -152,5 +152,81 @@ fn masked_rows_write_nothing_and_a_row_between_buckets_is_reported() {
     let in_1 = run(&backend, &pool, &seqs[..1], 1, 6);
     let diff = max_diff(&in_1[0], &in_8[0]);
     println!("INFO row 0, bucket 1 vs bucket 8: max |logit difference| {diff:.4} over 6 steps (not a gate: the GEMM reduction depends on M)");
+    backend.shutdown().unwrap();
+}
+
+/// Greedy tokens of `prompt` through the plan path alone: one prefill plan (the pages of slot 0 are 0..), then `count - 1` decode steps.
+fn plan_greedy(backend: &HopperBackend, pool: &KvPool, prompt: &[u32], count: usize) -> Vec<u32> {
+    let pages: Vec<u32> = (0..(prompt.len() + count).div_ceil(PAGE) as u32).collect();
+    let take = |plan: &StepPlan| {
+        let ticket = backend.submit_step(pool, plan).expect("submit_step");
+        backend.take_output(ticket).expect("take_output")
+    };
+    let mut tokens = Vec::new();
+    // The prompt in chunks of the largest capacity (4096), as the scheduler does.
+    let mut start = 0;
+    let mut step = 0;
+    while start < prompt.len() {
+        let end = (start + 4096).min(prompt.len());
+        let last = end == prompt.len();
+        step += 1;
+        let plan = StepPlan {
+            step,
+            capacity: Capacity::Prefill { rows: chunk_capacity(end - start) },
+            rows: vec![Row { slot: 0, input: Input::Tokens(prompt[start..end].to_vec()), n_tokens: (end - start) as u32, position: start as u32, table_len: end.div_ceil(PAGE) as u32, want: if last { Want::Token } else { Want::Nothing } }],
+            deltas: if start == 0 { deltas_clone(&pages) } else { Vec::new() },
+            inits: if start == 0 { vec![SlotInit { slot: 0, sampling: SamplingInit::GREEDY, max_new_tokens: count as u32 }] } else { Vec::new() },
+        };
+        let out = take(&plan);
+        if last {
+            tokens.push(out.rows[0].tokens[0]);
+        }
+        start = end;
+    }
+    for k in 1..count {
+        step += 1;
+        let position = (prompt.len() + k - 1) as u32;
+        let plan = StepPlan { step, capacity: Capacity::Decode { bucket: 1 }, rows: vec![Row { slot: 0, input: Input::FromDevice, n_tokens: 1, position, table_len: (position as usize + 1).div_ceil(PAGE) as u32, want: Want::Token }], deltas: Vec::new(), inits: Vec::new() };
+        tokens.push(take(&plan).rows[0].tokens[0]);
+    }
+    tokens
+}
+
+fn deltas_clone(pages: &[u32]) -> Vec<PageDelta> {
+    pages.iter().enumerate().map(|(i, &page)| PageDelta { slot: 0, index: i as u32, page }).collect()
+}
+
+/// G2: the plan path gives the same greedy tokens as `generate` (the path every oracle was verified through) on each prompt of the compact
+/// oracle that fits 4 chunks, and for the 0.5B the 16 tokens Hugging Face generated. Exact equality of the token ids.
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn the_plan_path_gives_the_greedy_tokens_of_generate_and_of_hugging_face() {
+    let path = std::env::var_os("HYPERION_COMPACT_ORACLE").expect("set HYPERION_COMPACT_ORACLE");
+    let oracle = helios_hal::oracle::CompactOracle::from_json(&std::fs::read(path).unwrap()).expect("compact oracle");
+    let (backend, pool) = open(1, 16384 / PAGE + 8);
+    let count = 24;
+    for prompt in oracle.prompts.iter().filter(|p| p.ids.len() + count <= 16384) {
+        let via_plan = plan_greedy(&backend, &pool, &prompt.ids, count);
+        let via_generate = {
+            let mut ids = Vec::new();
+            let package = package();
+            let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+            let dims = helios_hal::Qwen2Dims::from_manifest(&manifest.model).unwrap();
+            backend.generate_streaming(&dims, &prompt.ids, count, &[], &helios_hal::SamplingConfig::greedy(), &mut |t| ids.push(t)).expect("generate");
+            ids
+        };
+        assert_eq!(via_plan, via_generate, "prompt of {} tokens: the plan path and generate disagree", prompt.ids.len());
+        println!("prompt of {:>5} tokens: plan path == generate for {count} greedy tokens: {:?}", prompt.ids.len(), &via_plan[..8]);
+    }
+    if let Some(path) = std::env::var_os("HYPERION_ORACLE") {
+        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        if let (Some(prompt), Some(want)) = (json["prompt_ids"].as_array(), json["generated_ids"].as_array()) {
+            let prompt: Vec<u32> = prompt.iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            let want: Vec<u32> = want.iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            let got = plan_greedy(&backend, &pool, &prompt, want.len());
+            assert_eq!(got, want, "the plan path differs from the Hugging Face generation");
+            println!("plan path == Hugging Face generate for {} tokens", want.len());
+        }
+    }
     backend.shutdown().unwrap();
 }

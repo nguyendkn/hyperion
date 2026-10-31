@@ -756,7 +756,7 @@ impl Session {
     }
 
     /// Give slot 0 the first `tokens.div_ceil(64)` pages of the pool, in order: how a generation outside a scheduler uses the pool (the
-    /// scheduler and the `generate` path never share it). A typed refusal when the pool is not mapped or has fewer pages.
+    /// scheduler and the `generate` path may follow one another but never run at the same time: both write the first pages of the pool). A typed refusal when the pool is not mapped or has fewer pages.
     pub(super) fn assign_slot0(&self, dev: &CudaDevice, tokens: usize) -> Result<()> {
         let pages = tokens.div_ceil(PAGE_TOKENS);
         if self.pool_pages == 0 {
