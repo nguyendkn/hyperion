@@ -1317,3 +1317,22 @@ fn new_gpu_work_is_refused_while_forbidden_and_allowed_after() {
     let _handle = Cublas::new(&dev).expect("so is a cuBLAS handle");
     dev.teardown_ref().unwrap();
 }
+
+/// Times the heuristic's candidate algorithms for the two small decode projections of the loaded model (fused QKV and attention output) and
+/// prints them. It changes nothing: the engine always runs the heuristic's first algorithm. `scripts/bench-cublaslt.sh` runs it.
+#[test]
+#[ignore = "needs an H100 (no weights)"]
+fn cublaslt_algorithm_benchmark() {
+    let backend = HopperBackend::new().expect("an H100 must be present");
+    backend.initialize_device(&helios_hal::RankInfo::single()).unwrap();
+    println!("BUILD revision={}", std::env::var("HYPERION_REVISION").unwrap_or_else(|_| "unknown".into()));
+    for (name, out, inn, bias) in [("qkv 7B", 4608usize, 3584usize, true), ("o_proj 7B", 3584, 3584, false), ("qkv 0.5B", 1152, 896, true), ("o_proj 0.5B", 896, 896, false)] {
+        for (algorithm, microseconds) in backend.benchmark_cublaslt_candidates(out, inn, bias, 200).unwrap() {
+            match microseconds {
+                Some(us) => println!("cublaslt {name} 1x{out}x{inn}: {us:.2} us  {algorithm}"),
+                None => println!("cublaslt {name} 1x{out}x{inn}: cannot run  {algorithm}"),
+            }
+        }
+    }
+    backend.shutdown().unwrap();
+}

@@ -426,7 +426,6 @@ impl Session {
         }
         // The one-token shapes, so cuBLAS has nothing left to set up when a capture is open.
         self.upload(dev, &[0u32], 0)?;
-        self.tune_projections(dev, cublas)?;
         dev.htod(self.b.ring_base, &0u32.to_le_bytes())?;
         self.launches(dev, cublas, 1, Step::Decode, None)?;
         self.pick(dev)?;
@@ -451,26 +450,6 @@ impl Session {
         self.graph_chain = Some(chain);
         self.graph_logits = Some(logits);
         Ok(())
-    }
-
-    /// Let cuBLASLt time its candidate algorithms for the two decode projections that stay far from the memory bandwidth (fused QKV and the
-    /// attention output) and keep the fastest, before the graphs are captured. The choice is stored and logged (see `cuda::cublaslt`).
-    fn tune_projections(&self, dev: &CudaDevice, cublas: &Cublas) -> Result<()> {
-        let Some(lt) = cublas.lt() else { return Ok(()) };
-        let (b, d) = (&self.b, &self.dims);
-        let (q_dim, kv_dim) = (d.heads * d.head_dim, d.kv_heads * d.head_dim);
-        let w = &self.layers[0];
-        let jobs = [(w.qkv_w, b.x, b.qkv, w.qkv_b, q_dim + 2 * kv_dim, d.hidden), (w.o_w, b.attn, b.o, 0, d.hidden, q_dim)];
-        for (weight, x, y, bias, out, inn) in jobs {
-            if let Some(line) = lt.tune(dev, weight, x, y, bias, 1, out, inn)? {
-                tracing::info!("{line}");
-                // Tests install no log subscriber: this makes the choice visible in their output too.
-                if std::env::var_os("HYPERION_LOG_TUNING").is_some() {
-                    eprintln!("TUNING {line}");
-                }
-            }
-        }
-        dev.synchronize()
     }
 
     /// Release the graphs, events and every device buffer.

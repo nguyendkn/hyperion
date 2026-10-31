@@ -3,11 +3,11 @@
 //! and cuBLAS (`libcublasLt.so.13`, then `.so.12`; `cublasLt64_13.dll`, then `cublasLt64_12.dll`), with a typed
 //! `LoadError` when the library is missing; the caller then keeps the plain cuBLAS path.
 //!
-//! Algorithm choice. The heuristic's first answer is not always the fastest for the skinny shapes of a decode step (the QKV and attention-output
-//! projections reach about half of the memory bandwidth). `CublasLt::tune` times up to [`CANDIDATES`] algorithms of a shape at load, within a
-//! time budget, and keeps the fastest. The algorithm decides the order of the f32 sums, so the choice must be reproducible: it is stored in a
-//! cache file keyed by GPU, driver, cuBLASLt version and shape (under the user's cache directory, never in the repository), logged at start-up,
-//! and a later load reuses the stored algorithm instead of timing again. `HYPERION_CUBLASLT_TUNE=off` keeps the heuristic's first answer.
+//! Algorithm choice. The algorithm is the heuristic's first answer for the shape, always: it decides the order of the f32 sums, so it must
+//! be reproducible without any stored state (no cache file, no timing at load). Its id is logged once per shape when the shape is planned,
+//! which the model load does for every shape a generation uses. [`CublasLt::benchmark`] times the heuristic's candidates for a shape without
+//! changing the choice; `scripts/bench-cublaslt.sh` runs it on a GPU host (a measurement showed no candidate beating the first on the decode
+//! shapes of Qwen2.5-0.5B and 7B).
 //!
 //! The arithmetic is the one `Cublas::linear_bf16_f32` plus the `bias_cast` kernel perform: f32 accumulation, the
 //! bias added in f32, one rounding to bf16. Same layout convention as `cublas.rs`: `y[T,out] = x[T,in] * W[out,in]^T`
@@ -19,9 +19,7 @@
 
 use std::collections::HashMap;
 use std::os::raw::{c_int, c_void};
-use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 
@@ -46,13 +44,10 @@ const EPILOGUE_DEFAULT: u32 = 1;
 const EPILOGUE_BIAS: u32 = 4;
 // cublasLtMatmulPreferenceAttributes_t
 const PREF_MAX_WORKSPACE_BYTES: c_int = 1;
-/// Algorithms timed per shape.
+/// Algorithms the heuristic is asked for per shape (the first is used; all are timed by `benchmark`).
 pub const CANDIDATES: usize = 8;
-/// Time for all the tuning of one load.
-const TUNE_BUDGET: Duration = Duration::from_secs(2);
-/// Launches per candidate: 3 warm-ups, then 20 timed between two events.
+/// Launches of a candidate before it is timed.
 const WARM_UPS: usize = 3;
-const TIMED_RUNS: usize = 20;
 
 #[cfg(windows)]
 const LT_LIBRARIES: &[&str] = &["cublasLt64_13.dll", "cublasLt64_12.dll"];
@@ -115,10 +110,9 @@ fn api() -> std::result::Result<&'static Api, LoadError> {
     let loaded = API.get_or_init(|| {
         let library = Library::open(LT_LIBRARIES)?;
         let _ = LIBRARY_NAME.set(library.name().to_string());
-        tracing::info!(library = library.name(), "cuBLASLt library loaded");
         // Safety: each type is the exact C signature of the function named.
         unsafe {
-            Ok(Api {
+            let api = Api {
                 create: library.symbol("cublasLtCreate")?,
                 destroy: library.symbol("cublasLtDestroy")?,
                 desc_create: library.symbol("cublasLtMatmulDescCreate")?,
@@ -132,7 +126,10 @@ fn api() -> std::result::Result<&'static Api, LoadError> {
                 heuristic: library.symbol("cublasLtMatmulAlgoGetHeuristic")?,
                 version: library.symbol("cublasLtGetVersion").ok(),
                 matmul: library.symbol("cublasLtMatmul")?,
-            })
+            };
+            let version = api.version.map_or_else(|| "unknown".to_string(), |v| v().to_string());
+            tracing::info!(library = library.name(), cublaslt_version = version, "cuBLASLt library loaded");
+            Ok(api)
         }
     });
     loaded.as_ref().map_err(Clone::clone)
@@ -154,10 +151,8 @@ struct Plan {
     d: Handle,
     algo: HeuristicResult,
     has_bias: bool,
-    /// The heuristic's answers, best first (what `tune` chooses among).
+    /// The heuristic's answers, best first (`algo` is the first; the rest are only timed by `benchmark`).
     candidates: Vec<HeuristicResult>,
-    /// How the algorithm was chosen: "heuristic", "timed" or "cached".
-    source: &'static str,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -176,8 +171,6 @@ pub struct CublasLt {
     /// Device address and size of the workspace every call is given.
     workspace: Mutex<(u64, usize)>,
     plans: Mutex<HashMap<Shape, Plan>>,
-    /// When tuning started, for the time budget.
-    tune_started: Mutex<Option<Instant>>,
 }
 
 // Safety: the handle, the descriptors and the stream are only used behind the backend's mutexes.
@@ -191,7 +184,7 @@ impl CublasLt {
         dev.set_current()?;
         let mut handle: Handle = std::ptr::null_mut();
         unsafe { check("cublasLtCreate", (api.create)(&mut handle))? };
-        Ok(Self { handle, api, stream: dev.stream() as *mut c_void, workspace: Mutex::new((0, 0)), plans: Mutex::new(HashMap::new()), tune_started: Mutex::new(None) })
+        Ok(Self { handle, api, stream: dev.stream() as *mut c_void, workspace: Mutex::new((0, 0)), plans: Mutex::new(HashMap::new()) })
     }
 
     /// The scratch memory algorithms may use (the same buffer cuBLAS was given). Set before the first call.
@@ -203,7 +196,7 @@ impl CublasLt {
         let dim = |d: usize| u64::try_from(d).map_err(|_| anyhow!("dimension {d} too large"));
         let (t, o, i) = (dim(shape.tokens)?, dim(shape.out)?, dim(shape.inn)?);
         let api = self.api;
-        let (workspace_bytes, mut plan) = (self.workspace.lock().expect("workspace mutex poisoned").1, Plan { desc: std::ptr::null_mut(), a: std::ptr::null_mut(), b: std::ptr::null_mut(), d: std::ptr::null_mut(), algo: HeuristicResult { algo: [0; 8], workspace_size: 0, state: 0, waves_count: 0.0, reserved: [0; 4] }, has_bias: shape.has_bias, candidates: Vec::new(), source: "heuristic" });
+        let (workspace_bytes, mut plan) = (self.workspace.lock().expect("workspace mutex poisoned").1, Plan { desc: std::ptr::null_mut(), a: std::ptr::null_mut(), b: std::ptr::null_mut(), d: std::ptr::null_mut(), algo: HeuristicResult { algo: [0; 8], workspace_size: 0, state: 0, waves_count: 0.0, reserved: [0; 4] }, has_bias: shape.has_bias, candidates: Vec::new() });
         let mut pref: Handle = std::ptr::null_mut();
         let built = (|| -> Result<()> {
             unsafe {
@@ -237,7 +230,10 @@ impl CublasLt {
             }
         }
         match built {
-            Ok(()) => Ok(plan),
+            Ok(()) => {
+                tracing::info!("cuBLASLt {}: algorithm {} (heuristic, first of {})", shape_key(&shape), algo_hex(&plan.algo.algo), plan.candidates.len());
+                Ok(plan)
+            }
             Err(e) => {
                 self.destroy(&plan);
                 Err(e)
@@ -258,38 +254,22 @@ impl CublasLt {
         }
     }
 
-    /// Choose the algorithm of one shape by measurement, for the shape of `linear_bf16(w, x, y, bias, tokens, out, inn)` (the buffers are only
-    /// used to time the candidates; `y` is overwritten). Reuses a stored choice when the cache file has one for this GPU, driver and
-    /// cuBLASLt version; otherwise times the candidates (if the time budget of this load is not spent), stores the winner and returns it.
-    /// Returns a one-line description for the log. A no-op returning `None` when `HYPERION_CUBLASLT_TUNE=off`.
+    /// Time the heuristic's candidates for one shape (the buffers are only used for timing; `y` is overwritten) and return, per candidate in
+    /// the heuristic's order, its id and microseconds per call (`None` when the candidate cannot run the shape). Changes nothing: the
+    /// algorithm used by `linear_bf16` stays the heuristic's first. Run by `scripts/bench-cublaslt.sh`.
     #[allow(clippy::too_many_arguments)]
-    pub fn tune(&self, dev: &CudaDevice, w: u64, x: u64, y: u64, bias: u64, tokens: usize, out: usize, inn: usize) -> Result<Option<String>> {
-        if std::env::var("HYPERION_CUBLASLT_TUNE").is_ok_and(|v| v == "off") {
-            return Ok(None);
-        }
-        // Plans are created lazily by the first call; make sure this one exists (and has its heuristic candidates).
+    pub fn benchmark(&self, dev: &CudaDevice, w: u64, x: u64, y: u64, bias: u64, tokens: usize, out: usize, inn: usize, runs: usize) -> Result<Vec<(String, Option<f64>)>> {
+        // Plans are created by the first call; make sure this one exists (and has its heuristic candidates).
         self.linear_bf16(w, x, y, bias, tokens, out, inn)?;
         let shape = Shape { tokens, out, inn, has_bias: bias != 0 };
-        let key = format!("{}|{}|{}", self.environment_key(dev), shape_key(&shape), self.version_string());
-        let mut cache = TuneCache::load();
-        let mut plans = self.plans.lock().expect("plan mutex poisoned");
-        let plan = plans.get_mut(&shape).expect("created above");
-        if let Some(stored) = cache.entries.get(&key).and_then(|hex| parse_algo(hex)) {
-            plan.algo.algo = stored;
-            plan.source = "cached";
-            return Ok(Some(format!("cuBLASLt {}: cached algorithm {}", shape_key(&shape), algo_hex(&stored))));
-        }
-        let started = *self.tune_started.lock().expect("tune mutex poisoned").get_or_insert_with(Instant::now);
-        if started.elapsed() > TUNE_BUDGET || plan.candidates.len() < 2 {
-            return Ok(Some(format!("cuBLASLt {}: heuristic algorithm {} (tuning budget spent or one candidate)", shape_key(&shape), algo_hex(&plan.algo.algo))));
-        }
+        let plans = self.plans.lock().expect("plan mutex poisoned");
+        let plan = &plans[&shape];
         let (workspace, workspace_bytes) = *self.workspace.lock().expect("workspace mutex poisoned");
         let (alpha, beta) = (1.0f32, 0.0f32);
         let start = super::event::Event::new_timed(dev)?;
         let end = super::event::Event::new_timed(dev)?;
-        let mut best: Option<(usize, f64)> = None;
-        let mut times = Vec::new();
-        for (index, candidate) in plan.candidates.iter().enumerate() {
+        let mut results = Vec::new();
+        for candidate in &plan.candidates {
             let run = |count: usize| -> Result<()> {
                 for _ in 0..count {
                     unsafe {
@@ -302,48 +282,19 @@ impl CublasLt {
                 }
                 Ok(())
             };
-            // A candidate that cannot run this shape is skipped, not an error.
+            // A candidate that cannot run this shape is reported, not an error.
             if run(WARM_UPS).is_err() {
-                times.push(f64::INFINITY);
+                results.push((algo_hex(&candidate.algo), None));
                 continue;
             }
             dev.synchronize()?;
             start.record(dev)?;
-            run(TIMED_RUNS)?;
+            run(runs)?;
             end.record(dev)?;
             end.wait()?;
-            let ms = super::event::Event::elapsed_ms(&start, &end)? / TIMED_RUNS as f64;
-            times.push(ms);
-            // Ties keep the earlier (the heuristic's preference).
-            if best.is_none_or(|(_, b)| ms < b * 0.999) {
-                best = Some((index, ms));
-            }
+            results.push((algo_hex(&candidate.algo), Some(super::event::Event::elapsed_ms(&start, &end)? * 1000.0 / runs as f64)));
         }
-        let (index, ms) = best.ok_or_else(|| anyhow!("no cuBLASLt algorithm could run {}", shape_key(&shape)))?;
-        plan.algo = plan.candidates[index];
-        plan.source = "timed";
-        cache.entries.insert(key, algo_hex(&plan.algo.algo));
-        cache.save();
-        let listing: Vec<String> = times.iter().map(|t| if t.is_finite() { format!("{:.1}", t * 1000.0) } else { "n/a".into() }).collect();
-        Ok(Some(format!("cuBLASLt {}: timed {} candidates (us per call: {}), chose #{index} {} at {:.1} us", shape_key(&shape), times.len(), listing.join(", "), algo_hex(&plan.algo.algo), ms * 1000.0)))
-    }
-
-    /// How a plan's algorithm was chosen ("heuristic", "timed", "cached"), if the shape has a plan.
-    pub fn algorithm_source(&self, tokens: usize, out: usize, inn: usize, has_bias: bool) -> Option<&'static str> {
-        self.plans.lock().expect("plan mutex poisoned").get(&Shape { tokens, out, inn, has_bias }).map(|p| p.source)
-    }
-
-    fn version_string(&self) -> String {
-        match self.api.version {
-            Some(version) => format!("cublasLt {}", unsafe { version() }),
-            None => "cublasLt unknown".to_string(),
-        }
-    }
-
-    /// What identifies the GPU and its software for a stored choice: compute capability, SM count, memory size and the driver version.
-    fn environment_key(&self, dev: &CudaDevice) -> String {
-        let driver = super::sys::loaded_driver().map_or_else(|| "driver ?".to_string(), |(_, v)| format!("driver {v}"));
-        format!("{} {} SMs {} B {driver}", dev.compute_capability_string(), dev.multiprocessor_count(), dev.total_vram_bytes())
+        Ok(results)
     }
 
     /// `y[tokens, out] = x[tokens, in] * W[out, in]^T (+ bias)` with bf16 `W`, `x`, `y` and `bias` (`0` for none), f32
@@ -409,62 +360,15 @@ fn algo_hex(algo: &[u64; 8]) -> String {
     algo.iter().map(|w| format!("{w:016x}")).collect()
 }
 
-fn parse_algo(hex: &str) -> Option<[u64; 8]> {
-    if hex.len() != 128 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let mut algo = [0u64; 8];
-    for (i, word) in algo.iter_mut().enumerate() {
-        *word = u64::from_str_radix(&hex[i * 16..(i + 1) * 16], 16).ok()?;
-    }
-    Some(algo)
-}
-
-/// The cache file: `{"entries": {"<gpu>|<shape>|<cublasLt version>": "<128 hex digits>"}}` under the user's cache directory.
-#[derive(Default)]
-struct TuneCache {
-    entries: HashMap<String, String>,
-}
-
-impl TuneCache {
-    fn path() -> Option<PathBuf> {
-        let base = if cfg!(windows) {
-            std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-        } else {
-            std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        };
-        base.map(|b| b.join("hyperion").join("cublaslt-algorithms.json"))
-    }
-
-    fn load() -> Self {
-        let Some(path) = Self::path() else { return Self::default() };
-        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return Self::default() };
-        let entries = value["entries"].as_object().map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()).unwrap_or_default();
-        Self { entries }
-    }
-
-    /// Best effort: a cache that cannot be written only means the next load times again.
-    fn save(&self) {
-        let Some(path) = Self::path() else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, serde_json::json!({ "entries": self.entries }).to_string());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn an_algorithm_round_trips_through_its_hex_form_and_garbage_is_refused() {
+    fn an_algorithm_id_is_128_hex_digits() {
         let algo = [1u64, 2, 3, u64::MAX, 0, 5, 6, 7];
-        assert_eq!(parse_algo(&algo_hex(&algo)), Some(algo));
         assert_eq!(algo_hex(&algo).len(), 128);
-        assert_eq!(parse_algo("zz"), None);
-        assert_eq!(parse_algo(&"g".repeat(128)), None);
+        assert!(algo_hex(&algo).starts_with("0000000000000001"));
     }
 
     #[test]

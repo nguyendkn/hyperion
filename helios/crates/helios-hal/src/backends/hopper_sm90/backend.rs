@@ -135,6 +135,31 @@ impl HopperBackend {
         result
     }
 
+    /// Time the cuBLASLt heuristic's candidate algorithms for a one-token `[out, inn]` bf16 projection (with or without a bias) on zero-filled
+    /// scratch buffers: microseconds per call for each candidate, in the heuristic's order. Changes nothing; see `scripts/bench-cublaslt.sh`.
+    pub fn benchmark_cublaslt_candidates(&self, out: usize, inn: usize, has_bias: bool, runs: usize) -> Result<Vec<(String, Option<f64>)>> {
+        const WORKSPACE: usize = 32 << 20;
+        let mut dev = self.device.lock().expect("device mutex poisoned");
+        let mut cublas = self.cublas.lock().expect("cublas mutex poisoned");
+        if cublas.is_none() {
+            *cublas = Some(Cublas::new(&dev)?);
+        }
+        let lt = cublas.as_ref().and_then(|c| c.lt()).ok_or_else(|| anyhow!("cuBLASLt is not available"))?;
+        let sizes = [out * inn * 2, inn * 2, out * 2, out * 2, WORKSPACE];
+        let mut buffers = Vec::new();
+        for size in sizes {
+            let ptr = dev.alloc(size)?;
+            dev.htod(ptr, &vec![0u8; size])?;
+            buffers.push(ptr);
+        }
+        lt.set_workspace(buffers[4], WORKSPACE);
+        let result = lt.benchmark(&dev, buffers[0], buffers[1], buffers[2], if has_bias { buffers[3] } else { 0 }, 1, out, inn, runs);
+        for ptr in buffers {
+            let _ = dev.free(ptr);
+        }
+        result
+    }
+
     /// RMSNorm of `x` (`[tokens, hidden]`, bf16 bits) with the loaded bf16 `weight`, run by
     /// the custom kernel in `kernels/rmsnorm.cu`; returns bf16 bits.
     pub fn rmsnorm_bf16(&self, weight: &str, x: &[u16], tokens: usize, hidden: usize, eps: f32) -> Result<Vec<u16>> {
