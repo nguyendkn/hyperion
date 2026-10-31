@@ -48,7 +48,7 @@ pub enum CommDType {
 }
 
 /// The collectives of one rank's communicator, enqueued on the rank's stream so that a stream capture records them (ADR 0009).
-/// Buffers are device addresses; `count` is in elements. Every call is collective: all ranks of the group make it, in the same order.
+/// A buffer is an opaque `u64`: a device address for the NCCL communicator, a handle into a host arena for the multi-rank stub's. `count` is in elements. Every call is collective: all ranks of the group make it, in the same order.
 pub trait Communicator: Send + Sync {
     fn rank(&self) -> u32;
     fn world_size(&self) -> u32;

@@ -54,3 +54,6 @@ A stub backend with N ranks (one thread each) and CPU collectives that implement
 
 ## Verification plan
 Compile-level test that a stub variant with different capabilities needs no edit under `helios-core`; a test that `submit_step` cannot be called without a `KvPool` (compile-fail test); the existing triage matrix migrated; a two-rank stub group exercised through the trait only (`[RUN on stub]`); then the 2-GPU pod (phase 13 M1) for the real communicator.
+
+## Clarification 2026-10-31 (no trait change)
+The multi-rank stub implements `Communicator` unchanged (`helios-hal/src/multi_rank_comm.rs`): a buffer is an opaque `u64`, a device address for NCCL and a handle into a host arena for the stub. Only the doc comment of the trait says so; no signature changed, so the narrow amendment of the 2026-10-31 run (A3) was not used. The stub moves `F32` buffers only; other element types are `HalError::Unsupported`.

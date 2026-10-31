@@ -15,6 +15,7 @@
 //!   FFI/kernel calls; here we only mediate.
 
 pub mod contract;
+pub mod multi_rank_comm;
 pub mod multi_rank_stub;
 pub mod sharding;
 pub mod step;

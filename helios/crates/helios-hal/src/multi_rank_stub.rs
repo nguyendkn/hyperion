@@ -6,7 +6,7 @@
 //! One persistent thread per rank (ADR 0004). A closure sent to every rank runs on its own thread with that rank's context; a rank that
 //! panics or returns an error marks the group dead, so its peers fail at once with `RankFailed` instead of waiting out a timeout.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
@@ -23,6 +23,8 @@ pub enum GroupError {
     RankFailed(u32),
     #[error("timed out after {0:?} waiting for the other ranks")]
     Timeout(Duration),
+    #[error("rendezvous timed out after {waited:?}: ranks {missing:?} never joined")]
+    RendezvousTimeout { missing: Vec<u32>, waited: Duration },
     #[error("rendezvous refused: rank {rank} reports `{found}` but rank 0 reports `{expected}`")]
     VersionMismatch { rank: u32, expected: String, found: String },
     #[error("ranks disagree: {0}")]
@@ -48,10 +50,12 @@ struct State {
     arrived: usize,
     inputs: Vec<Option<Vec<f32>>>,
     results: HashMap<u64, (Arc<Vec<Vec<f32>>>, usize)>,
+    /// Point-to-point messages, `(from, to)` -> queue, for `send` / `recv`.
+    mailbox: HashMap<(u32, u32), VecDeque<Vec<f32>>>,
 }
 
-struct Shared {
-    world: usize,
+pub(crate) struct Shared {
+    pub(crate) world: usize,
     timeout: Duration,
     state: Mutex<State>,
     changed: Condvar,
@@ -83,8 +87,26 @@ impl Shared {
         }
     }
 
+    /// Queue `data` for rank `to`.
+    pub(crate) fn post(&self, from: u32, to: u32, data: Vec<f32>) -> Result<(), GroupError> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(dead) = state.dead {
+            return Err(GroupError::RankFailed(dead));
+        }
+        state.mailbox.entry((from, to)).or_default().push_back(data);
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    /// The next message `from` sent to `to`, waiting up to the group timeout.
+    pub(crate) fn take(&self, from: u32, to: u32) -> Result<Vec<f32>, GroupError> {
+        let state = self.state.lock().unwrap();
+        let mut state = self.wait_until(state, |s| s.mailbox.get(&(from, to)).is_some_and(|q| !q.is_empty()))?;
+        Ok(state.mailbox.get_mut(&(from, to)).and_then(VecDeque::pop_front).expect("a message is queued"))
+    }
+
     /// Every rank deposits `data`; all get every rank's buffer, in rank order, once the last one has arrived.
-    fn exchange(&self, rank: usize, data: Vec<f32>) -> Result<Arc<Vec<Vec<f32>>>, GroupError> {
+    pub(crate) fn exchange(&self, rank: usize, data: Vec<f32>) -> Result<Arc<Vec<Vec<f32>>>, GroupError> {
         let mut state = self.state.lock().unwrap();
         if let Some(dead) = state.dead {
             return Err(GroupError::RankFailed(dead));
@@ -115,6 +137,8 @@ pub struct RankCtx {
     pub rank: usize,
     pub world: usize,
     shared: Arc<Shared>,
+    /// This rank's communicator, the `Communicator` of the contract over host buffers.
+    pub comm: crate::multi_rank_comm::StubComm,
     /// This rank's mirror of the device page tables, built only from the deltas of the plans it received.
     pub page_tables: HashMap<u32, Vec<Option<u32>>>,
 }
@@ -126,7 +150,15 @@ impl RankCtx {
         let mut state = self.shared.state.lock().unwrap();
         state.hellos[self.rank] = Some(Hello { rank: self.rank as u32, world_size: self.world, library_version: library_version.into() });
         self.shared.changed.notify_all();
-        let state = self.shared.wait_until(state, |s| s.hellos.iter().all(Option::is_some))?;
+        let state = match self.shared.wait_until(state, |s| s.hellos.iter().all(Option::is_some)) {
+            Ok(state) => state,
+            Err(GroupError::Timeout(waited)) => {
+                let state = self.shared.state.lock().unwrap();
+                let missing = state.hellos.iter().enumerate().filter(|(_, h)| h.is_none()).map(|(rank, _)| rank as u32).collect();
+                return Err(GroupError::RendezvousTimeout { missing, waited });
+            }
+            Err(other) => return Err(other),
+        };
         let reference = state.hellos[0].clone().unwrap();
         for hello in state.hellos.iter().flatten() {
             if hello.library_version != reference.library_version {
@@ -193,13 +225,13 @@ impl StubGroup {
         let shared = Arc::new(Shared {
             world,
             timeout,
-            state: Mutex::new(State { hellos: vec![None; world], dead: None, generation: 0, arrived: 0, inputs: vec![None; world], results: HashMap::new() }),
+            state: Mutex::new(State { hellos: vec![None; world], dead: None, generation: 0, arrived: 0, inputs: vec![None; world], results: HashMap::new(), mailbox: HashMap::new() }),
             changed: Condvar::new(),
         });
         let (mut senders, mut threads) = (Vec::new(), Vec::new());
         for rank in 0..world {
             let (tx, rx) = mpsc::channel::<Job>();
-            let mut ctx = RankCtx { rank, world, shared: shared.clone(), page_tables: HashMap::new() };
+            let mut ctx = RankCtx { rank, world, shared: shared.clone(), comm: crate::multi_rank_comm::StubComm::new(rank as u32, shared.clone()), page_tables: HashMap::new() };
             threads.push(thread::Builder::new().name(format!("stub-rank-{rank}")).spawn(move || {
                 while let Ok(job) = rx.recv() {
                     job(&mut ctx);

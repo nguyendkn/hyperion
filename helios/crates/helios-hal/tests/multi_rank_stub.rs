@@ -214,7 +214,7 @@ fn a_rendezvous_with_a_missing_rank_times_out() {
     });
     assert!(started.elapsed() < Duration::from_secs(5));
     for rank in 0..3 {
-        assert!(matches!(answers[rank], Err(GroupError::Timeout(_)) | Err(GroupError::RankFailed(_))), "rank {rank}: {:?}", answers[rank]);
+        assert!(matches!(&answers[rank], Err(GroupError::RendezvousTimeout { missing, .. }) if missing == &vec![3]) || matches!(answers[rank], Err(GroupError::RankFailed(_))), "rank {rank}: {:?}", answers[rank]);
     }
 }
 
