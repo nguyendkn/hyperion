@@ -218,7 +218,7 @@ fn the_plan_path_gives_the_greedy_tokens_of_generate_and_of_hugging_face() {
         assert_eq!(via_plan, via_generate, "prompt of {} tokens: the plan path and generate disagree", prompt.ids.len());
         println!("prompt of {:>5} tokens: plan path == generate for {count} greedy tokens: {:?}", prompt.ids.len(), &via_plan[..8]);
     }
-    if let Some(path) = std::env::var_os("HYPERION_ORACLE") {
+    if let Some(path) = std::env::var_os("HYPERION_ORACLE").filter(|p| std::path::Path::new(p).exists()) {
         let json: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         if let (Some(prompt), Some(want)) = (json["prompt_ids"].as_array(), json["generated_ids"].as_array()) {
             let prompt: Vec<u32> = prompt.iter().map(|v| v.as_u64().unwrap() as u32).collect();
