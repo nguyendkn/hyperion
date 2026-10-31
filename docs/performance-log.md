@@ -197,3 +197,97 @@ Single H100 80GB HBM3, driver 580.126.20, SM clock 1980 MHz (1950 of 1953 sample
 TTFT 7B graph ms: 1024 tokens 31.7, 4096 140.3, 8192 330.5, 16384 885.4; 0.5B: 6.2, 23.3, 59.4, 175.5.
 
 cuBLASLt candidates timed by `scripts/bench-cublaslt.sh` (microseconds per call): on 7B the heuristic's first algorithm is the fastest for QKV (13.65 us) and o_proj (11.89 us); the third and second candidates are 7 to 34% slower; on 0.5B the first is within 2% of the best (QKV 4.66 against 4.66, o_proj 4.19 against 4.19).
+
+## The sm90 session on the page-major KV pool, decode batching, serving (pod session 2026-11-01, tags `pod-20261101-0138` to `-0302`, final build `fae8255`)
+
+Single H100 80GB HBM3, driver 580.126.20 (CUDA 13.0), nvcc 12.4.131, SM clock 1980 MHz, 34 to 35 C at the start of each run. The pod is a different unit from the 2026-10-31 one (the PVC could not be attached, so the cache was an emptyDir). **Every comparison below is an A/B of the previous tree (`7d8529c`: contiguous KV, own kernels, own target directory) against the new one, alternating processes on this pod**, because the absolute numbers move by about 1% between pods (7B graph ms/token at context 5: 6.653 here against 6.579 in the 2026-10-31 table).
+
+### A5, decode (graph GPU ms/token, median of 10 windows of 128 steps; two processes of each build)
+
+| 7B | ctx 5 | 1024 | 4096 | 8000 | 16000 |
+|---|---|---|---|---|---|
+| old `7d8529c` | 6.657, 6.653 | 6.743, 6.733 | 6.968, 6.963 | 7.512, 7.505 | 8.607, 8.601 |
+| new, paged (build `d92a7a6`) | 6.651, 6.654 | 6.802, 6.802 | 7.081, 7.079 | 7.584, 7.587 | 8.605, 8.608 |
+| new / old | -0.0% | +0.9% | **+1.6%** | +1.0% | -0.0% |
+| budget | +1.5% | +1.5% | +1.5% | +1.5% | +3% |
+
+The last kernel change (pages of a split loaded into shared memory once per split, `d92a7a6`) measured 6.648, 6.788, **7.069**, 7.568, 8.579 in one process: ctx 4096 is +1.5% of the old pair (7.069 / 6.9655), at the budget, not clearly under it. **The budget holds at 4 of 5 contexts and sits on the limit at 4096.** Before that change (`aa54664`): 6.802, 7.081 at 1024 and 4096.
+
+| 0.5B | ctx 5 | 1024 | 4096 | 8000 | 16000 |
+|---|---|---|---|---|---|
+| old `7d8529c` | 1.343, 1.341 | 1.387, 1.387 | 1.527, 1.527 | 1.602, 1.604 | 1.863, 1.866 |
+| new (`f225f2d`, before the shared-memory page copy) | 1.374, 1.375 | 1.485, 1.481 | 1.709, 1.718 | 1.799, 1.799 | 2.078, 2.075 |
+| new (`d92a7a6`) | 1.350 | 1.446 | 1.683 | 1.775 | 2.022 |
+| new / old (`d92a7a6`) | +0.6% | **+4.3%** | **+10.2%** | **+10.7%** | **+8.4%** |
+
+**The 0.5B exceeds the budget of A5 (declared on the 7B table) from context 1024 up.** It is a small, launch- and attention-bound model (head_dim 64): the paged decode attention costs about 0.14 to 0.18 ms per step more once all splits are active. Investigated: the page lookup per K/V row (fixed, about 0.03 ms gained), not the cause of the rest; not investigated further (the cause is in `attention_split_rows_64_bf16` or its combine kernel; a profile by kernel is the next step). Owner decision (A5: report and stop that line).
+
+### A5, TTFT (graph prefill GPU ms, 7B; two processes of each build)
+
+| tokens | 1024 | 4096 | 8192 | 16384 |
+|---|---|---|---|---|
+| old | 31.97, 32.03 | 141.8, 142.3 | 333.2, 333.4 | 887.8, 886.4 |
+| new (`d92a7a6`) | 32.31, 32.26 | 144.1, 143.9 | 340.6, 340.7 | 914.4, 914.2 |
+| new / old (budget +5%) | +0.9% | +1.3% | +2.2% | +3.1% |
+
+### Pool, graphs (log lines of the CLI)
+
+7B, `--max-batch 32`: session buffers 1.02 GiB (fixed, at a 131072-token model maximum), free 60.7 GiB before the pool, capture growth 22 MiB, reserve 2070 MiB (growth + the 2 GiB default), granule 2 MiB, page 3.5 MiB, 17172 pages = 58.7 GiB mapped = 1.1 million tokens, 2.0 GiB free afterwards. 0.5B: 16384 pages of 0.75 MiB = 12 GiB. **Graph memory per bucket (1, 2, 4, 8, 16, 32): 2.0, 0.0, 2.0, 2.0, 0.0, 2.0 MiB on both models** (the driver rounds to 2 MiB; a few graphs measure 0).
+
+### Decode step by bucket (GPU ms per step, 10 windows of 128 graph launches, every row at context 512; `batch_hw::decode_step_time_by_bucket`)
+
+| bucket | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| 7B ms/step | 6.852 | 6.862 | 6.901 | 7.363 | 7.909 | 8.881 |
+| 7B tokens/s | 146 | 291 | 580 | 1087 | 2023 | 3603 |
+| 0.5B ms/step | 1.502 | 1.747 | 1.771 | 1.806 | 1.918 | 2.219 |
+| 0.5B tokens/s | 666 | 1145 | 2259 | 4431 | 8342 | 14423 |
+
+Per-group GPU time of a direct 7B step (ms, share) at bucket 1 / 8 / 32: gate+up 2.81 / 2.87 / 2.88 (35 / 34 / 29%), down 1.64 / 1.67 / 1.63, attention 0.58 / 0.96 / 2.42 (7 / 11 / 24%), QKV 0.63 / 0.67 / 0.67, o_proj 0.56 / 0.56 / 0.52, lm_head 0.37 / 0.38 / 0.39. The MLP GEMMs read the weights once for any batch up to 32 (their time does not grow); what grows is attention, linearly with the rows. 0.5B at bucket 2: QKV 0.195 to about 0.37 ms (a different cuBLASLt algorithm, plus the QKV split kernel) is the jump from 1.50 to 1.75 ms. The profile is by CUDA event marks in a direct step, not nsys (nsys not installed on this pod).
+
+### Serving, loadgen against the CLI (`--max-batch 32`, 16384-token limit, greedy, release build `fae8255`)
+
+Every count is the server `usage`; the prompts differ at every request and every concurrency level (an earlier run of the same table used the same prompts at every level, so later levels were answered partly from the prefix cache; it was discarded). One server process per model and profile, requests per level = 4 x concurrency (at least 8). TTFT and ITL are p50 [p90] in ms; ITL of a request is (last chunk - first chunk) / (completion tokens - 1).
+
+**7B, 512 in / 256 out**
+
+| concurrency | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| TTFT | 32.7 [34.1] | 37.9 [68.4] | 38.2 [109] | 38.3 [186] | 225 [412] | 451 [874] |
+| ITL | 6.78 [6.84] | 6.86 [7.47] | 13.0 [19.4] | 10.1 [31.8] | 31.8 [32.7] | 28.4 [33.8] |
+| output tokens/s | 130 | 145 | 325 | 661 | 832 | 1149 |
+
+**7B, 8192 in / 256 out**
+
+| concurrency | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| TTFT | 355 [357] | 365 [504] | 708 [1203] | 1379 [2200] | 2218 [4401] | 5383 [8970] |
+| ITL | 7.60 [7.65] | 7.80 [15.9] | 26.1 [83.7] | 147 [167] | 87.2 [169] | 166 [176] |
+| output tokens/s | 78 | 106 | 103 | 86 | 172 | 152 |
+
+**0.5B, 512 in / 256 out**
+
+| concurrency | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| TTFT | 7.9 [8.6] | 13.4 [14.0] | 9.5 [25.3] | 9.6 [38.0] | 12.9 [76.1] | 16.7 [146] |
+| ITL | 1.47 [1.47] | 1.71 [1.72] | 1.83 [1.91] | 2.21 [2.56] | 2.74 [3.47] | 4.02 [6.56] |
+| output tokens/s | 668 | 1051 | 1890 | 3102 | 5144 | 6921 |
+
+**0.5B, 8192 in / 256 out**
+
+| concurrency | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| TTFT | 72.2 [72.5] | 100 [129] | 156 [259] | 201 [393] | 242 [772] | 341 [1746] |
+| ITL | 1.84 [1.85] | 2.17 [2.27] | 3.00 [3.51] | 4.59 [5.68] | 8.63 [8.91] | 19.1 [20.4] |
+| output tokens/s | 473 | 698 | 967 | 1377 | 1641 | 1532 |
+
+Where scaling stops. On the GPU a decode step of the 7B costs 6.85 ms at 1 row and 8.88 ms at 32 rows (3603 tokens/s), so the decode kernels scale; the served throughput does not follow (1149 tokens/s at 512 in, 150 to 170 at 8192 in) because **policy v1 runs a whole prefill chunk (up to 4096 tokens, 165 ms on the 7B) between two decode steps while any request is prefilling**: every decoding request then sees an inter-token latency of the chunk time (ITL 87 to 176 ms at 8192 in), and prefill of the next requests keeps the device busy. The profile by group says the same at the kernel level (MLP GEMMs read the weights once whatever the batch, attention grows with the rows: 0.58 ms at 1 row to 2.42 ms at 32 rows). The scheduler itself is not the limit: the log lines `scheduler steps` show 9.4 ms per step in the backend against 9.5 ms per loop iteration at concurrency 8. Smaller prefill chunks, or mixed prefill+decode steps, are the owner decisions that follow (NOT done).
+
+### Prefix cache (7B, two requests sharing an 8192-token prefix, the second sent after the first finished; `scripts/prefix-bench.py`, 3 rounds)
+
+| | first request | second request | second / first | hit |
+|---|---|---|---|---|
+| 7B TTFT ms | 392.9, 390.1, 390.0 | 54.3, 51.8, 51.4 | 0.133 (median) | 8128 of 8219 prompt tokens (98.9%) |
+| 0.5B TTFT ms | 83.8, 83.4, 82.4 | 32.2, 28.0, 31.3 | 0.380 | 8128 of 8219 |
+
+(The last 91 tokens are computed: the last-token rule and the 64-token hash blocks.)
