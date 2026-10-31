@@ -13,12 +13,16 @@ use anyhow::{anyhow, Context, Result};
 
 use std::ffi::c_void;
 
+use crate::cuda::vmm::VmmRange;
 use crate::cuda::{Cublas, CudaDevice, DeviceWeights, Group, KernelModule};
+use crate::decode_buckets;
+use crate::pool_plan::{plan_pool, reserve_bytes, PageTableLayout, PoolGeometry};
+use crate::step_ledger::StepLedger;
 use super::forward::Qwen2Dims;
 use super::session::Session;
 use crate::sampling::SamplingConfig;
 use crate::contract::{
-    BackendConfig, Capabilities, GraphSet, HalError, KvPool, KvReservation, KvSpec, LoadedModel, MemoryPolicy, RankInfo, StepTicket, WeightSource,
+    BackendConfig, Capabilities, GraphSet, HalError, KvPool, KvPoolInfo, KvReservation, KvSpec, LoadedModel, MemoryPolicy, RankInfo, StepTicket, WeightSource,
 };
 use crate::step::{StepOutput, StepPlan};
 use crate::traits::{ComputeBackend, HardwareInfo, StopReason};
@@ -32,6 +36,46 @@ pub(super) const RMSNORM_IMAGE: &[u8] = include_bytes!("../../../kernels/rmsnorm
 /// Threads per block for the row-wise kernels; a power of two, as the reduction needs.
 pub(super) const ROW_BLOCK: u32 = 256;
 
+/// Who uses the KV pool: the `generate` path (slot 0, pages 0..n) or the scheduler through `submit_step`. They never share it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PoolUse {
+    Generate,
+    Plan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KvState {
+    Reserved,
+    Captured,
+    Committed,
+}
+
+/// The pool between `reserve_kv` and the end: the reserved range (unmapped until `commit_kv`) and what the steps in between measured.
+struct KvLifecycle {
+    range: VmmRange,
+    state: KvState,
+    max_batch: usize,
+    /// Device memory the graph capture used (kept free from the pool).
+    growth: u64,
+}
+
+/// What `reserve_kv` hands to `capture_graphs`: the base address the graphs are bound to.
+struct Reserved {
+    base: u64,
+    max_batch: usize,
+}
+
+/// The payload of the [`KvPool`] this backend made.
+struct PoolHandle {
+    pages: usize,
+}
+
+/// A step that has run; its output is held until `take_output`.
+struct Completed {
+    ticket: u64,
+    output: StepOutput,
+}
+
 /// Field order is drop order: the decode session (graphs, events) first, then the cuBLAS handle,
 /// then the weights' owner, then the device (which releases the context they all live in).
 pub struct HopperBackend {
@@ -43,6 +87,12 @@ pub struct HopperBackend {
     runtime: Mutex<Option<(Qwen2Dims, Vec<u32>)>>,
     /// Set by a verification run to load a package that needs QK-norm before that path is verified (`QK_NORM_VERIFIED`).
     allow_qk_norm: std::sync::atomic::AtomicBool,
+    /// The KV pool's range and state; dropped (unmapped) before the device in `shutdown`.
+    kv: Mutex<Option<KvLifecycle>>,
+    /// The maximum sequence length of the model loaded, for the page tables and the RoPE tables.
+    model_max_seq: Mutex<usize>,
+    pool_use: Mutex<Option<PoolUse>>,
+    ledger: Mutex<StepLedger>,
     pub(super) device: Mutex<CudaDevice>,
 }
 
@@ -65,7 +115,30 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), pool_use: Mutex::new(None), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(CudaDevice::probe()?) })
+    }
+
+    /// Take the KV pool for `want`; refused when the other user has it (the generate path and the scheduler never share the pool pages).
+    pub(super) fn claim_pool(&self, want: PoolUse) -> Result<()> {
+        let mut current = self.pool_use.lock().expect("pool-use mutex poisoned");
+        match *current {
+            None => {
+                *current = Some(want);
+                Ok(())
+            }
+            Some(have) if have == want => Ok(()),
+            Some(_) => Err(HalError::Invalid("the KV pool is used either by generate() or by submit_step(), not both in one load".into()).into()),
+        }
+    }
+
+    /// The whole load order after `load_model` with the defaults of a single-sequence user: reserve, capture the graphs for buckets up to
+    /// `max_batch`, and map a pool of `max_tokens` tokens (0: as many pages as `max_batch` sequences of the model's maximum length need, or
+    /// what fits). For the hardware tests and embedders; the CLI drives the trait methods itself.
+    pub fn open_kv(&self, max_batch: usize, max_tokens: usize) -> Result<KvPool> {
+        let model = LoadedModel::new(NAME, ());
+        let reservation = self.reserve_kv(&model, &KvSpec { max_batch, ..KvSpec::default() })?;
+        let graphs = self.capture_graphs(&model, &reservation)?;
+        self.commit_kv(reservation, &graphs, &MemoryPolicy { max_tokens, ..MemoryPolicy::default() })
     }
 
     /// Let this backend load a package that needs QK-norm although that path has not been verified against an oracle yet
@@ -256,7 +329,8 @@ impl ComputeBackend for HopperBackend {
         let runtime = (Qwen2Dims::from_manifest_allowing(&config.model, allow_qk_norm || super::forward::QK_NORM_VERIFIED)?, config.eos_token_ids.clone());
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
-        // A model loaded before is released first (its session refers to its weights).
+        // A model loaded before is released first (its session refers to its weights, its pool to the session).
+        *self.kv.lock().expect("kv mutex poisoned") = None;
         if let Some(mut old) = self.session.lock().expect("session mutex poisoned").take() {
             old.free(&mut dev);
         }
@@ -270,34 +344,117 @@ impl ComputeBackend for HopperBackend {
                 let _ = old.free(&mut dev);
             }
         }
-        // Everything a generation needs (buffers, K/V cache, kernels, cuBLAS workspace, decode graphs) is
-        // built now, sized from the device memory left after the weights; serving builds nothing.
-        let session = Session::build(self, &mut dev, runtime.0.clone(), config.model.max_seq_len as usize)?;
-        *self.session.lock().expect("session mutex poisoned") = Some(session);
+        // A pool of an earlier model goes with its session.
+        *self.kv.lock().expect("kv mutex poisoned") = None;
+        *self.pool_use.lock().expect("pool-use mutex poisoned") = None;
+        *self.ledger.lock().expect("ledger mutex poisoned") = StepLedger::new(2);
+        *self.model_max_seq.lock().expect("max-seq mutex poisoned") = config.model.max_seq_len as usize;
         *self.runtime.lock().expect("runtime mutex poisoned") = Some(runtime);
         Ok(LoadedModel::new(NAME, ()))
     }
 
-    // The page-index KV pool, the graphs bound to it and the StepPlan path are the next change (W1.2); until then the
-    // session built by `load_model` owns a contiguous KV cache and `generate` is the way to run a prompt.
-    fn reserve_kv(&self, _model: &LoadedModel, _spec: &KvSpec) -> Result<KvReservation> {
-        Err(HalError::Unsupported("reserve_kv on sm_90").into())
+    // The load order after the weights (ADR 0002, 0006): reserve the pool's addresses, capture the graphs against them (nothing is mapped, so the
+    // paged kernels skip every access), measure what is free, map the pool once. Nothing is mapped or captured afterwards.
+    fn reserve_kv(&self, model: &LoadedModel, spec: &KvSpec) -> Result<KvReservation> {
+        model.payload::<()>(NAME)?;
+        if spec.page_tokens != super::session::PAGE_TOKENS {
+            return Err(HalError::Invalid(format!("sm_90 pages hold {} tokens (the kernels have it built in), not {}", super::session::PAGE_TOKENS, spec.page_tokens)).into());
+        }
+        decode_buckets::buckets(spec.max_batch)?;
+        self.runtime.lock().expect("runtime mutex poisoned").as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
+        let mut dev = self.device.lock().expect("device mutex poisoned");
+        // A pool of an earlier reservation goes first (its addresses are not reused by graphs of this one).
+        *self.kv.lock().expect("kv mutex poisoned") = None;
+        if let Some(mut old) = self.session.lock().expect("session mutex poisoned").take() {
+            old.free(&mut dev);
+        }
+        // The range may be as large as the whole device: only addresses are used.
+        let range = VmmRange::reserve(&dev, dev.total_vram_bytes() as usize)?;
+        let base = range.base();
+        *self.pool_use.lock().expect("pool-use mutex poisoned") = None;
+        *self.kv.lock().expect("kv mutex poisoned") = Some(KvLifecycle { range, state: KvState::Reserved, max_batch: spec.max_batch, growth: 0 });
+        Ok(KvReservation::new(NAME, Reserved { base, max_batch: spec.max_batch }))
     }
 
-    fn capture_graphs(&self, _model: &LoadedModel, _kv: &KvReservation) -> Result<GraphSet> {
-        Err(HalError::Unsupported("capture_graphs on sm_90").into())
+    fn capture_graphs(&self, model: &LoadedModel, kv: &KvReservation) -> Result<GraphSet> {
+        model.payload::<()>(NAME)?;
+        let reserved = kv.payload::<Reserved>(NAME)?;
+        let (dims, _) = self.runtime.lock().expect("runtime mutex poisoned").clone().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
+        let max_seq = *self.model_max_seq.lock().expect("max-seq mutex poisoned");
+        let mut lifecycle = self.kv.lock().expect("kv mutex poisoned");
+        let lifecycle = lifecycle.as_mut().filter(|l| l.state == KvState::Reserved && l.range.base() == reserved.base).ok_or_else(|| HalError::Invalid("capture_graphs needs the reservation reserve_kv just made".into()))?;
+        let mut dev = self.device.lock().expect("device mutex poisoned");
+        let session = Session::build(self, &mut dev, dims, max_seq, reserved.max_batch, reserved.base)?;
+        lifecycle.growth = session.capture_growth;
+        lifecycle.state = KvState::Captured;
+        *self.session.lock().expect("session mutex poisoned") = Some(session);
+        Ok(GraphSet::new(NAME, ()))
     }
 
-    fn commit_kv(&self, _kv: KvReservation, _graphs: &GraphSet, _policy: &MemoryPolicy) -> Result<KvPool> {
-        Err(HalError::Unsupported("commit_kv on sm_90").into())
+    fn commit_kv(&self, kv: KvReservation, graphs: &GraphSet, policy: &MemoryPolicy) -> Result<KvPool> {
+        let reserved = kv.payload::<Reserved>(NAME)?;
+        graphs.payload::<()>(NAME)?;
+        let (dims, _) = self.runtime.lock().expect("runtime mutex poisoned").clone().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
+        let mut lifecycle = self.kv.lock().expect("kv mutex poisoned");
+        let lifecycle = lifecycle.as_mut().filter(|l| l.state == KvState::Captured && l.range.base() == reserved.base).ok_or_else(|| HalError::Invalid("commit_kv needs the graphs capture_graphs just captured".into()))?;
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let mut session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_mut().ok_or_else(|| anyhow!("no session: capture_graphs first"))?;
+        let (free, _) = dev.memory_info()?;
+        let reserve = reserve_bytes(lifecycle.growth, policy.reserve_bytes as u64);
+        let geometry = PoolGeometry { page_tokens: super::session::PAGE_TOKENS, layers: dims.layers, kv_heads: dims.kv_heads, head_dim: dims.head_dim };
+        // The model's maximum caps the pool even when more memory is free: no slot can use more pages than a full table.
+        let cap = if policy.max_tokens > 0 { policy.max_tokens.div_ceil(geometry.page_tokens) } else { lifecycle.max_batch * session.stride };
+        let plan = plan_pool(free, reserve, geometry.page_bytes(), lifecycle.range.granule() as u64, Some(cap))?;
+        lifecycle.range.map(&dev, plan.mapped_bytes as usize)?;
+        let (free_after, _) = dev.memory_info()?;
+        session.pool_pages = plan.pages;
+        lifecycle.state = KvState::Committed;
+        tracing::info!(
+            pages = plan.pages,
+            page_mib = geometry.page_bytes() as f64 / (1u64 << 20) as f64,
+            granule_mib = lifecycle.range.granule() as f64 / (1u64 << 20) as f64,
+            mapped_gib = plan.mapped_bytes as f64 / (1u64 << 30) as f64,
+            free_before_gib = free as f64 / (1u64 << 30) as f64,
+            free_after_gib = free_after as f64 / (1u64 << 30) as f64,
+            reserve_mib = reserve as f64 / (1u64 << 20) as f64,
+            capture_growth_mib = lifecycle.growth as f64 / (1u64 << 20) as f64,
+            "KV pool mapped"
+        );
+        let info = KvPoolInfo { page_tokens: geometry.page_tokens, pages: plan.pages, bytes_per_page: geometry.page_bytes() as usize, free_before: free, free_after };
+        Ok(KvPool::new(NAME, info, PoolHandle { pages: plan.pages }))
     }
 
-    fn submit_step(&self, _pool: &KvPool, _plan: &StepPlan) -> Result<StepTicket> {
-        Err(HalError::Unsupported("submit_step on sm_90").into())
+    fn submit_step(&self, pool: &KvPool, plan: &StepPlan) -> Result<StepTicket> {
+        let handle = pool.payload::<PoolHandle>(NAME)?;
+        plan.validate()?;
+        self.claim_pool(PoolUse::Plan)?;
+        let ticket = self.ledger.lock().expect("ledger mutex poisoned").submit()?;
+        let run = || -> Result<StepOutput> {
+            let dev = self.device.lock().expect("device mutex poisoned");
+            let session = self.session.lock().expect("session mutex poisoned");
+            let session = session.as_ref().ok_or_else(|| anyhow!("no session: the load order was not completed"))?;
+            let cublas = self.cublas.lock().expect("cublas mutex poisoned");
+            let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the graphs were captured"))?;
+            // Everything a step uses exists since the graphs were captured and the pool mapped; refuse to build anything now.
+            let _no_new_gpu_work = dev.forbid_new_gpu_work();
+            let layout = PageTableLayout { slots: session.max_batch, max_pages_per_slot: session.stride };
+            session.run_plan(&dev, cublas, plan, &layout, handle.pages, super::forward_device::DecodeMode::Graph)
+        };
+        match run() {
+            Ok(output) => Ok(StepTicket::new(NAME, Completed { ticket, output })),
+            Err(error) => {
+                // The step did not happen: it must not stay in flight.
+                let _ = self.ledger.lock().expect("ledger mutex poisoned").take(ticket);
+                Err(error)
+            }
+        }
     }
 
-    fn take_output(&self, _ticket: StepTicket) -> Result<StepOutput> {
-        Err(HalError::Unsupported("take_output on sm_90").into())
+    fn take_output(&self, ticket: StepTicket) -> Result<StepOutput> {
+        let done = ticket.payload::<Completed>(NAME)?;
+        self.ledger.lock().expect("ledger mutex poisoned").take(done.ticket)?;
+        Ok(done.output.clone())
     }
 
     fn generate(
@@ -317,8 +474,10 @@ impl ComputeBackend for HopperBackend {
     }
 
     fn shutdown(&self) -> Result<()> {
-        // The session (graphs, buffers), the cuBLAS handle and the weights first, then the context they live in.
+        // The session (graphs, buffers), the cuBLAS handle and the weights first, then the context they live in. The pool is unmapped
+        // before the context goes.
         let mut dev = self.device.lock().expect("device mutex poisoned");
+        *self.kv.lock().expect("kv mutex poisoned") = None;
         if let Some(mut session) = self.session.lock().expect("session mutex poisoned").take() {
             session.free(&mut dev);
         }

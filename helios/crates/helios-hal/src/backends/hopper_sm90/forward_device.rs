@@ -19,7 +19,7 @@ use super::backend::HopperBackend;
 use super::decode_profile::{DecodeProfile, DecodeTiming};
 use super::forward::Qwen2Dims;
 use super::prefill_plan::PrefillError;
-use super::session::{Session, Step};
+use super::session::Session;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{Cublas, CudaDevice};
 use crate::sampling::{sample, Rng, SamplingConfig};
@@ -125,29 +125,12 @@ impl HopperBackend {
         if session.dims != *d {
             return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
         }
-        if prompt.len() > session.capacity {
-            return Err(PrefillError::ContextTooLong { requested: prompt.len(), capacity: session.capacity }.into());
-        }
+        self.claim_pool(super::backend::PoolUse::Generate)?;
         let cublas = self.cublas.lock().expect("cublas mutex poisoned");
         let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
         let _no_new_gpu_work = dev.forbid_new_gpu_work();
-        session.prefill_timed(&dev, cublas, prompt, mode)
-    }
-
-    /// Logits of the last prompt token from the reference prefill: the whole prompt in one launch with the untiled
-    /// attention kernel, which the chunked prefill is tested against. At most one chunk (4096 tokens) long.
-    pub fn forward_prefill_logits_untiled_reference(&self, d: &Qwen2Dims, prompt: &[u32]) -> Result<Vec<f32>> {
-        let dev = self.device.lock().expect("device mutex poisoned");
-        let session = self.session.lock().expect("session mutex poisoned");
-        let session = session.as_ref().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
-        if session.dims != *d {
-            return Err(anyhow!("the loaded model's dimensions differ from the ones passed to generate"));
-        }
-        let cublas = self.cublas.lock().expect("cublas mutex poisoned");
-        let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
-        let _no_new_gpu_work = dev.forbid_new_gpu_work();
-        session.prefill_untiled(&dev, cublas, prompt)?;
-        session.read_logits(&dev)
+        session.assign_slot0(&dev, prompt.len())?;
+        session.prefill_timed(&dev, cublas, 0, prompt, mode)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
@@ -158,9 +141,9 @@ impl HopperBackend {
         trace.into_iter().next().ok_or_else(|| anyhow!("no logits produced"))
     }
 
-    /// The longest prompt plus generated tokens the loaded model's decode session holds, if one is built.
+    /// The longest prompt plus generated tokens the KV pool holds (capped by the maximum of the model), once the pool is mapped.
     pub fn context_capacity(&self) -> Option<usize> {
-        self.session.lock().expect("session mutex poisoned").as_ref().map(|s| s.capacity)
+        self.session.lock().expect("session mutex poisoned").as_ref().filter(|s| s.pool_pages > 0).map(|s| s.capacity.min(s.pool_pages * super::session::PAGE_TOKENS))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -189,7 +172,8 @@ impl HopperBackend {
         }
         let cublas = self.cublas.lock().expect("cublas mutex poisoned");
         let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
-        // Everything the generation uses was built at load time; refuse to build anything now.
+        self.claim_pool(super::backend::PoolUse::Generate)?;
+        // Everything the generation uses was built before the pool was mapped; refuse to build anything now.
         let _no_new_gpu_work = dev.forbid_new_gpu_work();
         session.generate(&dev, cublas, prompt, max_new, eos, sampling, on_token, mode, forced, trace, profile, timing)
     }
@@ -224,28 +208,21 @@ impl Session {
         if total > self.capacity {
             return Err(PrefillError::ContextTooLong { requested: total, capacity: self.capacity }.into());
         }
-        let b = &self.b;
+        self.assign_slot0(dev, total)?;
 
         if trace.is_none() && profile.is_none() && sampling.is_greedy() {
             if max_new == 0 {
                 return Ok(StopReason::MaxTokens);
             }
-            // Greedy: the argmax kernel picks each token and feeds it to the next step, so the
-            // host never needs the logits. It reads token ids from a device ring, one step late.
+            // Greedy: the argmax kernel picks each token and feeds it to the next step, so the host never needs the logits. It reads token ids
+            // from the device ring, one step late. The prefill samples token 0 (its position is the last prompt position).
             let ring_base = prompt.len() - 1;
-            // Prefill, then token 0 from its logits. The position buffer must hold the last
-            // prompt position for the chain; wait for the prefill before overwriting it.
-            self.prefill(dev, cublas, prompt, mode)?;
-            dev.htod(b.positions, &(ring_base as u32).to_le_bytes())?;
-            dev.htod(b.ring_base, &(ring_base as u32).to_le_bytes())?;
-            self.pick(dev)?;
+            self.prefill(dev, cublas, 0, prompt, 0, mode, true)?;
             let events = &self.events;
             events[0].record(dev)?;
             let read_token = |index: usize| -> Result<u32> {
                 events[index % events.len()].wait()?;
-                let mut raw = [0u8; 4];
-                dev.dtoh(&mut raw, b.ring + (index * 4) as u64)?;
-                Ok(u32::from_le_bytes(raw))
+                self.read_token(dev, 0, ring_base + index)
             };
             let window = match timing {
                 Some(out) if max_new > TIMING_WARM_UP + 1 => Some(out),
@@ -253,15 +230,8 @@ impl Session {
             };
             let mut window_started = None;
             for index in 1..max_new {
-                // Enqueue the step that produces token `index`, then read token `index - 1`
-                // while the device works on it.
-                match mode {
-                    DecodeMode::Graph => self.chain_graph()?.launch(dev)?,
-                    DecodeMode::Direct => {
-                        self.launches(dev, cublas, 1, Step::Decode, None)?;
-                        self.pick(dev)?;
-                    }
-                }
+                // Enqueue the step that produces token `index`, then read token `index - 1` while the device works on it.
+                self.decode_step(dev, cublas, 1, mode, None)?;
                 events[index % events.len()].record(dev)?;
                 if window.is_some() {
                     if index == TIMING_WARM_UP {
@@ -294,8 +264,8 @@ impl Session {
         }
 
         let mut rng = Rng::new(sampling.seed);
-        self.prefill(dev, cublas, prompt, mode)?;
-        let mut logits = self.read_logits(dev)?;
+        self.prefill(dev, cublas, 0, prompt, 0, mode, false)?;
+        let mut logits = self.read_logits(dev, 0)?;
         if let Some(trace) = trace.as_mut() {
             trace.push(logits.clone());
         }
@@ -318,17 +288,15 @@ impl Session {
             if produced + 1 < max_new {
                 let timed = profile.is_some();
                 let t0 = Instant::now();
-                self.upload(dev, &[next], position)?;
+                self.set_slot_token(dev, 0, next)?;
+                self.stage_rows(dev, &[(0, u32::try_from(position)?)], 1)?;
                 let t1 = Instant::now();
                 let marks = if timed && mode == DecodeMode::Direct { Some(RefCell::new(StepMarks::start(dev)?)) } else { None };
-                match mode {
-                    DecodeMode::Graph => self.logits_graph()?.launch(dev)?,
-                    DecodeMode::Direct => self.launches(dev, cublas, 1, Step::Decode, marks.as_ref())?,
-                }
+                self.decode_step(dev, cublas, 1, mode, marks.as_ref())?;
                 let t2 = Instant::now();
                 dev.synchronize()?;
                 let t3 = Instant::now();
-                logits = self.read_logits(dev)?;
+                logits = self.read_logits(dev, 0)?;
                 let t4 = Instant::now();
                 if timed {
                     if let Some(p) = profile.as_mut() {

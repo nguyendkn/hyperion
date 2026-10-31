@@ -221,6 +221,10 @@ fn loaded_backend() -> (PathBuf, hyperion_specification::v1::Manifest, HopperBac
     }
     let started = std::time::Instant::now();
     helios_hal::load_package(&backend, &package, &manifest).expect("upload");
+    // The rest of the load order: reserve the pool addresses, capture the graphs against them, map the pool (batch 1; `HYPERION_MAX_BATCH`).
+    let max_batch = std::env::var("HYPERION_MAX_BATCH").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let pool = backend.open_kv(max_batch, 0).expect("the KV pool");
+    println!("POOL {:?} {:?}", pool, pool.info());
     println!(
         "LOADED in {:.2?}; {}; decode session capacity {:?} tokens",
         started.elapsed(),
@@ -1052,13 +1056,13 @@ fn vmm_granule_map_time_and_refusals() {
     dev.teardown().unwrap();
 }
 
-/// The chunked prefill against the reference prefill (the whole prompt in one launch with the untiled kernel), on the
-/// loaded model, for prompts that fit one chunk: 1 and 127 and 129 tokens (the padding cases), 1000 and 4096. Both run
-/// the same kernels but the attention; the bound is the one declared for decode against prefill in this file, before the
-/// first run: max absolute logit difference <= 0.5. The argmax of both is printed.
+/// The chunked prefill through the page-major pool against the host path (the contiguous cache and the untiled attention kernel of
+/// `forward.rs`, which the device path no longer has), on the loaded model: 1 and 127 and 129 tokens (the padding cases), 1000 and 4096. The bound
+/// is the one declared for decode against prefill in this file, before the first run: max absolute logit difference <= 0.5. The argmax of both is
+/// printed.
 #[test]
 #[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
-fn chunked_prefill_matches_the_untiled_reference() {
+fn paged_chunked_prefill_matches_the_host_path() {
     let package = package();
     let dims = qwen2_dims(&package);
     let seed: Vec<u32> = seed_prompt_ids();
@@ -1068,9 +1072,9 @@ fn chunked_prefill_matches_the_untiled_reference() {
     for len in [1usize, 127, 129, 1000, 4096] {
         let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
         let chunked = backend.forward_prefill_logits_device(&dims, &prompt).expect("chunked prefill");
-        let reference = backend.forward_prefill_logits_untiled_reference(&dims, &prompt).expect("untiled prefill");
+        let reference = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
         let diff = chunked.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-        println!("prompt {len:>5}: max |chunked - untiled| logit diff {diff:.4} (bound {bound}); argmax chunked {} untiled {}", argmax(&chunked), argmax(&reference));
+        println!("prompt {len:>5}: max |paged chunked - host| logit diff {diff:.4} (bound {bound}); argmax paged {} host {}", argmax(&chunked), argmax(&reference));
         assert!(diff <= bound, "prompt {len}: {diff} exceeds the declared bound {bound}");
     }
     backend.shutdown().unwrap();

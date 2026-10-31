@@ -780,3 +780,164 @@ PAGED_ENTRY(64, 1, attention_split_paged_lm_64_bf16)
 PAGED_ENTRY(128, 1, attention_split_paged_lm_128_bf16)
 PAGED_ENTRY(64, 2, attention_split_paged_pm_64_bf16)
 PAGED_ENTRY(128, 2, attention_split_paged_pm_128_bf16)
+
+// ---- Batched decode over slots (page-major pool) -------------------------------------------------------------------------------
+// A decode step of a bucket of B rows. Row r belongs to slot `slots[r]` (-1: an inactive row, masked: it reads nothing, writes no KV, produces
+// no token and costs no attention work). The page tables of all slots are one array `tables[slot][stride]` of page indices (NO_PAGE = -1), so a
+// row finds its table at `tables + slot * stride`. Per-slot device state: `slot_token[slot]` is the token the next step of that slot feeds
+// in (the chaining of decode steps). Nothing here uses atomics: results are identical from run to run, and the result of a row does not depend
+// on the other rows.
+
+// ids[r] = the token slot `slots[r]` feeds in; an inactive row feeds token 0.
+extern "C" __global__ void gather_inputs_rows(const int* __restrict__ slots, const unsigned int* __restrict__ slot_token,
+                                              unsigned int* __restrict__ ids, int rows) {
+    const int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= rows) return;
+    const int s = slots[r];
+    ids[r] = s >= 0 ? slot_token[s] : 0u;
+}
+
+// Apply page-table deltas: pairs[2i] is the word of the table array, pairs[2i + 1] the page index (RELEASED = u32::MAX = NO_PAGE = -1).
+extern "C" __global__ void apply_page_deltas(int* __restrict__ tables, const unsigned int* __restrict__ pairs, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) tables[pairs[2 * i]] = (int)pairs[2 * i + 1];
+}
+
+// Cut the fused projection [rows][q_dim + 2 kv_dim] into q [rows][q_dim], k [rows][kv_dim], v [rows][kv_dim].
+extern "C" __global__ void qkv_split_rows_bf16(const bf16* __restrict__ qkv, bf16* __restrict__ q, bf16* __restrict__ k,
+                                               bf16* __restrict__ v, int q_dim, int kv_dim) {
+    const int r = blockIdx.y;
+    const int width = q_dim + 2 * kv_dim;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < width; i += gridDim.x * blockDim.x) {
+        const bf16 value = qkv[(size_t)r * width + i];
+        if (i < q_dim) q[(size_t)r * q_dim + i] = value;
+        else if (i < q_dim + kv_dim) k[(size_t)r * kv_dim + (i - q_dim)] = value;
+        else v[(size_t)r * kv_dim + (i - q_dim - kv_dim)] = value;
+    }
+}
+
+// act[r][i] = bf16(silu(gu[r][i])) * gu[r][inter + i] for the fused gate|up projection [rows][2 inter]: the arithmetic of swiglu_bf16.
+extern "C" __global__ void swiglu_rows_bf16(const bf16* __restrict__ gu, bf16* __restrict__ act, int inter) {
+    const int r = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= inter) return;
+    const float g = rd(gu[(size_t)r * 2 * inter + i]);
+    const float silu = rnd(g / (1.f + expf(-g)));
+    act[(size_t)r * inter + i] = __float2bfloat16(silu * rd(gu[(size_t)r * 2 * inter + inter + i]));
+}
+
+// Append row r K and V (one token at positions[r]) to the pool through the page table of its slot. Grid (ceil(kv_dim / blockDim), rows).
+extern "C" __global__ void kv_append_rows_paged_bf16(bf16* __restrict__ pool, const int* __restrict__ tables, int stride,
+                                                     const int* __restrict__ slots, const bf16* __restrict__ k, const bf16* __restrict__ v,
+                                                     const int* __restrict__ positions, int kv_dim, int layer, int layers) {
+    const int r = blockIdx.y;
+    const int s = slots[r];
+    if (s < 0) return;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= kv_dim) return;
+    const int p = positions[r];
+    const int page = tables[(size_t)s * stride + (p >> 6)];
+    if (page < 0) return;
+    const size_t base = (((size_t)page * layers + layer) * 2 * 64 + (p & 63)) * (size_t)kv_dim + i;
+    pool[base] = k[(size_t)r * kv_dim + i];
+    pool[base + (size_t)64 * kv_dim] = v[(size_t)r * kv_dim + i];
+}
+
+// Split-K decode attention of row blockIdx.y over the page-major pool: the kernel body of attention_split_*_paged_pm, one row per grid row.
+// `ws` holds heads * splits * (head_dim + 2) floats per row.
+#define ROWS_ENTRY(HD, NAME)                                                                                                           \
+    extern "C" __global__ void NAME(const bf16* __restrict__ q, const bf16* __restrict__ pool, float* __restrict__ ws,                  \
+                                    const int* __restrict__ positions, int heads, int kv_heads, int splits,                             \
+                                    const int* __restrict__ tables, int stride, const int* __restrict__ slots, int layer, int layers) { \
+        const int r = blockIdx.y;                                                                                                        \
+        const int s = slots[r];                                                                                                          \
+        if (s < 0) return;                                                                                                               \
+        attention_split_impl<HD, 2>(q + (size_t)r * heads * HD, pool, pool, ws + (size_t)r * heads * splits * (HD + 2), positions + r,   \
+                                    heads, kv_heads, splits, tables + (size_t)s * stride, layer, layers);                               \
+    }
+ROWS_ENTRY(64, attention_split_rows_64_bf16)
+ROWS_ENTRY(128, attention_split_rows_128_bf16)
+
+// Merge the splits of every (row, query head): grid (heads, rows), one thread per dimension; the arithmetic of attention_combine_bf16.
+extern "C" __global__ void attention_combine_rows_bf16(const float* __restrict__ ws, bf16* __restrict__ out, const int* __restrict__ positions,
+                                                       const int* __restrict__ slots, int heads, int head_dim, int splits) {
+    __shared__ float split_max[256];
+    __shared__ float split_weight[256];
+    const int r = blockIdx.y;
+    if (slots[r] < 0) return;
+    const int len = positions[r] + 1;
+    const int chunk = max(SPLIT_MIN_CHUNK, (len + splits - 1) / splits);
+    const int active = (len + chunk - 1) / chunk;
+    const int h = blockIdx.x;
+    const int d = threadIdx.x;
+    const int stride = head_dim + 2;
+    const float* base = ws + ((size_t)r * heads + h) * splits * stride;
+    for (int s = threadIdx.x; s < active; s += blockDim.x) split_max[s] = base[(size_t)s * stride];
+    __syncthreads();
+    float top = -INFINITY;
+    for (int s = 0; s < active; ++s) top = fmaxf(top, split_max[s]);
+    for (int s = threadIdx.x; s < active; s += blockDim.x) split_weight[s] = expf(split_max[s] - top);
+    __syncthreads();
+    float total = 0.f, acc = 0.f;
+#pragma unroll 4
+    for (int s = 0; s < active; ++s) {
+        const float w = split_weight[s];
+        total += base[(size_t)s * stride + 1] * w;
+        acc += base[(size_t)s * stride + 2 + d] * w;
+    }
+    out[((size_t)r * heads + h) * head_dim + d] = __float2bfloat16(acc / total);
+}
+
+// Greedy token choice of every active row: block r takes the highest f32 logit of logits[r][0..n) (lowest index on ties, NaN never wins, as
+// argmax_chain_bf16), stores it as slot_token[slot] (the next step input of that slot) and in the row ring tokens_ring[r][position & 63] (the host reads it at the
+// position the token was sampled at, at most 63 steps late), and advances positions[r].
+// An inactive row is skipped. One block of 1024 threads per row.
+extern "C" __global__ void argmax_rows_bf16(const float* __restrict__ logits, int n, const int* __restrict__ slots, unsigned int* slot_token,
+                                            unsigned int* tokens_ring, int* positions) {
+    __shared__ float warp_value[32];
+    __shared__ int warp_index[32];
+    const int r = blockIdx.x;
+    const int s = slots[r];
+    if (s < 0) return;
+    const float* row = logits + (size_t)r * n;
+    float best = -INFINITY;
+    int best_at = 0x7fffffff;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float v = row[i];
+        if (v > best) {
+            best = v;
+            best_at = i;
+        }
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        const float other = __shfl_down_sync(0xffffffffu, best, offset);
+        const int other_at = __shfl_down_sync(0xffffffffu, best_at, offset);
+        if (other > best || (other == best && other_at < best_at)) {
+            best = other;
+            best_at = other_at;
+        }
+    }
+    if ((threadIdx.x & 31) == 0) {
+        warp_value[threadIdx.x >> 5] = best;
+        warp_index[threadIdx.x >> 5] = best_at;
+    }
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        best = threadIdx.x < (blockDim.x >> 5) ? warp_value[threadIdx.x] : -INFINITY;
+        best_at = threadIdx.x < (blockDim.x >> 5) ? warp_index[threadIdx.x] : 0x7fffffff;
+        for (int offset = 16; offset > 0; offset >>= 1) {
+            const float other = __shfl_down_sync(0xffffffffu, best, offset);
+            const int other_at = __shfl_down_sync(0xffffffffu, best_at, offset);
+            if (other > best || (other == best && other_at < best_at)) {
+                best = other;
+                best_at = other_at;
+            }
+        }
+        if (threadIdx.x == 0) {
+            const unsigned int token = best_at == 0x7fffffff ? 0u : (unsigned int)best_at;
+            slot_token[s] = token;
+            tokens_ring[(size_t)r * 64 + (positions[r] & 63)] = token;
+            positions[r] += 1;
+        }
+    }
+}

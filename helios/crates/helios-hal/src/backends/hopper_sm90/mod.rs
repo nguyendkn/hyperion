@@ -18,6 +18,7 @@ mod decode_profile;
 mod forward_device;
 mod ops;
 mod ops_split_attention;
+mod plan_exec;
 mod session;
 
 pub use backend::HopperBackend;
