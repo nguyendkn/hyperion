@@ -141,6 +141,20 @@ impl HopperBackend {
         self.commit_kv(reservation, &graphs, &MemoryPolicy { max_tokens, ..MemoryPolicy::default() })
     }
 
+    /// Copy `bytes` bytes of the mapped KV pool, starting `offset` bytes into it, back to the host. A verification aid (a masked row must leave
+    /// every page unchanged); not used on any serving path.
+    pub fn read_pool_bytes(&self, offset: u64, bytes: usize) -> Result<Vec<u8>> {
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let lifecycle = self.kv.lock().expect("kv mutex poisoned");
+        let lifecycle = lifecycle.as_ref().filter(|l| l.state == KvState::Committed).ok_or_else(|| anyhow!("the KV pool is not mapped"))?;
+        if offset as usize + bytes > lifecycle.range.mapped_bytes() {
+            return Err(anyhow!("reading {bytes} bytes at {offset} is past the {} mapped bytes of the pool", lifecycle.range.mapped_bytes()));
+        }
+        let mut out = vec![0u8; bytes];
+        dev.dtoh(&mut out, lifecycle.range.base() + offset)?;
+        Ok(out)
+    }
+
     /// Let this backend load a package that needs QK-norm although that path has not been verified against an oracle yet
     /// (`QK_NORM_VERIFIED`): for the run that does the verifying. Call it before `load_model`.
     pub fn allow_unverified_qk_norm(&self) {
