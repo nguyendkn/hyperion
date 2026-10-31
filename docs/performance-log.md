@@ -182,3 +182,18 @@ No change: the timed choice for the 1x4608x3584 and 1x3584x3584 shapes on 7B and
 ### Page layouts (decision 17), VMM
 
 Decode attention sweep, 28/4/128: see ADR 0002 (page-major / layer-major 1.0152 at 8192, 1.0073 at 32768). VMM: granule 2 MiB; reserving 8 GiB of addresses uses 0 bytes; mapping 512 granules one by one 391 ms (764 us each), 4 GiB in one call 0.58 ms; a mapping beyond the free memory is refused (`cuMemCreate` out of memory); reserve and map are refused while serving.
+
+## Gate after the merged trait and the cuBLASLt change (pod session 2026-10-31, tag `pod-20261031-1447`, build `e55e39a`)
+
+Single H100 80GB HBM3, driver 580.126.20, SM clock 1980 MHz (1950 of 1953 samples at 1950 to 1980), memory 2619 MHz. Another pod than 2026-10-30: the same code decodes 7B about 1.5% slower than the table above on this GPU (graph ms/token at context 5: 6.579 against 6.475).
+
+**A/B on this pod, alternating processes (3 rounds, old tree `8dd5bf1` with its own kernels against `e55e39a`, 7B graph decode ms/token median):** context 5: 6.578, 6.582, 6.581 old against 6.585, 6.580, 6.582 new; 1024: 6.670, 6.674, 6.674 against 6.674, 6.672, 6.674; 8000: 7.433, 7.441, 7.440 against 7.439, 7.439, 7.441. The two builds are equal within 0.1%, so the trait change (C3) and the removal of the timed cuBLASLt selection (A4) cost nothing; the 1.5% is the GPU unit.
+
+| 7B graph ms/token | ctx 5 | 1024 | 4096 | 8000 | 16000 |
+|---|---|---|---|---|---|
+| this pod, `e55e39a` | 6.579 | 6.670 | 6.892 | 7.435 | 8.526 |
+| 0.5B | 1.333 | 1.388 | 1.527 | 1.610 | 1.865 |
+
+TTFT 7B graph ms: 1024 tokens 31.7, 4096 140.3, 8192 330.5, 16384 885.4; 0.5B: 6.2, 23.3, 59.4, 175.5.
+
+cuBLASLt candidates timed by `scripts/bench-cublaslt.sh` (microseconds per call): on 7B the heuristic's first algorithm is the fastest for QKV (13.65 us) and o_proj (11.89 us); the third and second candidates are 7 to 34% slower; on 0.5B the first is within 2% of the best (QKV 4.66 against 4.66, o_proj 4.19 against 4.19).

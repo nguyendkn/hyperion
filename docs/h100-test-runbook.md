@@ -60,3 +60,9 @@ It closes these ledger rows at once: the device upload of a sharded model, an un
 3. **Measure decode time with CUDA events inside one run** (a window of 128 decode steps after warm-up), alternating the configurations being compared in one process; report median with p10 and p90. A difference of two whole-run times has a spread of tens of percent.
 4. For cross-build comparisons that need two processes, alternate the processes (A, B, A, B, ...) and record the SM clock (`nvidia-smi --query-gpu=clocks.sm,temperature.gpu --format=csv -l 1`).
 5. Say in the ledger what was only type-checked, and what ran on which topology.
+
+## Notes from the 2026-10-31 gate run
+
+- A tree older than the manifest fields (`sharding`, `parallelism`) rejects a current package: for an old-versus-new A/B give the old binary a copy of the package directory (symlinks to the safetensors, a manifest without those two fields).
+- An old tree needs `bash scripts/build-kernels.sh` on the pod before its test binary is built: its committed fatbin does not carry the symbols of the current test code.
+- The pod `kubectl exec` with `setsid nohup ... &` and a Monitor on the `done` line of the log works for runs of 5 to 20 minutes; Windows needs `MSYS_NO_PATHCONV=1`.
