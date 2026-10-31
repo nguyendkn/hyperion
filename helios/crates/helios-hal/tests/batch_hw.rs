@@ -230,3 +230,41 @@ fn the_plan_path_gives_the_greedy_tokens_of_generate_and_of_hugging_face() {
     }
     backend.shutdown().unwrap();
 }
+
+fn median_p10_p90(mut v: Vec<f64>) -> (f64, f64, f64) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (v[v.len() / 2], v[v.len() / 10], v[(v.len() * 9) / 10])
+}
+
+/// P5: GPU milliseconds per decode step of each bucket (10 windows of 128 chained graph launches, median [p10, p90]) with every row at context
+/// 512, and the GPU time by group of kernels at the buckets named by `HYPERION_PROFILE_BUCKETS` (default 1, 8, 32).
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn decode_step_time_by_bucket() {
+    let (backend, pool) = open(32, 32 * 16);
+    let seed = seed_prompt();
+    let seqs: Vec<Seq> = (0..32usize)
+        .map(|i| Seq { slot: i as u32, prompt: (0..512).map(|j| seed[(j + i) % seed.len()]).collect(), pages: ((16 * i) as u32..(16 * i + 16) as u32).collect() })
+        .collect();
+    // Prefill every slot (the decode steps only need their pages and a token in `slot_token`).
+    let _ = run(&backend, &pool, &seqs, 32, 1);
+    println!("context 512, every row; GPU ms per step, median [p10, p90] of 10 windows of 128 steps");
+    for bucket in [1usize, 2, 4, 8, 16, 32] {
+        let rows: Vec<(u32, u32)> = (0..bucket as u32).map(|slot| (slot, 513)).collect();
+        let (m, lo, hi) = median_p10_p90(backend.time_decode_bucket(&rows, bucket, 128, 10).expect("timing"));
+        println!("BUCKET {bucket:>2}: {m:.3} [{lo:.3}, {hi:.3}] ms/step = {:.1} tokens/s", bucket as f64 * 1000.0 / m);
+    }
+    let wanted: Vec<usize> = std::env::var("HYPERION_PROFILE_BUCKETS").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_else(|| vec![1, 8, 32]);
+    for bucket in wanted {
+        let rows: Vec<(u32, u32)> = (0..bucket as u32).map(|slot| (slot, 513)).collect();
+        let repeats = 20;
+        let mut groups = backend.profile_decode_bucket(&rows, bucket, repeats).expect("profile");
+        let total: f64 = groups.iter().map(|g| g.1).sum();
+        groups.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        println!("PROFILE bucket {bucket}: {:.3} ms/step direct, by group (ms/step, share):", total / repeats as f64);
+        for (group, ms) in groups {
+            println!("   {group:<18} {:.3} {:>5.1}%", ms / repeats as f64, 100.0 * ms / total);
+        }
+    }
+    backend.shutdown().unwrap();
+}

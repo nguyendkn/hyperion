@@ -84,3 +84,59 @@ impl Session {
         Ok(StepOutput { step: plan.step, rows })
     }
 }
+
+impl super::backend::HopperBackend {
+    /// GPU milliseconds per decode step of a bucket, measured inside one run: `windows` windows of `steps` chained graph launches, each window
+    /// restaged at `rows` (`(slot, position)`; the pages for `position + steps` must be in the tables). One value per window; the caller takes
+    /// the median and p10/p90. Verification and measurement only.
+    pub fn time_decode_bucket(&self, rows: &[(u32, u32)], bucket: usize, steps: usize, windows: usize) -> Result<Vec<f64>> {
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_ref().ok_or_else(|| anyhow!("no session: the load order was not completed"))?;
+        let cublas = self.cublas.lock().expect("cublas mutex poisoned");
+        let cublas = cublas.as_ref().ok_or_else(|| anyhow!("no cuBLAS handle"))?;
+        let _no_new_gpu_work = dev.forbid_new_gpu_work();
+        let staged: Vec<(i32, u32)> = rows.iter().map(|&(slot, position)| (slot as i32, position)).collect();
+        let mut out = Vec::with_capacity(windows);
+        for _ in 0..windows {
+            session.stage_rows(&dev, &staged, bucket)?;
+            for _ in 0..3 {
+                session.decode_step(&dev, cublas, bucket, DecodeMode::Graph, None)?;
+            }
+            session.stage_rows(&dev, &staged, bucket)?;
+            session.window.0.record(&dev)?;
+            for _ in 0..steps {
+                session.decode_step(&dev, cublas, bucket, DecodeMode::Graph, None)?;
+            }
+            session.window.1.record(&dev)?;
+            session.window.1.wait()?;
+            out.push(crate::cuda::event::Event::elapsed_ms(&session.window.0, &session.window.1)? / steps as f64);
+        }
+        Ok(out)
+    }
+
+    /// GPU milliseconds by group of kernels of one decode step of a bucket launched directly (not as a graph), summed over `repeats` steps.
+    pub fn profile_decode_bucket(&self, rows: &[(u32, u32)], bucket: usize, repeats: usize) -> Result<Vec<(&'static str, f64)>> {
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_ref().ok_or_else(|| anyhow!("no session: the load order was not completed"))?;
+        let cublas = self.cublas.lock().expect("cublas mutex poisoned");
+        let cublas = cublas.as_ref().ok_or_else(|| anyhow!("no cuBLAS handle"))?;
+        let _no_new_gpu_work = dev.forbid_new_gpu_work();
+        let staged: Vec<(i32, u32)> = rows.iter().map(|&(slot, position)| (slot as i32, position)).collect();
+        let mut totals: Vec<(&'static str, f64)> = Vec::new();
+        for _ in 0..repeats {
+            session.stage_rows(&dev, &staged, bucket)?;
+            let marks = std::cell::RefCell::new(crate::cuda::profile::StepMarks::start(&dev)?);
+            session.decode_step(&dev, cublas, bucket, DecodeMode::Direct, Some(&marks))?;
+            dev.synchronize()?;
+            for (group, ms) in marks.borrow().read()? {
+                match totals.iter_mut().find(|(g, _)| *g == group) {
+                    Some(entry) => entry.1 += ms,
+                    None => totals.push((group, ms)),
+                }
+            }
+        }
+        Ok(totals)
+    }
+}
