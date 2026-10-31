@@ -213,6 +213,18 @@ impl StepScheduler {
         None
     }
 
+    /// The step `next_plan` made failed on the device: fail the request it belonged to and free its pages. The scheduler goes on with the rest.
+    pub fn fail_pending(&mut self, message: &str) -> Vec<SeqEvent> {
+        let Some(pending) = self.pending.take() else { return Vec::new() };
+        let (Pending::Chunk { id, .. } | Pending::Decode { id, .. }) = pending;
+        if let Some(at) = self.active.iter().position(|a| a.id == id) {
+            self.active.remove(at);
+            let _ = self.kv.release(id);
+            self.cursor = 0;
+        }
+        vec![SeqEvent::Failed { id, message: message.to_string() }]
+    }
+
     /// Take the output of the step `next_plan` made: update the KV bookkeeping, stream the token, finish the sequence when it is done.
     pub fn complete(&mut self, output: &StepOutput) -> Vec<SeqEvent> {
         let Some(pending) = self.pending.take() else { return Vec::new() };

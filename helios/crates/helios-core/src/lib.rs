@@ -17,6 +17,7 @@ pub mod error;
 pub mod inflight;
 pub mod kv;
 pub mod scheduler;
+mod scheduler_plans;
 pub mod simulator;
 pub mod state;
 pub mod step_scheduler;
@@ -26,5 +27,5 @@ pub mod tokenizer;
 pub use state::{EngineState, EngineStatus, StateMachine};
 pub use scheduler::{
     ingress_channel, FinishReason, InferenceRequest, IngressSender, SamplingParams,
-    Scheduler, StreamEvent,
+    PlanPath, Scheduler, StreamEvent,
 };

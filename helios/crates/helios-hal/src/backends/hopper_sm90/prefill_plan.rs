@@ -18,10 +18,7 @@ pub enum PrefillError {
     EmptyPrompt,
 }
 
-/// Smallest chunk capacity.
-pub(super) const MIN_CHUNK: usize = 128;
-/// Largest chunk capacity: bounds the activation buffers, so it does not grow with the context.
-pub(super) const MAX_CHUNK: usize = 4096;
+pub(super) use crate::prefill_capacities::{capacities, largest_chunk, MAX_CHUNK, MIN_CHUNK};
 
 /// One chunk of a prompt: `valid` tokens at positions `start..start + valid`, run in a graph of `capacity` rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,17 +26,6 @@ pub(super) struct Chunk {
     pub start: usize,
     pub valid: usize,
     pub capacity: usize,
-}
-
-/// The largest chunk capacity for a session that holds `context` tokens: [`MAX_CHUNK`], or the smallest power of
-/// two that covers the context when that is smaller (never below [`MIN_CHUNK`]).
-pub(super) fn largest_chunk(context: usize) -> usize {
-    context.max(1).next_power_of_two().clamp(MIN_CHUNK, MAX_CHUNK)
-}
-
-/// Every chunk capacity of a session whose largest is `largest`: 128, 256, ... `largest`.
-pub(super) fn capacities(largest: usize) -> Vec<usize> {
-    std::iter::successors(Some(MIN_CHUNK), |c| (*c < largest).then_some(c * 2)).collect()
 }
 
 /// Cut a prompt of `tokens` tokens into chunks. An empty prompt is an error: there is nothing to run.

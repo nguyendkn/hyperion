@@ -127,4 +127,9 @@ fn every_variant_has_a_distinct_code_a_status_and_a_fix() {
         assert_eq!(e.body()["error"]["code"], e.code());
     }
     assert_eq!(ApiError::FirstEventTimeout.status().as_u16(), 504);
+    // A full queue is the client cue to back off: 429 with the OpenAI rate-limit shape.
+    let full = ApiError::Scheduler(SchedulerFault::Overloaded);
+    assert_eq!(full.status().as_u16(), 429);
+    assert_eq!(full.body()["error"]["type"], "rate_limit_error");
+    assert_eq!(full.body()["error"]["code"], "rate_limit_exceeded");
 }

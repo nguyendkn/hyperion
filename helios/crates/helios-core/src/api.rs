@@ -20,9 +20,9 @@ use crate::state::StateMachine;
 use crate::tokenizer::{ChatMessageForEncode, PromptTokenizer, StreamDecoder};
 
 /// How long the handler waits for the scheduler to *accept* a request (the
-/// ingress send) before declaring 503. The ingress channel is bounded
+/// ingress send) before declaring 429. The ingress channel is bounded
 /// ([`crate::scheduler::INGRESS_CAPACITY`]); a full queue under load makes
-/// `send().await` block, and we surface that as a fast 503 rather than a
+/// `send().await` block, and we surface that as a fast 429 rather than a
 /// hung connection.
 const INGRESS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -218,7 +218,7 @@ async fn serve_chat(
         Ok(Ok(())) => { /* enqueued */ }
         // Scheduler dropped its receiver (task ended).
         Ok(Err(_send_err)) => return Err(ApiError::Scheduler(SchedulerFault::QueueClosed)),
-        // Bounded ingress queue is full: backpressure surfaced as 503.
+        // Bounded ingress queue is full: backpressure surfaced as 429 (OpenAI-shaped rate_limit_exceeded).
         Err(_elapsed) => return Err(ApiError::Scheduler(SchedulerFault::Overloaded)),
     }
 

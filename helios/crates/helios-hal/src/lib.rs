@@ -16,6 +16,7 @@
 
 pub mod contract;
 pub mod multi_rank_comm;
+pub mod prefill_capacities;
 pub mod multi_rank_stub;
 pub mod sharding;
 pub mod step;

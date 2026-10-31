@@ -98,6 +98,39 @@ fn resolve_max_seq_len(
     Ok(limit)
 }
 
+/// Tokens per prefix-hash block (ADR 0008 default), a whole number of pages.
+const HASH_BLOCK_TOKENS: usize = 64;
+/// Sequences the scheduler keeps in flight (the decode bucket is one row: they take turns).
+const MAX_SLOTS: usize = 4;
+/// Requests waiting for a slot before the API answers 429.
+const MAX_QUEUE: usize = 64;
+
+/// Reserve, capture and commit the KV pool of a loaded model and describe it to the scheduler. `None` when the backend has no paged KV yet
+/// (`HalError::Unsupported`), so the scheduler keeps the `generate` path; any other failure is an error.
+fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32) -> Result<Option<helios_core::PlanPath>> {
+    use helios_hal::{HalError, KvSpec, MemoryPolicy};
+    let reservation = match backend.reserve_kv(model, &KvSpec::default()) {
+        Ok(reservation) => reservation,
+        Err(error) if matches!(error.downcast_ref::<HalError>(), Some(HalError::Unsupported(_))) => {
+            tracing::info!("this backend has no paged KV pool: serving through generate");
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let graphs = backend.capture_graphs(model, &reservation)?;
+    let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy::default())?;
+    tracing::info!(pages = pool.info().pages, page_tokens = pool.info().page_tokens, bytes_per_page = pool.info().bytes_per_page, free_before = pool.info().free_before, free_after = pool.info().free_after, "KV pool mapped");
+    let identity = helios_core::kv::BlockHash::from_identity(&manifest.cache_identity()).ok_or_else(|| anyhow!("the cache identity is not a 64-digit hex digest"))?;
+    let step = helios_core::step_scheduler::StepConfig {
+        prefill_capacities: helios_hal::prefill_capacities::for_context(max_seq_len as usize),
+        max_slots: MAX_SLOTS,
+        max_queue: MAX_QUEUE,
+        eos_token_ids: manifest.generation.eos_token_ids.clone(),
+        max_seq_len: max_seq_len as usize,
+    };
+    Ok(Some(helios_core::PlanPath { pool: Arc::new(pool), step, identity, hash_block_tokens: HASH_BLOCK_TOKENS }))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -130,10 +163,14 @@ async fn main() -> Result<()> {
     //    backend is dropped, which releases the device context.
     let sm = helios_core::StateMachine::new();
     sm.mark_ready()?;
-    helios_hal::load_package(backend.as_ref().as_ref(), &cli.model, &manifest)
+    let loaded = helios_hal::load_package(backend.as_ref().as_ref(), &cli.model, &manifest)
         .map_err(|e| anyhow!("loading model weights failed: {e:#}"))?;
     sm.mark_loaded()?;
     tracing::info!(status = ?sm.status(), "weights loaded");
+    // The rest of the load order (ADR 0002, 0006): reserve the KV addresses, capture the graphs, measure the free memory and map all of it.
+    // A backend without a paged KV pool serves through `generate` until it has one.
+    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len)
+        .map_err(|e| anyhow!("preparing the KV pool failed: {e:#}"))?;
 
     // 6. Build the ingress channel and spawn the scheduler. The receiver
     //    moves into the scheduler task; the sender moves into `AppState`.
@@ -156,8 +193,10 @@ async fn main() -> Result<()> {
     let (ingress_tx, ingress_rx) = helios_core::scheduler::ingress_channel();
     let sched_cancel = CancellationToken::new();
     let sched_cancel_for_task = sched_cancel.clone();
-    let scheduler =
-        helios_core::Scheduler::new(backend.clone(), sm.clone(), ingress_rx);
+    let mut scheduler = helios_core::Scheduler::new(backend.clone(), sm.clone(), ingress_rx);
+    if let Some(plan_path) = plan_path {
+        scheduler = scheduler.with_plan_path(plan_path);
+    }
     let sched_handle = tokio::spawn(async move {
         scheduler.run(sched_cancel_for_task).await
     });

@@ -47,6 +47,7 @@ pub enum ApiError {
 impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
+            Self::Scheduler(SchedulerFault::Overloaded) => StatusCode::TOO_MANY_REQUESTS,
             Self::EngineNotServing { .. } | Self::Scheduler(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::NoTokenizer => StatusCode::NOT_IMPLEMENTED,
             Self::PromptTooLong { .. } => StatusCode::BAD_REQUEST,
@@ -61,6 +62,7 @@ impl ApiError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::PromptTooLong { .. } | Self::TokenizeFailed | Self::EmptyPrompt => "invalid_request_error",
+            Self::Scheduler(SchedulerFault::Overloaded) => "rate_limit_error",
             _ => "server_error",
         }
     }
@@ -75,7 +77,7 @@ impl ApiError {
             Self::EmptyPrompt => "empty_prompt",
             Self::Scheduler(SchedulerFault::NotWired) => "scheduler_not_wired",
             Self::Scheduler(SchedulerFault::QueueClosed) => "scheduler_unavailable",
-            Self::Scheduler(SchedulerFault::Overloaded) => "scheduler_overloaded",
+            Self::Scheduler(SchedulerFault::Overloaded) => "rate_limit_exceeded",
             Self::Scheduler(SchedulerFault::ClosedEarly) => "scheduler_closed_stream",
             Self::FirstEventTimeout => "scheduler_timeout",
             Self::GenerationFailed => "generation_failed",

@@ -105,9 +105,20 @@ pub struct InferenceRequest {
 pub struct Scheduler {
     pub backend: Arc<DynBackend>,
     pub state: Arc<StateMachine>,
+    /// When set, requests run through StepPlans on this pool; otherwise through the backend generate.
+    pub(crate) plan_path: Option<PlanPath>,
     /// Ingress queue. Dropped when `run()` returns, which immediately fails
     /// any in-flight `send()` on the API side → handler returns 503.
-    ingress: mpsc::Receiver<InferenceRequest>,
+    pub(crate) ingress: mpsc::Receiver<InferenceRequest>,
+}
+
+/// What the plan path needs: the KV pool the backend committed (`commit_kv`), the scheduler limits and the identity the prefix hashes chain from.
+pub struct PlanPath {
+    pub pool: Arc<helios_hal::KvPool>,
+    pub step: crate::step_scheduler::StepConfig,
+    pub identity: crate::kv::BlockHash,
+    /// Tokens per prefix-hash block (a multiple of the page size of the pool).
+    pub hash_block_tokens: usize,
 }
 
 /// The sender half handed to the API layer. Stored in `AppState` so the
@@ -138,7 +149,14 @@ impl Scheduler {
             backend,
             state: Arc::new(state),
             ingress,
+            plan_path: None,
         }
+    }
+
+    /// Serve through StepPlans on the committed KV pool (`submit_step` / `take_output`) instead of `generate`.
+    pub fn with_plan_path(mut self, plan_path: PlanPath) -> Self {
+        self.plan_path = Some(plan_path);
+        self
     }
 
     /// Main scheduling loop. TODO: repeatedly pick the next prefill or decode
@@ -170,6 +188,9 @@ impl Scheduler {
     /// supervisor (observing the `JoinHandle`) to shut the engine down
     /// rather than relying on a post-`run()` line that a panic skips.
     pub async fn run(mut self, cancel: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
+        if let Some(plan_path) = self.plan_path.take() {
+            return self.run_plans(plan_path, cancel).await;
+        }
         // One request at a time: each is handed to the backend's `generate`, which runs on a
         // blocking thread (a device call must not stall the async runtime) and streams tokens
         // back as they are chosen. Cancellation is checked between requests, never mid-call,
