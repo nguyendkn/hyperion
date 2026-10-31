@@ -1,0 +1,203 @@
+# Helios
+
+Helios is the **runtime** half of Hyperion: a Rust inference engine that loads a signed `.hyperion`
+package (built by Ignition, the Python build-time stage), picks the matching GPU backend, and serves an
+OpenAI-compatible HTTP API. No Python at runtime.
+
+Helios is three crates under `helios/crates/`:
+
+| Crate | Kind | One-line role |
+|---|---|---|
+| `helios-hal`  | library | The hardware contract: the `ComputeBackend` trait, the backends, triage, the step-plan format. |
+| `helios-core` | library | The device-agnostic engine: HTTP API, tokenizer, chat template, scheduler, KV page manager, state machine. |
+| `helios-cli`  | binary  | The entrypoint that wires the other two together and runs the server. |
+
+## Dependency direction
+
+```
+helios-cli ──► helios-core ──► helios-hal ──► hyperion-specification (manifest types, sha256)
+     └─────────────────────────►┘
+```
+
+Two rules keep this clean (see the root `CLAUDE.md`, "Architecture rules"):
+
+1. `helios-core` must not know what GPU it runs on. It only sees `helios-hal`'s trait and data types.
+2. New hardware means a new directory under `helios-hal/src/backends/`. `helios-core` is not touched.
+
+---
+
+## 1. `helios-hal` — Hardware Abstraction Layer
+
+Everything that touches a GPU, or describes how to talk to one, lives here. No other crate contains
+CUDA calls.
+
+### The contract (`traits.rs`, `contract.rs`)
+
+`ComputeBackend` is the one trait every backend implements, **one instance per rank** (one GPU). It is
+the most stability-sensitive file in the workspace: it changed once (ADR 0006), and a further change
+needs the owner's approval. The load order is encoded in the types (type-state chain), so a backend
+cannot serve with half-mapped memory:
+
+```
+initialize_device(&RankInfo)  -> HardwareInfo     probe the device, report free VRAM
+load_model(config, weights)   -> LoadedModel      upload this rank's weights
+reserve_kv(model, spec)       -> KvReservation    reserve virtual addresses only, no physical memory
+capture_graphs(model, kv)     -> GraphSet         capture prefill/decode CUDA graphs, warm cuBLAS/NCCL
+commit_kv(kv, graphs, policy) -> KvPool           measure free memory, map ALL of it as KV pages
+submit_step(&KvPool, &StepPlan) -> StepTicket     enqueue one step, return at once
+take_output(ticket)           -> StepOutput       collect it (may be one step late)
+```
+
+Also on the trait: `capabilities()` (arch, tensor formats, head dims, graph limits as data),
+`collective()` (a `Communicator` for all-reduce/all-gather/send/recv), `shutdown()`, and a
+default-implemented `generate()` (the older single-prompt path, `HalError::Unsupported` when absent).
+After `commit_kv` nothing allocates, compiles or captures while serving (ADR 0002).
+
+### Backend selection (`backend_factory.rs`, `triage.rs`)
+
+- Cargo features choose which backends are *compiled in*: `stub` (default), `sm90`, `sm120`, `multi`;
+  `cuda` is the shared Driver-API core that `sm90` and `sm120` enable.
+- `create_backend(&Manifest)` tries **sm120 → sm90 → stub**. A backend that cannot probe a device or
+  whose triage refuses is skipped; if none qualifies, the error lists every refusal.
+- **Triage is exact-match only**: the manifest's `target_arch` must equal the probed device, the backend
+  must be the one written for that arch, and the manifest's `tensor_format` must be in that arch's
+  format table (one Rust table; Ignition's recipes are cross-checked against its JSON dump). No
+  cross-generation fallback. Hopper never runs FP4.
+
+### Backends (`src/backends/`)
+
+| Backend | Status |
+|---|---|
+| `stub.rs` | Named test double, results tagged `[RUN on stub]`. Follows the load order and refuses what a real backend refuses, but computes nothing (every sampled token is id 0). Reports `sm_0`, so a real package is refused by triage instead of silently "working". |
+| `hopper_sm90/` | The working GPU backend (H100/H200). Cuda Driver API + cuBLAS, hand-written kernels in `kernels/*.cu`, CUDA-graph decode. Verified on an H100 for Qwen2.5-0.5B (`generate` path). The page-index KV, `submit_step` and tensor-parallel execution are **not implemented yet** (design accepted in ADRs 0002/0004-0009); `ops_paged_kv.rs` is the work in progress. |
+| `blackwell_sm120/` | Only the device probe and capabilities are real. Weight upload, KV pool and graph capture return `HalError::Unsupported`. |
+
+### CUDA layer (`src/cuda/`, feature `cuda`)
+
+Hand-written FFI, **no CUDA toolkit needed to build**: `loader.rs` resolves `libcuda`/`nvcuda` and
+cuBLAS with `dlopen`/`LoadLibraryA` under explicit versioned symbol names. A missing library or symbol
+is a typed `LoadError`, never a panic. Modules: `device`, `vmm` (virtual-memory KV range), `graph`,
+`event`, `module` (fatbin loading), `weights`, `cublas`/`cublaslt`, `nccl` (loaded with `dlopen`, ADR
+0009), `work_guard`, `profile`.
+
+### Host-side logic (pure Rust, tested everywhere, no GPU)
+
+- `step.rs` — the `StepPlan` the scheduler emits (ADR 0007): rows, page-table deltas, per-slot sampling
+  init. Compact binary encoding with `"HSTP"` magic, version, length and plan hash; every decode
+  error is distinct. `step_ledger.rs` tracks the submit/take pairing.
+- `pool_plan.rs` — KV pool sizing and page-table layout with delta encoding.
+- `sharding.rs`, `weights_plan.rs` — each rank's slice of every tensor under tensor/pipeline
+  parallelism; one canonical package serves every supported TP size.
+- `sampling.rs` — greedy, temperature, top-p with a seeded xorshift64* generator (no dependency).
+- `multi_rank_comm.rs`, `multi_rank_stub.rs` — `Communicator` over host memory for multi-rank tests.
+- `oracle.rs`, `reference.rs`, `prefill_capacities.rs` — logit-oracle comparison rules, CPU reference
+  math (bf16, f64 linear) to check GPU output, and chunk-size choices.
+
+### Build and test
+
+```bash
+cargo check -p helios-hal                      # stub, no CUDA
+cargo check -p helios-hal --features sm90      # type-check only when CUDA is absent
+cargo test  -p helios-hal                      # host-side tests
+bash scripts/build-kernels.sh                  # rebuild kernels/*.fatbin (needs nvcc, i.e. a GPU host)
+```
+
+GPU tests (`tests/weights_hw.rs`) need a real device and follow `docs/h100-test-runbook.md`.
+
+---
+
+## 2. `helios-core` — the device-agnostic engine
+
+Owns everything between an HTTP request and a `StepPlan`. Talks to the GPU only through
+`helios-hal` (`DynBackend`, `StepPlan`, `KvPool`).
+
+### Request path
+
+```
+POST /v1/chat/completions
+  -> api.rs            validate, render chat template, tokenize, length check
+  -> bounded ingress   (full -> HTTP 429)
+  -> scheduler         one StepPlan per step -> backend.submit_step / take_output
+  -> StreamEvent       Tokens... then exactly one Done or Error
+  -> api.rs            detokenize, JSON or SSE response
+```
+
+### Modules
+
+| Module | Role |
+|---|---|
+| `api.rs` | Axum server. `POST /v1/chat/completions` (JSON and SSE streaming) and `GET /health` (200 in `Ready`/`Loaded`/`Serving`, 503 otherwise). Over-long prompt → 400 (never truncated); no tokenizer → 501; engine `Uninitialized`/`Draining`/`Stopped` → 503. |
+| `chat_template.rs` | Renders the model's own Jinja `chat_template` from the signed manifest with `minijinja` (Hugging Face whitespace settings). No per-model prompt format in code. |
+| `tokenizer.rs` | Hugging Face `tokenizers` (pure-Rust `fancy-regex` backend): prompt → `Vec<u32>` and streaming detokenization. |
+| `state.rs` | Engine lifecycle state machine: `Uninitialized → Ready → Loaded ⇄ Serving → Draining → Stopped`. One `AtomicU8` plus a CAS loop and an exhaustive transition table, so the API read path is lock-free. |
+| `scheduler.rs`, `scheduler_plans.rs` | Async wrapper: owns the backend and the request queue, moves requests in and events out. Has two paths: the plan path (backend has a KV pool; `PlanPath`) and the older `generate` path. |
+| `step_scheduler.rs` | The scheduler as a **pure state machine** over `StepPlan`s: admit, prefill in chunks, decode, round-robin across active sequences. No channel, clock or device, so a trace always yields the same plans. Currently one row per step (batch-1 decode bucket); the plan format already allows more. |
+| `kv/` | `KvManager` (page allocator + prefix index), `hash.rs` (chained block hashes seeded by the manifest's `cache_identity()`), `events.rs` (`BlockStored`/`BlockRemoved`/`Cleared` event log and snapshots for a KV-aware router, ADR 0008). Works on page indices only, never addresses. A block goes Reset → Partial → Complete → Registered; only unpinned Registered leaf blocks are evicted, LRU first. |
+| `cache.rs` | The earlier RadixCache sketch (256-token chunks); the `kv/` module is the active implementation. |
+| `simulator.rs` | Deterministic replay of a request trace against the plan state machine and any backend implementing `submit_step`. Reports encoded plans, prefix hit rate, page usage, KV events. |
+| `inflight.rs` | `InflightGuard` counts live requests (released on return, error, panic, client disconnect) so shutdown can drain them. |
+| `error.rs` | API error types and their HTTP mapping. |
+
+### Build and test
+
+```bash
+cargo test -p helios-core                        # all host-side, uses the stub backend
+HYPERION_REQUIRE_MODEL_FIXTURES=1 cargo test -p helios-core   # fail instead of skip when fixtures are missing
+python scripts/fetch-model-fixtures.py           # real tokenizer/config fixtures into testdata/models/
+```
+
+---
+
+## 3. `helios-cli` — the binary
+
+`src/main.rs` is the process entrypoint. Nothing here is hardware- or model-specific.
+
+```bash
+cargo run -p helios-cli -- --model path/to/model.hyperion [--port 8080] [--bind 127.0.0.1] [--max-seq-len N]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-m, --model` | required | Path to the `.hyperion` package. |
+| `-p, --port` | `8080` | HTTP port. |
+| `--bind` | `127.0.0.1` | Loopback by default: there is no authentication yet, so exposing it is an explicit choice. |
+| `--max-seq-len` | model's `max_seq_len` | Lower it to bound KV memory; a value above the model's is rejected. |
+
+Log level comes from `RUST_LOG` (default `info`).
+
+### Startup flow
+
+1. **Manifest**: read it (the signature check and `helios-pkg` codec are not there yet; a
+   `.manifest.json` placeholder is used).
+2. **Probe + triage** through `create_backend`, which reports every refusal on failure.
+3. **State machine** to `Ready`; **load weights**; to `Loaded`. A failed load exits non-zero (fail fast).
+4. **KV pool** (`open_kv`): `reserve_kv` → `capture_graphs` → `commit_kv`. If the backend answers
+   `Unsupported`, the CLI keeps the `generate` path. `--max-seq-len` is checked against the device's
+   VRAM before any socket opens.
+5. **Scheduler task** on a bounded ingress channel; a supervisor moves the engine to `Stopped` if it
+   exits or panics.
+6. **Tokenizer and chat template** come from the manifest (a package that names a tokenizer must carry it).
+7. **Serve** the Axum router.
+8. **Shutdown** on signal: stop accepting (10 s HTTP drain), cancel the scheduler cooperatively and wait
+   up to 15 s, abort only as a last resort (and skip backend teardown if the stop is unconfirmed), then
+   `backend.shutdown()`.
+
+### Features
+
+`stub` (default, no CUDA), `sm90`, `sm120`: they forward to `helios-hal`. Per-host builds enable one;
+the factory then confirms the real device matches.
+
+```bash
+cargo build -p helios-cli                       # stub
+cargo build -p helios-cli --features sm90 --release
+cargo test  -p helios-cli                       # tests/e2e_stub.rs: end-to-end on the stub
+```
+
+---
+
+## Where to read more
+
+- `docs/system-architecture.md`, `docs/codebase-summary.md`: overall design.
+- `docs/decisions/0001`-`0010`: ADRs (KV virtual range, step plan, rank model, NCCL, trait change, ...).
+- `docs/unverified-ledger.md`: what was actually run, on what (`[RUN on H100]`, `[RUN on stub]`, `[TYPE-CHECK]`).
+- `docs/h100-test-runbook.md`: how to run GPU tests.
