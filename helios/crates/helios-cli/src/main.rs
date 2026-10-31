@@ -62,6 +62,11 @@ struct Cli {
     /// Values above the model's maximum are rejected.
     #[arg(long)]
     max_seq_len: Option<u32>,
+
+    /// Largest decode batch: sequences decoded together in one step. A graph is captured for every power of two up to it (1, 2, 4, ...), so a
+    /// larger value costs graph memory. A power of two from 1 to 32.
+    #[arg(long, default_value_t = 32)]
+    max_batch: usize,
 }
 
 /// Bytes of KV cache one sequence of `tokens` needs: K and V, per layer, per
@@ -100,16 +105,16 @@ fn resolve_max_seq_len(
 
 /// Tokens per prefix-hash block (ADR 0008 default), a whole number of pages.
 const HASH_BLOCK_TOKENS: usize = 64;
-/// Sequences the scheduler keeps in flight (the decode bucket is one row: they take turns).
-const MAX_SLOTS: usize = 4;
+/// Prefill chunk steps between two decode steps while both kinds of work wait (policy v1).
+const PREFILL_STEPS_PER_DECODE: usize = 1;
 /// Requests waiting for a slot before the API answers 429.
 const MAX_QUEUE: usize = 64;
 
 /// Reserve, capture and commit the KV pool of a loaded model and describe it to the scheduler. `None` when the backend has no paged KV yet
 /// (`HalError::Unsupported`), so the scheduler keeps the `generate` path; any other failure is an error.
-fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32) -> Result<Option<helios_core::PlanPath>> {
+fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32, max_batch: usize) -> Result<Option<helios_core::PlanPath>> {
     use helios_hal::{HalError, KvSpec, MemoryPolicy};
-    let reservation = match backend.reserve_kv(model, &KvSpec::default()) {
+    let reservation = match backend.reserve_kv(model, &KvSpec { max_batch, ..KvSpec::default() }) {
         Ok(reservation) => reservation,
         Err(error) if matches!(error.downcast_ref::<HalError>(), Some(HalError::Unsupported(_))) => {
             tracing::info!("this backend has no paged KV pool: serving through generate");
@@ -121,12 +126,15 @@ fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedM
     let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy::default())?;
     tracing::info!(pages = pool.info().pages, page_tokens = pool.info().page_tokens, bytes_per_page = pool.info().bytes_per_page, free_before = pool.info().free_before, free_after = pool.info().free_after, "KV pool mapped");
     let identity = helios_core::kv::BlockHash::from_identity(&manifest.cache_identity()).ok_or_else(|| anyhow!("the cache identity is not a 64-digit hex digest"))?;
+    let decode_buckets = helios_hal::decode_buckets::buckets(max_batch)?;
     let step = helios_core::step_scheduler::StepConfig {
         prefill_capacities: helios_hal::prefill_capacities::for_context(max_seq_len as usize),
-        max_slots: MAX_SLOTS,
+        max_slots: max_batch,
         max_queue: MAX_QUEUE,
         eos_token_ids: manifest.generation.eos_token_ids.clone(),
         max_seq_len: max_seq_len as usize,
+        decode_buckets,
+        prefill_steps_per_decode: PREFILL_STEPS_PER_DECODE,
     };
     Ok(Some(helios_core::PlanPath { pool: Arc::new(pool), step, identity, hash_block_tokens: HASH_BLOCK_TOKENS }))
 }
@@ -169,7 +177,7 @@ async fn main() -> Result<()> {
     tracing::info!(status = ?sm.status(), "weights loaded");
     // The rest of the load order (ADR 0002, 0006): reserve the KV addresses, capture the graphs, measure the free memory and map all of it.
     // A backend without a paged KV pool serves through `generate` until it has one.
-    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len)
+    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len, cli.max_batch)
         .map_err(|e| anyhow!("preparing the KV pool failed: {e:#}"))?;
 
     // 6. Build the ingress channel and spawn the scheduler. The receiver

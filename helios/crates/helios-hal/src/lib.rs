@@ -17,6 +17,7 @@
 pub mod contract;
 pub mod multi_rank_comm;
 pub mod pool_plan;
+pub mod decode_buckets;
 pub mod prefill_capacities;
 pub mod multi_rank_stub;
 pub mod sharding;

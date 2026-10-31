@@ -201,6 +201,6 @@ mod tests {
     fn a_page_size_that_is_not_a_power_of_two_is_refused() {
         let backend = StubBackend::new();
         let model = backend.load_model(&config(), &WeightSource { files: Vec::new(), slices: Vec::new() }).unwrap();
-        assert!(backend.reserve_kv(&model, &KvSpec { page_tokens: 48, min_tokens: 0 }).is_err());
+        assert!(backend.reserve_kv(&model, &KvSpec { page_tokens: 48, ..KvSpec::default() }).is_err());
     }
 }

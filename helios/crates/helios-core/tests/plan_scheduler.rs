@@ -60,7 +60,7 @@ fn plan_path(backend: &dyn ComputeBackend, max_queue: usize) -> PlanPath {
     let graphs = backend.capture_graphs(&model, &reservation).unwrap();
     let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy { reserve_bytes: 0, max_tokens: 64 * 200 }).unwrap();
     // The stub always answers token 0: no end-of-sequence id, so a request runs to its length.
-    let step = StepConfig { prefill_capacities: vec![128, 512, 4096], max_slots: 2, max_queue, eos_token_ids: Vec::new(), max_seq_len: 4096 };
+    let step = StepConfig { prefill_capacities: vec![128, 512, 4096], max_slots: 2, max_queue, eos_token_ids: Vec::new(), max_seq_len: 4096, decode_buckets: vec![1, 2], prefill_steps_per_decode: 1 };
     PlanPath { pool: Arc::new(pool), step, identity: BlockHash([3; 32]), hash_block_tokens: 64 }
 }
 

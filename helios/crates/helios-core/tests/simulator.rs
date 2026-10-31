@@ -63,7 +63,7 @@ fn open(tokens: usize) -> (Box<dyn ComputeBackend>, KvPool) {
 
 fn config(max_slots: usize, max_queue: usize) -> StepConfig {
     // The stub always answers token 0, so no end-of-sequence id is set: every request runs to its length.
-    StepConfig { prefill_capacities: vec![128, 256, 512, 1024, 2048, 4096], max_slots, max_queue, eos_token_ids: Vec::new(), max_seq_len: 8192 }
+    StepConfig { prefill_capacities: vec![128, 256, 512, 1024, 2048, 4096], max_slots, max_queue, eos_token_ids: Vec::new(), max_seq_len: 8192, decode_buckets: vec![1], prefill_steps_per_decode: 1 }
 }
 
 fn run(trace: &Trace, tokens: usize, max_slots: usize, max_queue: usize) -> Report {

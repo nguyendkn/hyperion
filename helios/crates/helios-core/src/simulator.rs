@@ -46,6 +46,12 @@ pub struct Report {
     /// Pages in use and registered blocks when the trace ended.
     pub final_pages_used: usize,
     pub final_registered_blocks: usize,
+    /// Decode steps by the number of live rows they carried (batch size -> steps).
+    pub decode_rows: BTreeMap<usize, usize>,
+    /// Most sequences running (holding a slot) at once.
+    pub peak_running: usize,
+    /// Ticks from a request's arrival to its first token, by request id (the queueing delay plus its prefill).
+    pub first_token_ticks: BTreeMap<SeqId, u64>,
 }
 
 /// Replay `trace`. `pool` is the pool the backend committed; the page geometry comes from it.
@@ -54,7 +60,7 @@ pub fn replay(trace: &Trace, cfg: StepConfig, identity: crate::kv::BlockHash, ha
     let kv = KvManager::new(KvConfig { pages: info.pages, page_tokens: info.page_tokens, hash_block_tokens, identity })?;
     let mut scheduler = StepScheduler::new(cfg, kv);
     let events = scheduler.kv_mut().events().subscribe();
-    let mut report = Report { plans: Vec::new(), generated: BTreeMap::new(), finished: 0, cancelled: 0, rejected: 0, failed: 0, hit_rate: 0.0, peak_pages: 0, kv_events: Vec::new(), ticks: 0, final_pages_used: 0, final_registered_blocks: 0 };
+    let mut report = Report { plans: Vec::new(), generated: BTreeMap::new(), finished: 0, cancelled: 0, rejected: 0, failed: 0, hit_rate: 0.0, peak_pages: 0, kv_events: Vec::new(), ticks: 0, final_pages_used: 0, final_registered_blocks: 0, decode_rows: BTreeMap::new(), peak_running: 0, first_token_ticks: BTreeMap::new() };
     let mut tick = 0u64;
     let mut next = 0usize;
     let mut order: Vec<usize> = (0..trace.requests.len()).collect();
@@ -78,13 +84,16 @@ pub fn replay(trace: &Trace, cfg: StepConfig, identity: crate::kv::BlockHash, ha
         match scheduler.next_plan() {
             Some(plan) => {
                 report.plans.push(plan.encode());
+                if matches!(plan.capacity, helios_hal::step::Capacity::Decode { .. }) {
+                    *report.decode_rows.entry(plan.rows.len()).or_default() += 1;
+                }
                 let output = backend.take_output(backend.submit_step(pool, &plan)?)?;
                 let produced = scheduler.complete(&output);
-                record(&mut report, produced);
+                record(&mut report, produced, tick, trace);
             }
             None => {
                 if next >= order.len() && scheduler.is_idle() {
-                    record(&mut report, scheduler.take_events());
+                    record(&mut report, scheduler.take_events(), tick, trace);
                     break;
                 }
                 // Idle until the next arrival.
@@ -93,7 +102,8 @@ pub fn replay(trace: &Trace, cfg: StepConfig, identity: crate::kv::BlockHash, ha
                 }
             }
         }
-        record(&mut report, scheduler.take_events());
+        record(&mut report, scheduler.take_events(), tick, trace);
+        report.peak_running = report.peak_running.max(scheduler.running());
         report.peak_pages = report.peak_pages.max(scheduler.kv().pages_used());
         tick += 1;
         anyhow::ensure!(tick < guard, "the simulation did not finish within {guard} ticks");
@@ -106,10 +116,13 @@ pub fn replay(trace: &Trace, cfg: StepConfig, identity: crate::kv::BlockHash, ha
     Ok(report)
 }
 
-fn record(report: &mut Report, events: Vec<SeqEvent>) {
+fn record(report: &mut Report, events: Vec<SeqEvent>, tick: u64, trace: &Trace) {
     for event in events {
         match event {
-            SeqEvent::Tokens { id, tokens } => report.generated.entry(id).or_default().extend(tokens),
+            SeqEvent::Tokens { id, tokens } => {
+                report.first_token_ticks.entry(id).or_insert_with(|| tick.saturating_sub(trace.requests[id as usize - 1].arrive));
+                report.generated.entry(id).or_default().extend(tokens);
+            }
             SeqEvent::Finished { reason, .. } => {
                 debug_assert!(matches!(reason, FinishReason::Length | FinishReason::Stop));
                 report.finished += 1;

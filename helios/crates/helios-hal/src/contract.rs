@@ -279,11 +279,13 @@ pub struct KvSpec {
     pub page_tokens: usize,
     /// The longest sequence the pool must be able to hold at least (0: as many pages as fit).
     pub min_tokens: usize,
+    /// The largest decode bucket (`--max-batch`, a power of two): a graph is captured for each of 1, 2, 4, ... up to it (A6).
+    pub max_batch: usize,
 }
 
 impl Default for KvSpec {
     fn default() -> Self {
-        Self { page_tokens: 64, min_tokens: 0 }
+        Self { page_tokens: 64, min_tokens: 0, max_batch: 1 }
     }
 }
 
