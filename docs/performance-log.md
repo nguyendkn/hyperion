@@ -320,3 +320,44 @@ All within the declared budget (faster than the old tree from 1024 tokens). The 
 | 32 | 2.203 | 2.335 (+6.0%) | 2.257 (+2.5%) |
 
 The top-k/top-p mode costs about 110-130 us per step whatever the bucket (one block per row, latency bound), over the declared budget (+3% at bucket 1, +5% at bucket 32) on the 0.5B, where a step is 1.5-2.2 ms; on the 7B (6.9-8.9 ms) the same 130 us is about 1.5-1.9% (not yet measured). The first version (bisection, contiguous chunks) cost +86%; radix select and coalesced loads brought it to this.
+
+## 2026-11-01 (second run): `--prefill-chunk-busy` sweep (H3)
+
+Release CLI (revision f3bc630, then 71a768d for the 0.5B rerun; the 7B ran at f3bc630 with the round-robin prefill and the old estimator, see the ledger), `--max-batch 32 --max-seq-len 16384`, greedy, loadgen with cold prompts (distinct per request and per level), server `usage` for counts, 4 x c requests per level (at least 8). TTFT and ITL in ms, p50 / p90; ITL is (last - first chunk) / (completion tokens - 1) per request. 4096 means no cap. **Declared target (A6): 7B, 8192 in / 256 out, c = 8, ITL p90 <= 3 x the decode step of the bucket in use = 3 x 7.363 ms = 22.1 ms.**
+
+### 7B, 8192 in / 256 out (TTFT p50 / ITL p90 / tokens/s)
+
+| busy | c=1 | c=2 | c=4 | c=8 | c=16 | c=32 |
+|---|---|---|---|---|---|---|
+| 128 | 364 / 7.5 / 57 | 816 / 14.9 / 72 | 5277 / 28.1 / 44 | **7153 / 28.2** / 51 | 16552 / 28.1 / 36 | 32583 / 28.3 / 43 |
+| 256 | 364 / 7.5 / 57 | 861 / 17.7 / 84 | 1878 / 31.1 / 69 | **5342 / 31.0** / 62 | 13916 / 30.8 / 43 | 25700 / 31.8 / 56 |
+| 512 | 365 / 7.5 / 57 | 747 / 23.3 / 97 | 1026 / 25.1 / 101 | **2313 / 37.9** / 100 | 8195 / 36.9 / 67 | 17547 / 38.4 / 83 |
+| 1024 | 363 / 7.5 / 57 | 677 / 39.6 / 98 | 692 / 41.0 / 114 | **1705 / 44.1** / 114 | 5740 / 51.4 / 79 | 13252 / 62.8 / 98 |
+| 4096 (none) | 364 / 7.5 / 57 | 705 / 76.4 / 111 | 562 / 146.9 / 133 | **1090 / 149.1** / 137 | 3226 / 155.5 / 98 | 7931 / 163.2 / 122 |
+
+### 7B, 512 in / 256 out (TTFT p50 / ITL p90 / tokens/s)
+
+| busy | c=1 | c=4 | c=8 | c=16 | c=32 |
+|---|---|---|---|---|---|
+| 128 | 33 / 6.7 / 142 | 156 / 14.2 / 312 | 244 / 14.5 / 481 | 441 / 15.5 / 823 | 1105 / 18.2 / 916 |
+| 256 | 33 / 6.7 / 140 | 65 / 15.9 / 327 | 141 / 16.0 / 538 | 296 / 17.0 / 962 | 439 / 19.0 / 1189 |
+| 512 | 34 / 6.8 / 141 | 51 / 18.1 / 337 | 120 / 18.1 / 570 | 182 / 18.9 / 1007 | 288 / 20.8 / 1320 |
+| 1024 | 33 / 6.7 / 142 | 38 / 19.4 / 336 | 71 / 32.3 / 567 | 110 / 33.2 / 988 | 231 / 34.6 / 1306 |
+| 4096 (none) | 33 / 6.7 / 141 | 38 / 19.4 / 336 | 70 / 32.3 / 566 | 109 / 33.0 / 987 | 230 / 34.7 / 1306 |
+
+### 0.5B (TTFT p50 / ITL p90 / tokens/s; revision 71a768d), 8192 in at c = 1, 8, 32 and 512 in at c = 8, 32
+
+| busy | 8192 c=1 | 8192 c=8 | 8192 c=32 | 512 c=8 | 512 c=32 |
+|---|---|---|---|---|---|
+| 256 | 77 / 1.7 / 516 | 435 / 10.5 / 669 | 8999 / 11.6 / 629 | 18 / 2.6 / 3298 | 70 / 6.0 / 5713 |
+| 512 | 79 / 1.7 / 511 | 279 / 7.9 / 963 | 4297 / 15.3 / 944 | 13 / 2.7 / 3434 | 30 / 6.2 / 6400 |
+| 1024 | 77 / 1.7 / 515 | 194 / 11.7 / 1163 | 815 / 23.3 / 1235 | 13 / 2.4 / 3524 | 17 / 6.7 / 6754 |
+| 4096 (none) | 78 / 1.7 / 508 | 139 / 9.6 / 1376 | 237 / 31.0 / 1479 | 11 / 2.4 / 3508 | 14 / 6.3 / 6906 |
+
+### Reading
+
+- **The declared target is missed at every value** for the 8192 profile at c = 8 on the 7B: the best ITL p90 is 28.2 ms (busy 128) against 22.1 ms, and it costs a TTFT p50 of 7.2 s against 1.1 s with no cap. A cap cannot reach it: with a prefill chunk and a decode step strictly alternating, the inter-token time is a chunk plus a step (the chunk of 128 rows costs about 8 ms on the 7B), and the p90 comes from the sequences that start while others prefill.
+- The target *is* met for 512 in / 256 out at busy 256 (16.0 ms) and 512 (18.1 ms), not at 1024 (32.3 ms).
+- The cap trades the other way too: at 8192 in the total throughput falls (137 tokens/s uncapped against 100 at 512 and 62 at 256, c = 8) because small chunks use the device less well, and the 0.5B (launch bound) pays more for it.
+- **Default chosen: 512** (ITL p90 at the 8192 profile c = 8 down by 75% against no cap, TTFT p50 up 2.1x, the 512-token profile inside the target). The miss at the long-prompt profile stays open: mixed prefill+decode steps are the lever left (owner decision).
+- The 7B rows were measured before two fixes (the estimator denominator and oldest-first prefill); the 0.5B rows are after them, with TTFT at 8192/c=32 falling from 1121 ms to 237 ms (busy 4096) and from 4044 to 4297 ms (busy 512, unchanged). The 7B has not been re-swept with them.

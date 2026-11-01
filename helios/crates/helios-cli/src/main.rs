@@ -78,7 +78,7 @@ struct Cli {
     first_token_timeout: u64,
     /// Largest prefill chunk, in tokens, while sequences are decoding (the biggest captured chunk size not above it). A running sequence waits
     /// for at most one such chunk between two tokens; with nothing decoding, prompts are prefilled in the largest chunks. 0 is refused.
-    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    #[arg(long, default_value_t = 512, value_parser = clap::value_parser!(u32).range(1..))]
     prefill_chunk_busy: u32,
 }
 
