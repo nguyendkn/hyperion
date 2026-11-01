@@ -327,6 +327,46 @@ fn rope_matches_the_cpu_reference() {
     backend.shutdown().unwrap();
 }
 
+/// W2: the host-sliced forward pass diverged from the device path from about 127 prompt tokens. Every op of it, against the CPU reference, with the
+/// number of rows on either side of 128: the op that stops agreeing is the cause. Information plus a gate (more than 97% bit-identical, worst error 2 steps).
+#[test]
+#[ignore = "needs an H100 and a compiled package (see module docs)"]
+fn host_path_ops_agree_with_the_cpu_reference_around_128_rows() {
+    use helios_hal::reference::{add, attention, f32_to_bf16, linear, rmsnorm, rope, rope_tables, swiglu};
+    let (_, _, backend) = loaded_backend();
+    let (heads, kv_heads, d, hidden) = (14usize, 2usize, 64usize, 896usize);
+    let data = |n: usize, mul: usize, range: f32| -> Vec<u16> { (0..n).map(|i| f32_to_bf16(((i * mul % 101) as f32 - 50.0) / 50.0 * range)).collect() };
+    let words = |raw: Vec<u8>| -> Vec<u16> { raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect() };
+    let norm_w = words(backend.read_back_weight("layers.0.input_layernorm.weight").unwrap());
+    let q_w = words(backend.read_back_weight("layers.0.self_attn.q_proj.weight").unwrap());
+    let mut failures = Vec::new();
+    for tokens in [100usize, 126, 127, 128, 129, 200] {
+        let mut report = |op: &str, got: &[u16], want: &[u16]| {
+            let (exact, worst) = compare(got, want);
+            println!("rows {tokens:>3} {op:<10} {:.2}% bit-identical, worst {worst:.2} bf16 steps", exact * 100.0);
+            if !(exact > 0.97 && worst <= 2.0) {
+                failures.push(format!("{op} at {tokens} rows: {exact:.4} identical, worst {worst}"));
+            }
+        };
+        let x = data(tokens * hidden, 37, 2.0);
+        report("rmsnorm", &backend.rmsnorm_bf16("layers.0.input_layernorm.weight", &x, tokens, hidden, 1e-6).unwrap(), &rmsnorm(&x, &norm_w, tokens, hidden, 1e-6));
+        let got: Vec<u16> = backend.linear_bf16_f32("layers.0.self_attn.q_proj.weight", &x, tokens, hidden, hidden).unwrap().into_iter().map(f32_to_bf16).collect();
+        let want: Vec<u16> = linear(&q_w, &x, tokens, hidden, hidden).into_iter().map(f32_to_bf16).collect();
+        report("linear", &got, &want);
+        let q = data(tokens * heads * d, 37, 2.0);
+        let positions: Vec<u32> = (0..tokens as u32).collect();
+        let (cos, sin) = rope_tables(tokens, d, 1_000_000.0);
+        report("rope", &backend.rope_bf16(&q, &positions, heads, d, &cos, &sin).unwrap(), &rope(&q, &positions, heads, d, &cos, &sin));
+        let (k, v) = (data(tokens * kv_heads * d, 53, 2.0), data(tokens * kv_heads * d, 29, 3.0));
+        report("attention", &backend.attention_bf16(&q, &k, &v, tokens, tokens, heads, kv_heads, d, 0).unwrap(), &attention(&q, &k, &v, tokens, tokens, heads, kv_heads, d, 0));
+        let (a, b) = (data(tokens * 4864, 41, 3.0), data(tokens * 4864, 43, 3.0));
+        report("swiglu", &backend.swiglu_bf16(&a, &b).unwrap(), &swiglu(&a, &b));
+        report("add", &backend.add_bf16(&a, &b).unwrap(), &add(&a, &b));
+    }
+    assert!(failures.is_empty(), "ops that disagree with the CPU reference: {failures:#?}");
+    backend.shutdown().unwrap();
+}
+
 #[test]
 #[ignore = "needs an H100 and a compiled package (see module docs)"]
 fn attention_matches_the_cpu_reference_for_prefill_and_decode() {
