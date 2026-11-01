@@ -29,6 +29,7 @@ pub mod cuda;
 pub mod oracle;
 pub mod reference;
 pub mod sampling;
+pub mod sampler_reference;
 pub mod weights_plan;
 pub mod triage;
 pub mod backend_factory;
