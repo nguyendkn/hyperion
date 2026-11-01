@@ -845,16 +845,19 @@ extern "C" __global__ void kv_append_rows_paged_bf16(bf16* __restrict__ pool, co
                                                      const int* __restrict__ slots, const bf16* __restrict__ k, const bf16* __restrict__ v,
                                                      const int* __restrict__ positions, int kv_dim, int layer, int layers) {
     const int r = blockIdx.y;
-    const int s = slots[r];
-    if (s < 0) return;
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= kv_dim) return;
+    // The slot, the position and the values to store are loaded together; only the page-table entry depends on the first two.
+    const int s = slots[r];
     const int p = positions[r];
+    const bool inside = i < kv_dim;
+    const bf16 kv = inside ? k[(size_t)r * kv_dim + i] : bf16(0.f);
+    const bf16 vv = inside ? v[(size_t)r * kv_dim + i] : bf16(0.f);
+    if (s < 0 || !inside) return;
     const int page = tables[(size_t)s * stride + (p >> 6)];
     if (page < 0) return;
     const size_t base = (((size_t)page * layers + layer) * 2 * 64 + (p & 63)) * (size_t)kv_dim + i;
-    pool[base] = k[(size_t)r * kv_dim + i];
-    pool[base + (size_t)64 * kv_dim] = v[(size_t)r * kv_dim + i];
+    pool[base] = kv;
+    pool[base + (size_t)64 * kv_dim] = vv;
 }
 
 // Split-K decode attention of row blockIdx.y over the page-major pool: the kernel body of attention_split_*_paged_pm, one row per grid row.
@@ -878,7 +881,8 @@ extern "C" __global__ void attention_combine_rows_bf16(const float* __restrict__
     __shared__ float split_max[256];
     __shared__ float split_weight[256];
     const int r = blockIdx.y;
-    if (slots[r] < 0) return;
+    // A masked row is not skipped: its position is 0 or stale, it merges what the workspace holds into an output row nothing reads, and the one global
+    // load (the position) is the only one in front of the work.
     const int len = positions[r] + 1;
     const int chunk = max(SPLIT_MIN_CHUNK, (len + splits - 1) / splits);
     const int active = (len + chunk - 1) / chunk;
@@ -893,8 +897,38 @@ extern "C" __global__ void attention_combine_rows_bf16(const float* __restrict__
     for (int s = threadIdx.x; s < active; s += blockDim.x) split_weight[s] = expf(split_max[s] - top);
     __syncthreads();
     float total = 0.f, acc = 0.f;
-#pragma unroll 4
-    for (int s = 0; s < active; ++s) {
+    // The sum is sequential in split order (the result must not depend on how it is batched), but the loads of 16 (then 4, then 1) splits are issued
+    // together, so their latencies overlap whatever the number of active splits.
+    int s = 0;
+    for (; s + 16 <= active; s += 16) {
+        float t[16], a[16];
+#pragma unroll
+        for (int k = 0; k < 16; ++k) {
+            t[k] = base[(size_t)(s + k) * stride + 1];
+            a[k] = base[(size_t)(s + k) * stride + 2 + d];
+        }
+#pragma unroll
+        for (int k = 0; k < 16; ++k) {
+            const float w = split_weight[s + k];
+            total += t[k] * w;
+            acc += a[k] * w;
+        }
+    }
+    for (; s + 4 <= active; s += 4) {
+        float t[4], a[4];
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            t[k] = base[(size_t)(s + k) * stride + 1];
+            a[k] = base[(size_t)(s + k) * stride + 2 + d];
+        }
+#pragma unroll
+        for (int k = 0; k < 4; ++k) {
+            const float w = split_weight[s + k];
+            total += t[k] * w;
+            acc += a[k] * w;
+        }
+    }
+    for (; s < active; ++s) {
         const float w = split_weight[s];
         total += base[(size_t)s * stride + 1] * w;
         acc += base[(size_t)s * stride + 2 + d] * w;

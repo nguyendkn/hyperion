@@ -291,3 +291,32 @@ Where scaling stops. On the GPU a decode step of the 7B costs 6.85 ms at 1 row a
 | 0.5B TTFT ms | 83.8, 83.4, 82.4 | 32.2, 28.0, 31.3 | 0.380 | 8128 of 8219 |
 
 (The last 91 tokens are computed: the last-token rule and the 64-token hash blocks.)
+
+## 2026-11-01 (second run): 0.5B paged decode regression, root cause and fix
+
+H100 80 GB HBM3, driver 580.126.20, nvcc 12.4.131, clocks 1980 MHz, batch 1, graph decode, `decode_time_vs_context` (GPU ms per token, median of 10 windows of 128 steps), old tree `7d8529c` against the new tree, alternated new/old/new/old. Declared budget: +1.5% at 5/1024/4096/8000, +3% at 16000.
+
+**Root cause** (nsys, `--cuda-graph-trace=node`, context 4096, per-instance averages): `attention_combine_rows_bf16` took 14 986 ns against 8 904 ns for the old `attention_combine_bf16` (24 layers x 6.1 us = 146 us of a 1 681 us step, +8.7%), and `kv_append_rows_paged_bf16` 1 677 ns against 1 150 ns (+13 us per step). The split kernel was not the cause (10 995 ns against 11 175 ns). Both kernels are latency bound at batch 1: a chain of dependent global loads (slot, position, page-table entry; and per split a partial load) in front of tiny amounts of work. Fix: the slot, position and the values to store are loaded together in `kv_append_rows_paged_bf16`, and the combine reads the partials of 16 (then 4, then 1) splits together with the sum kept sequential in split order (same arithmetic). A `#pragma unroll 32` variant was tried first and was slower at 1024 (+4.4%): with fewer than 32 active splits the compiler ran the rolled remainder loop.
+
+| context | old `7d8529c` | before the fix | after the fix | after / old |
+|---|---|---|---|---|
+| 5 | 1.338-1.343 | 1.344 | 1.343 | +0.2% |
+| 1024 | 1.387 | 1.403-1.408 | 1.371 | **-1.2%** |
+| 4096 | 1.523-1.531 | 1.847 (first measurement) | 1.441 | **-5.3%** |
+| 8000 | 1.602-1.614 | | 1.528 | **-5.2%** |
+| 16000 | 1.867-1.872 | | 1.778 | **-5.0%** |
+
+All within the declared budget (faster than the old tree from 1024 tokens). The 0.5B oracles after the change are unchanged (0.2814 / 0.3851 ratio 1.10; batch of 8 and 32 rows: 0.2801, ratio 0.73); sampler exact match 819 of 819 and chi-square unchanged. The 7B has not been re-measured with the fixed kernels. Measurement notes: one session showed the same old binary 6-7% slower for about an hour (1.49 against 1.39 at 1024) with no throttle reason active; only comparisons inside one round of alternated runs are used here.
+
+### Device sampler overhead (0.5B, context 512, GPU ms per step, `sampling_hw`)
+
+| bucket | greedy | temp 0.8 top_p 0.95 top_k 50 | full vocabulary |
+|---|---|---|---|
+| 1 | 1.510 | 1.618 (+7.2%) | 1.520 (+0.7%) |
+| 2 | 1.740 | 1.846 (+6.1%) | 1.763 (+1.3%) |
+| 4 | 1.764 | 1.875 (+6.3%) | 1.794 (+1.7%) |
+| 8 | 1.806 | 1.918 (+6.2%) | 1.840 (+1.9%) |
+| 16 | 1.913 | 2.029 (+6.1%) | 1.953 (+2.1%) |
+| 32 | 2.203 | 2.335 (+6.0%) | 2.257 (+2.5%) |
+
+The top-k/top-p mode costs about 110-130 us per step whatever the bucket (one block per row, latency bound), over the declared budget (+3% at bucket 1, +5% at bucket 32) on the 0.5B, where a step is 1.5-2.2 ms; on the 7B (6.9-8.9 ms) the same 130 us is about 1.5-1.9% (not yet measured). The first version (bisection, contiguous chunks) cost +86%; radix select and coalesced loads brought it to this.
