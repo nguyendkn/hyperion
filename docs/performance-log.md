@@ -361,3 +361,37 @@ Release CLI (revision f3bc630, then 71a768d for the 0.5B rerun; the 7B ran at f3
 - The cap trades the other way too: at 8192 in the total throughput falls (137 tokens/s uncapped against 100 at 512 and 62 at 256, c = 8) because small chunks use the device less well, and the 0.5B (launch bound) pays more for it.
 - **Default chosen: 512** (ITL p90 at the 8192 profile c = 8 down by 75% against no cap, TTFT p50 up 2.1x, the 512-token profile inside the target). The miss at the long-prompt profile stays open: mixed prefill+decode steps are the lever left (owner decision).
 - The 7B rows were measured before two fixes (the estimator denominator and oldest-first prefill); the 0.5B rows are after them, with TTFT at 8192/c=32 falling from 1121 ms to 237 ms (busy 4096) and from 4044 to 4297 ms (busy 512, unchanged). The 7B has not been re-swept with them.
+
+## 2026-11-01 (second run): 7B against the pre-paged tree and the device sampler (A5 and A6 budgets)
+
+H100 80 GB, clocks 1980 MHz, revision 71a768d (the same kernels as f3bc630), batch 1, graph, release, 10 windows of 128 steps, new and old (`7d8529c`) alternated, two rounds each.
+
+| context | decode ms/token new | old | new / old | budget |
+|---|---|---|---|---|
+| 5 | 6.563 | 6.565 | -0.0% | +1.5% |
+| 1024 | 6.626 | 6.659 | -0.5% | +1.5% |
+| 4096 | 6.831 | 6.877 | -0.7% | +1.5% |
+| 8000 | 7.330 | 7.422 | -1.2% | +1.5% |
+| 16000 | 8.329 | 8.513 | -2.2% | +3% |
+
+| prompt tokens | TTFT (graph, GPU ms) new | old | new / old | budget |
+|---|---|---|---|---|
+| 1024 | 32.85 | 32.55 | +0.9% | +5% |
+| 4096 | 146.36 | 144.82 | +1.1% | +5% |
+| 8192 | 343.29 | 336.12 | +2.1% | +5% |
+| 16384 | 916.06 | 891.11 | +2.8% | +5% |
+
+Decode step by bucket at context 512 with all slots greedy: 6.763 / 6.780 / 6.826 / 7.263 / 7.793 / 8.855 ms for buckets 1 / 2 / 4 / 8 / 16 / 32 (3616 tokens/s at 32), against 6.852 ... 8.881 ms of the earlier run: greedy after the sampler landed is within +1.5% of the earlier numbers (it is faster, the combine fix).
+
+Device sampling overhead on the 7B (context 512, GPU ms per step, `sampling_hw`; budget +3% at bucket 1, +5% at bucket 32 for temperature 0.8, top_p 0.95, top_k 50):
+
+| bucket | greedy | temp 0.8 top_p 0.95 top_k 50 | full vocabulary |
+|---|---|---|---|
+| 1 | 6.763 | 6.865 (+1.50%) | 6.791 (+0.40%) |
+| 2 | 6.780 | 6.895 (+1.69%) | 6.812 (+0.47%) |
+| 4 | 6.826 | 6.942 (+1.70%) | 6.864 (+0.56%) |
+| 8 | 7.263 | 7.380 (+1.60%) | 7.309 (+0.63%) |
+| 16 | 7.793 | 7.913 (+1.54%) | 7.842 (+0.62%) |
+| 32 | 8.855 | 8.987 (+1.49%) | 8.910 (+0.62%) |
+
+Within budget on the 7B (0.5B: over, see above). Exact match with the host reference: 819 of 819 draws on the 7B as on the 0.5B; chi-square of the 8 rows below the critical value (largest ratio 185.3 against 238.6).
