@@ -90,9 +90,15 @@ def body_for(args, words, rng, max_tokens):
         "messages": [{"role": "user", "content": prompt_for(rng, words)}],
         "max_tokens": max_tokens,
         "stream": True,
-        "temperature": 0,
+        "temperature": args.temperature,
         "stream_options": {"include_usage": True},
     }
+    if args.top_p is not None:
+        payload["top_p"] = args.top_p
+    if args.top_k is not None:
+        payload["top_k"] = args.top_k
+    if args.repetition_penalty is not None:
+        payload["repetition_penalty"] = args.repetition_penalty
     return json.dumps(payload).encode()
 
 
@@ -166,6 +172,10 @@ def main():
     ap.add_argument("--concurrency", default="1,2,4,8,16,32", help="comma-separated levels")
     ap.add_argument("--requests", type=int, default=0, help="requests per level (default: 4 x the concurrency, at least 8)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--temperature", type=float, default=0.0, help="sampling temperature of every request (0 = greedy, the default)")
+    ap.add_argument("--top-p", type=float, default=None)
+    ap.add_argument("--top-k", type=int, default=None)
+    ap.add_argument("--repetition-penalty", type=float, default=None)
     ap.add_argument("--tolerance", type=int, default=8, help="accepted distance of the prompt from --input-tokens, in server tokens")
     ap.add_argument("--api-key", default=None)
     ap.add_argument("--out", default=None, help="write the JSON report here (default: stdout only)")
