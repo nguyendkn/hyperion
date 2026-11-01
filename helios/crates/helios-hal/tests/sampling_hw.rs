@@ -122,7 +122,9 @@ fn the_device_draws_exactly_the_tokens_of_the_host_reference_in_every_bucket() {
     let steps = 12;
     let (backend, pool) = open(32, 32 * PAGES_PER_SEQ);
     let mut matched = 0usize;
-    for bucket in [1usize, 2, 4, 8, 16, 32] {
+    // `HYPERION_SAMPLING_BUCKETS=8` narrows the run (a sanitizer run, which is slow).
+    let buckets: Vec<usize> = std::env::var("HYPERION_SAMPLING_BUCKETS").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_else(|| vec![1, 2, 4, 8, 16, 32]);
+    for bucket in buckets {
         let seqs = sequences(bucket, |i| 24 + 5 * i, true);
         let mut d = Driver { backend: &backend, pool: &pool, step: 0 };
         // Pass 1: the device samples and chains its own tokens.
