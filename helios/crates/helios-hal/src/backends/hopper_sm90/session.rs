@@ -305,9 +305,18 @@ impl Session {
         let bf = 2usize;
         let stride = capacity.div_ceil(PAGE_TOKENS);
 
+        // Every buffer starts as zeros: the warm-up launches (cuBLAS included) read buffers no step has written yet, and a read of memory nobody
+        // initialised is both a sanitizer report and a result that could differ between runs.
+        let zeros = vec![0u8; 16 << 20];
         let mut alloc = |dev: &mut CudaDevice, bytes: usize| -> Result<u64> {
             let pointer = dev.alloc(bytes.max(1))?;
             taken.push(pointer);
+            let mut done = 0;
+            while done < bytes {
+                let n = zeros.len().min(bytes - done);
+                dev.htod(pointer + done as u64, &zeros[..n])?;
+                done += n;
+            }
             Ok(pointer)
         };
         let widest = d.intermediate.max(hidden).max(q_dim).max(kv_dim);

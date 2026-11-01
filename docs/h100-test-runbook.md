@@ -34,7 +34,7 @@ compute-sanitizer --tool initcheck --error-exitcode 1 <test-exe> <test-name> --i
 - Run the paged-kernel unit tests (lengths 1, 63, 64, 65, 129) under all three before any end-to-end run; then the same for bucket 8.
 - A graph-captured launch is checked through its direct-launch twin: sanitizer does not step inside a replayed graph.
 - Record the tool, the test name and "0 errors" (or the report) in the ledger row with the tag `[RUN on H100]`.
-- **Repo kernels only**: `bash scripts/pod-sanitize.sh <memcheck|initcheck|racecheck> <test-exe> <test-name>` instruments only the kernels defined in `helios-hal/kernels/*.cu` (`--kernel-name regex:...`), so cuBLAS/cutlass kernels (whose warm-up on uninitialised buffers produced the 100 `initcheck` reports of 2026-11-01) are not instrumented. If a kernel is added, add its name prefix to the regex in the script.
+- **Repo kernels only**: `bash scripts/pod-sanitize.sh <memcheck|initcheck|racecheck> <test-exe> <test-name>` instruments only the kernels defined in `helios-hal/kernels/*.cu` (`--kernel-name regex=...`), so cuBLAS/cutlass kernels (whose warm-up on uninitialised buffers produced the 100 `initcheck` reports of 2026-11-01) are not instrumented. If a kernel is added, add its name prefix to the regex in the script.
 
 ## Package store (optional, `PACKAGE_STORE`)
 
