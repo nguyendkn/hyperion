@@ -18,7 +18,6 @@ use anyhow::{anyhow, Result};
 use super::backend::HopperBackend;
 use super::decode_profile::{DecodeProfile, DecodeTiming};
 use super::forward::Qwen2Dims;
-use super::prefill_plan::PrefillError;
 use super::session::Session;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{Cublas, CudaDevice};
@@ -128,8 +127,8 @@ impl HopperBackend {
         let cublas = self.cublas.lock().expect("cublas mutex poisoned");
         let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the model was loaded"))?;
         let _no_new_gpu_work = dev.forbid_new_gpu_work();
-        session.assign_slot0(&dev, prompt.len())?;
-        session.prefill_timed(&dev, cublas, 0, prompt, mode)
+        let slot = session.assign_generate_slot(&dev, prompt.len())?;
+        session.prefill_timed(&dev, cublas, slot, prompt, mode)
     }
 
     /// Logits of the last prompt token through the device pipeline (prefill only); the
@@ -142,7 +141,7 @@ impl HopperBackend {
 
     /// The longest prompt plus generated tokens the KV pool holds (capped by the maximum of the model), once the pool is mapped.
     pub fn context_capacity(&self) -> Option<usize> {
-        self.session.lock().expect("session mutex poisoned").as_ref().filter(|s| s.pool_pages > 0).map(|s| s.capacity.min(s.pool_pages * super::session::PAGE_TOKENS))
+        self.session.lock().expect("session mutex poisoned").as_ref().filter(|s| s.pool_pages > 0).map(|s| s.generate_capacity())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -203,10 +202,7 @@ impl Session {
             }
         }
         let total = prompt.len() + max_new;
-        if total > self.capacity {
-            return Err(PrefillError::ContextTooLong { requested: total, capacity: self.capacity }.into());
-        }
-        self.assign_slot0(dev, total)?;
+        let slot = self.assign_generate_slot(dev, total)?;
 
         if trace.is_none() && profile.is_none() && sampling.is_greedy() {
             if max_new == 0 {
@@ -215,7 +211,7 @@ impl Session {
             // Greedy: the argmax kernel picks each token and feeds it to the next step, so the host never needs the logits. It reads token ids
             // from the device ring, one step late. The prefill samples token 0 (its position is the last prompt position).
             let ring_base = prompt.len() - 1;
-            self.prefill(dev, cublas, 0, prompt, 0, mode, true)?;
+            self.prefill(dev, cublas, slot, prompt, 0, mode, true)?;
             let events = &self.events;
             events[0].record(dev)?;
             let read_token = |index: usize| -> Result<u32> {
@@ -262,7 +258,7 @@ impl Session {
         }
 
         let mut rng = Rng::new(sampling.seed);
-        self.prefill(dev, cublas, 0, prompt, 0, mode, false)?;
+        self.prefill(dev, cublas, slot, prompt, 0, mode, false)?;
         let mut logits = self.read_logits(dev, 0)?;
         if let Some(trace) = trace.as_mut() {
             trace.push(logits.clone());
@@ -286,8 +282,8 @@ impl Session {
             if produced + 1 < max_new {
                 let timed = profile.is_some();
                 let t0 = Instant::now();
-                self.set_slot_token(dev, 0, next)?;
-                self.stage_rows(dev, &[(0, u32::try_from(position)?)], 1)?;
+                self.set_slot_token(dev, slot, next)?;
+                self.stage_rows(dev, &[(i32::try_from(slot)?, u32::try_from(position)?)], 1)?;
                 let t1 = Instant::now();
                 let marks = if timed && mode == DecodeMode::Direct { Some(RefCell::new(StepMarks::start(dev)?)) } else { None };
                 self.decode_step(dev, cublas, 1, mode, marks.as_ref())?;

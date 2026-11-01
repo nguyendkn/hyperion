@@ -34,7 +34,9 @@ fn open(max_batch: usize, pages: usize) -> (HopperBackend, KvPool) {
     let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
     let backend = HopperBackend::new().expect("an H100 must be present");
     helios_hal::load_package(&backend, &package, &manifest).expect("upload");
-    let pool = backend.open_kv(max_batch, pages * PAGE).expect("the KV pool");
+    // The pool also holds a private area for `generate` (a quarter of it at most), so ask for a third more than the pages the scenario addresses.
+    let pool = backend.open_kv(max_batch, (pages * 4 / 3 + 1) * PAGE).expect("the KV pool");
+    assert!(pool.info().pages >= pages, "the scheduler's share of the pool holds the pages of the scenario");
     println!("POOL {:?}", pool.info());
     (backend, pool)
 }
@@ -152,6 +154,50 @@ fn masked_rows_write_nothing_and_a_row_between_buckets_is_reported() {
     let in_1 = run(&backend, &pool, &seqs[..1], 1, 6);
     let diff = max_diff(&in_1[0], &in_8[0]);
     println!("INFO row 0, bucket 1 vs bucket 8: max |logit difference| {diff:.4} over 6 steps (not a gate: the GEMM reduction depends on M)");
+    backend.shutdown().unwrap();
+}
+
+/// W1: `generate` runs in its own slot and private pages. A scheduled sequence is prefilled, a `generate` call runs in the middle of it, and the
+/// sequence goes on: its pages are byte-identical after the call and its later logits equal those of a run without the call, bit for bit.
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn generate_between_scheduled_steps_touches_none_of_their_pages() {
+    let (backend, pool) = open(4, 40);
+    let page_bytes = pool.info().bytes_per_page;
+    let package = package();
+    let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+    let dims = helios_hal::Qwen2Dims::from_manifest(&manifest.model).unwrap();
+    let seqs = sequences(2);
+    let control = run(&backend, &pool, &seqs[..1], 4, 6);
+    // The same sequence, with a generation of another prompt after the prefill (pages 0 and 1 are the scheduled sequence's).
+    let s = &seqs[0];
+    let take = |plan: &StepPlan| backend.take_output(backend.submit_step(&pool, plan).expect("submit_step")).expect("take_output");
+    let deltas = s.pages.iter().enumerate().map(|(i, &page)| PageDelta { slot: s.slot, index: i as u32, page }).collect();
+    take(&StepPlan {
+        step: 1,
+        capacity: Capacity::Prefill { rows: chunk_capacity(s.prompt.len()) },
+        rows: vec![Row { slot: s.slot, input: Input::Tokens(s.prompt.clone()), n_tokens: s.prompt.len() as u32, position: 0, table_len: s.prompt.len().div_ceil(PAGE) as u32, want: Want::Token }],
+        deltas,
+        inits: vec![SlotInit { slot: s.slot, sampling: SamplingInit::GREEDY, max_new_tokens: 7 }],
+    });
+    let owned = |b: &HopperBackend| b.read_pool_bytes(0, 2 * page_bytes).unwrap();
+    let before = owned(&backend);
+    let mut ids = Vec::new();
+    backend.generate_streaming(&dims, &seqs[1].prompt, 24, &[], &helios_hal::SamplingConfig::greedy(), &mut |t| ids.push(t)).expect("generate");
+    assert_eq!(ids.len(), 24);
+    assert!(before == owned(&backend), "generate wrote a page of the scheduled sequence");
+    let mut logits = Vec::new();
+    for k in 0..6 {
+        let row = Row { slot: s.slot, input: Input::FromDevice, n_tokens: 1, position: (s.prompt.len() + k) as u32, table_len: (s.prompt.len() + k + 1).div_ceil(PAGE) as u32, want: Want::Logits };
+        let out = take(&StepPlan { step: 2 + k as u64, capacity: Capacity::Decode { bucket: 4 }, rows: vec![row], deltas: Vec::new(), inits: Vec::new() });
+        logits.push(out.rows[0].logits.clone().unwrap());
+    }
+    assert!(bits(&control[0]) == bits(&logits), "a generate call between steps changed the logits of the scheduled sequence (max |difference| {})", max_diff(&control[0], &logits));
+    println!("generate ({} tokens) between a prefill and 6 decode steps: pages 0-1 byte-identical, logits bit-identical to the run without it", ids.len());
+    // The scheduler cannot name the private pages of generate: a delta onto one is refused.
+    let private = pool.info().pages as u32;
+    let bad = StepPlan { step: 99, capacity: Capacity::Decode { bucket: 4 }, rows: Vec::new(), deltas: vec![PageDelta { slot: 1, index: 0, page: private }], inits: Vec::new() };
+    assert!(backend.submit_step(&pool, &bad).is_err(), "a delta onto the private area of generate must be refused");
     backend.shutdown().unwrap();
 }
 

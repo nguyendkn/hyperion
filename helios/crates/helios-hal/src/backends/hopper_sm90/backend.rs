@@ -395,14 +395,21 @@ impl ComputeBackend for HopperBackend {
         let reserve = reserve_bytes(lifecycle.growth, policy.reserve_bytes as u64);
         let geometry = PoolGeometry { page_tokens: super::session::PAGE_TOKENS, layers: dims.layers, kv_heads: dims.kv_heads, head_dim: dims.head_dim };
         // The model's maximum caps the pool even when more memory is free: no slot can use more pages than a full table.
-        let cap = if policy.max_tokens > 0 { policy.max_tokens.div_ceil(geometry.page_tokens) } else { lifecycle.max_batch * session.stride };
+        // `generate` gets a private area of one full sequence after the pages of scheduled requests (a quarter of the pool when the pool is small), so
+        // it can never write a page a scheduled request or the prefix cache holds. With no token limit the cap leaves the whole area on top of the
+        // pages `max_batch` full sequences need.
+        let cap = if policy.max_tokens > 0 { policy.max_tokens.div_ceil(geometry.page_tokens) } else { (lifecycle.max_batch + 1) * session.stride };
         let plan = plan_pool(free, reserve, geometry.page_bytes(), lifecycle.range.granule() as u64, Some(cap))?;
         lifecycle.range.map(&dev, plan.mapped_bytes as usize)?;
         let (free_after, _) = dev.memory_info()?;
+        let generate_pages = if policy.max_tokens == 0 && plan.pages == cap { session.stride } else { session.stride.min(plan.pages / 4) };
         session.pool_pages = plan.pages;
+        session.serve_pages = plan.pages - generate_pages;
         lifecycle.state = KvState::Committed;
         tracing::info!(
             pages = plan.pages,
+            serve_pages = session.serve_pages,
+            generate_pages,
             page_mib = geometry.page_bytes() as f64 / (1u64 << 20) as f64,
             granule_mib = lifecycle.range.granule() as f64 / (1u64 << 20) as f64,
             mapped_gib = plan.mapped_bytes as f64 / (1u64 << 30) as f64,
@@ -412,8 +419,8 @@ impl ComputeBackend for HopperBackend {
             capture_growth_mib = lifecycle.growth as f64 / (1u64 << 20) as f64,
             "KV pool mapped"
         );
-        let info = KvPoolInfo { page_tokens: geometry.page_tokens, pages: plan.pages, bytes_per_page: geometry.page_bytes() as usize, free_before: free, free_after };
-        Ok(KvPool::new(NAME, info, PoolHandle { pages: plan.pages }))
+        let info = KvPoolInfo { page_tokens: geometry.page_tokens, pages: session.serve_pages, bytes_per_page: geometry.page_bytes() as usize, free_before: free, free_after };
+        Ok(KvPool::new(NAME, info, PoolHandle { pages: session.serve_pages }))
     }
 
     fn submit_step(&self, pool: &KvPool, plan: &StepPlan) -> Result<StepTicket> {

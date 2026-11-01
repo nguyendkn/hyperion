@@ -190,7 +190,7 @@ pub(super) fn session_bytes(d: &Qwen2Dims, splits: usize, chunk: usize, max_batc
         + widest * 4; // y_f32
     let decode = max_batch * ((q_dim + 2 * kv_dim) * bf + 2 * d.intermediate * bf + d.vocab * 4 + d.heads * splits * (d.head_dim + 2) * 4 + 4 + 4 + RING * 4);
     let stride = max_seq_len.div_ceil(PAGE_TOKENS);
-    let tables = (max_batch + 1) * stride * 4 + (stride + DELTA_SLACK) * 8;
+    let tables = (max_batch + 2) * stride * 4 + (stride + DELTA_SLACK) * 8; // one table per slot, the slot of `generate`, the staging table
     let rope = max_seq_len * 2 * d.head_dim * bf;
     rows * per_row + decode + tables + rope + CUBLAS_WORKSPACE_BYTES + 4
 }
@@ -210,6 +210,8 @@ pub(super) struct Session {
     pub(super) stride: usize,
     /// Pages the pool was mapped with (0 until `commit_kv`).
     pub(super) pool_pages: usize,
+    /// The first `serve_pages` pages belong to scheduled requests (`submit_step`); the pages after them are the private area of `generate`.
+    pub(super) serve_pages: usize,
     /// Device memory the capture used beyond the buffers (graph memory, driver state), measured for the pool reserve.
     pub(super) capture_growth: u64,
     kernels: Kernels,
@@ -317,9 +319,9 @@ impl Session {
             cos: alloc(dev, capacity * hd * bf)?,
             sin: alloc(dev, capacity * hd * bf)?,
             slots: alloc(dev, max_batch * 4)?,
-            slot_token: alloc(dev, max_batch * 4)?,
+            slot_token: alloc(dev, (max_batch + 1) * 4)?,
             tokens_ring: alloc(dev, max_batch * RING * 4)?,
-            tables: alloc(dev, max_batch * stride * 4)?,
+            tables: alloc(dev, (max_batch + 1) * stride * 4)?,
             stage: alloc(dev, stride * 4)?,
             deltas: alloc(dev, (stride + DELTA_SLACK) * 8)?,
         };
@@ -330,9 +332,9 @@ impl Session {
         dev.htod(b.cos, &to_bytes(&cos))?;
         dev.htod(b.sin, &to_bytes(&sin))?;
         // Every table starts empty (NO_PAGE = -1, all bits set), so the warm-up launches skip the pool.
-        dev.htod(b.tables, &vec![0xFFu8; max_batch * stride * 4])?;
+        dev.htod(b.tables, &vec![0xFFu8; (max_batch + 1) * stride * 4])?;
         dev.htod(b.stage, &vec![0xFFu8; stride * 4])?;
-        dev.htod(b.slot_token, &vec![0u8; max_batch * 4])?;
+        dev.htod(b.slot_token, &vec![0u8; (max_batch + 1) * 4])?;
 
         let mut cublas_slot = backend.cublas.lock().expect("cublas mutex poisoned");
         if cublas_slot.is_none() {
@@ -409,6 +411,7 @@ impl Session {
             pool_base,
             stride,
             pool_pages: 0,
+            serve_pages: 0,
             capture_growth: 0,
             kernels,
             layers,
@@ -755,18 +758,37 @@ impl Session {
         dev.synchronize()
     }
 
-    /// Give slot 0 the first `tokens.div_ceil(64)` pages of the pool, in order: how a generation outside a scheduler uses the pool (the
-    /// scheduler and the `generate` path may follow one another but never run at the same time: both write the first pages of the pool). A typed refusal when the pool is not mapped or has fewer pages.
-    pub(super) fn assign_slot0(&self, dev: &CudaDevice, tokens: usize) -> Result<()> {
+    /// The slot `generate` runs in: one past the slots of scheduled requests, so it never shares a page table, a pending token or a page with them.
+    pub(super) fn generate_slot(&self) -> usize {
+        self.max_batch
+    }
+
+    /// Pages of the private area of `generate` (after the pages of scheduled requests).
+    pub(super) fn generate_pages(&self) -> usize {
+        self.pool_pages - self.serve_pages
+    }
+
+    /// Longest sequence `generate` can hold: the model's maximum, or what its private pages cover.
+    pub(super) fn generate_capacity(&self) -> usize {
+        self.capacity.min(self.generate_pages() * PAGE_TOKENS)
+    }
+
+    /// Point the table of the generate slot at the first `tokens.div_ceil(64)` pages of the private area, in order, and return the slot. The scheduler
+    /// can address neither the slot nor those pages (its deltas are checked against `serve_pages`), so a generation and scheduled requests may follow
+    /// one another or share the device without touching each other's pages. A typed refusal when the pool is not mapped or the area is too small.
+    pub(super) fn assign_generate_slot(&self, dev: &CudaDevice, tokens: usize) -> Result<usize> {
         let pages = tokens.div_ceil(PAGE_TOKENS);
         if self.pool_pages == 0 {
             return Err(anyhow!("the KV pool is not mapped: run reserve_kv, capture_graphs and commit_kv before generating"));
         }
-        if tokens > self.capacity || pages > self.pool_pages {
-            return Err(PrefillError::ContextTooLong { requested: tokens, capacity: self.capacity.min(self.pool_pages * PAGE_TOKENS) }.into());
+        if tokens > self.generate_capacity() || pages > self.generate_pages() {
+            return Err(PrefillError::ContextTooLong { requested: tokens, capacity: self.generate_capacity() }.into());
         }
-        let pairs: Vec<u32> = (0..pages as u32).flat_map(|i| [i, i]).collect();
-        self.apply_deltas(dev, &pairs)
+        let slot = self.generate_slot();
+        let pairs: Vec<u32> = (0..pages).flat_map(|i| [(slot * self.stride + i) as u32, (self.serve_pages + i) as u32]).collect();
+        debug_assert!(pairs.chunks_exact(2).all(|p| p[1] as usize >= self.serve_pages && (p[1] as usize) < self.pool_pages), "generate may only map its private pages");
+        self.apply_deltas(dev, &pairs)?;
+        Ok(slot)
     }
 
     /// [`Session::prefill`] of a whole prompt for `slot`, timed: `(GPU milliseconds between two events around it, wall milliseconds)`.
