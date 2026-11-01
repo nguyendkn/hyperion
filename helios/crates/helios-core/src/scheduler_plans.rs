@@ -89,8 +89,10 @@ impl Scheduler {
                 deliver(&mut sinks, &mut waiting, &gauge, machine.take_events());
                 continue;
             };
+            // A prefill step costs what its graph costs, whatever number of its rows hold real tokens (a prompt that hit the prefix cache leaves a few
+            // tokens to compute and still pays a whole step), so the gauge divides by the rows of the graph.
             let prefill_tokens = match plan.capacity {
-                helios_hal::Capacity::Prefill { .. } => plan.rows.iter().map(|r| r.n_tokens as usize).sum(),
+                helios_hal::Capacity::Prefill { rows } => rows as usize,
                 helios_hal::Capacity::Decode { .. } => 0,
             };
             decode_rows += if matches!(plan.capacity, helios_hal::Capacity::Decode { .. }) { plan.rows.len() } else { 0 };

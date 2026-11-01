@@ -8,7 +8,7 @@
 //! ```
 //!
 //! The per-token time is an exponential moving average (weight 1/4) of `(the prefill step + the decode step that ran since the previous prefill
-//! step) / tokens of the step`, so the decode steps the policy interleaves between chunks are counted. It is a plain average of recent steps, not a
+//! step) / rows of the step's graph` (not the tokens it really computed: a prompt that hit the prefix cache leaves a few tokens and still pays a whole step), so the decode steps the policy interleaves between chunks are counted. It is a plain average of recent steps, not a
 //! prediction: it ignores prefix-cache hits (a hit makes the real wait shorter, so the estimate errs towards refusing a request that would have
 //! been served) and the decode that runs after the prefill. With no sample yet the estimate is unknown and nothing is refused on it.
 

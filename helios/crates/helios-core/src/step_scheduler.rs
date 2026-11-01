@@ -241,7 +241,9 @@ impl StepScheduler {
             let prefill_turn = has_prefill && (!has_decode || self.prefill_streak < self.cfg.prefill_steps_per_decode.max(1));
             if prefill_turn {
                 self.prefill_streak += 1;
-                let at = self.next_in_phase(false).expect("a prefilling sequence");
+                // The oldest prompt first: its first token comes as early as its own prefill allows, instead of every prompt finishing together at the end of a
+                // round robin over all of them (a round robin keeps every running sequence waiting for the first token of all the others).
+                let at = self.active.iter().position(|a| matches!(a.phase, Phase::Prefill { .. })).expect("a prefilling sequence");
                 return Some(self.prefill_plan(at));
             }
             if has_decode {

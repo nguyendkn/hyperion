@@ -295,3 +295,17 @@ fn a_smaller_busy_chunk_trades_the_first_token_of_the_long_prompt_for_the_decode
     assert!(small.first_token_ticks[&2] > big.first_token_ticks[&2], "more, smaller chunks take more steps to the long prompt's first token");
     assert!(small.max_stall_tokens < big.max_stall_tokens);
 }
+
+#[test]
+fn prompts_that_arrive_together_are_prefilled_oldest_first() {
+    // Three prompts of 1000 tokens (one chunk each when nothing decodes) arrive at once: the first gets its token before the second starts, not at the end
+    // of a round robin over all three.
+    let report = run_with(&same_arrival(3, 1000, 4), 64 * 200, 4, 8, 1);
+    let ticks: Vec<u64> = (1..=3).map(|id| report.first_token_ticks[&id]).collect();
+    assert!(ticks[0] < ticks[1] && ticks[1] < ticks[2], "first-token ticks {ticks:?}");
+    assert_eq!(ticks[0], 0, "the oldest prompt's single chunk is the first step");
+    // Long prompts: the oldest finishes its chunks before the next prompt's first chunk (busy cap at 256 so there are many chunks and decode steps between).
+    let trace = Trace { requests: vec![TraceRequest { arrive: 0, tokens: (0..100).collect(), max_new: 300, cancel_at: None }, TraceRequest { arrive: 5, tokens: (10_000..12_000).collect(), max_new: 4, cancel_at: None }, TraceRequest { arrive: 5, tokens: (20_000..22_000).collect(), max_new: 4, cancel_at: None }] };
+    let report = run_busy(&trace, 64 * 400, 4, 1, 256);
+    assert!(report.first_token_ticks[&2] < report.first_token_ticks[&3], "{:?}", report.first_token_ticks);
+}
