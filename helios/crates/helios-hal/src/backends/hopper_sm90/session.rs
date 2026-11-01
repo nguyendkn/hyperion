@@ -43,6 +43,13 @@ const MAX_SPLIT_PAGES: usize = 96;
 pub(super) const RING: usize = 64;
 /// Table deltas a step may carry beyond one full table (a decode step adds at most one page per row).
 const DELTA_SLACK: usize = 64;
+/// Words of the per-slot sampling parameters the sampler kernel reads.
+const SAMPLE_PARAM_WORDS: usize = 8;
+
+/// Words of a per-slot bitmap with one bit per token of the vocabulary.
+fn seen_words(vocab: usize) -> usize {
+    vocab.div_ceil(32)
+}
 
 /// What one run of [`Session::launches`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +139,7 @@ pub(super) struct Kernels {
     attention_split_rows: Kernel,
     attention_combine_rows: Kernel,
     argmax_rows: Kernel,
+    sample_rows: Kernel,
 }
 
 pub(super) struct Buffers {
@@ -167,6 +175,12 @@ pub(super) struct Buffers {
     pub(super) slot_token: u64,
     /// `[max_batch][RING]` u32: the tokens the argmax kernel chose, by row and position modulo [`RING`].
     pub(super) tokens_ring: u64,
+    /// `[max_batch + 1][SAMPLE_PARAM_WORDS]` u32: per slot temperature, top_p, top_k, repetition penalty, seed (low, high), draw counter (see `sample_rows_bf16`).
+    sample_params: u64,
+    /// `[max_batch + 1][seen_words]` u32: per slot a bitmap of the tokens it generated (the repetition penalty's history).
+    seen: u64,
+    /// `[max_batch][vocab]` f32: scratch of the sampler (the logits after penalty and temperature).
+    sample_ws: u64,
     /// `[max_batch][stride]` i32: the page table of every slot (NO_PAGE = -1).
     pub(super) tables: u64,
     /// `[stride]` i32: the table of the slot a prefill chunk belongs to, copied in before the chunk (its graphs read this address).
@@ -192,7 +206,8 @@ pub(super) fn session_bytes(d: &Qwen2Dims, splits: usize, chunk: usize, max_batc
     let stride = max_seq_len.div_ceil(PAGE_TOKENS);
     let tables = (max_batch + 2) * stride * 4 + (stride + DELTA_SLACK) * 8; // one table per slot, the slot of `generate`, the staging table
     let rope = max_seq_len * 2 * d.head_dim * bf;
-    rows * per_row + decode + tables + rope + CUBLAS_WORKSPACE_BYTES + 4
+    let sampler = (max_batch + 1) * (SAMPLE_PARAM_WORDS * 4 + seen_words(d.vocab) * 4) + max_batch * d.vocab * 4;
+    rows * per_row + decode + tables + rope + sampler + CUBLAS_WORKSPACE_BYTES + 4
 }
 
 /// Everything a generation or a plan step needs; see the module docs.
@@ -322,6 +337,9 @@ impl Session {
             slot_token: alloc(dev, (max_batch + 1) * 4)?,
             tokens_ring: alloc(dev, max_batch * RING * 4)?,
             tables: alloc(dev, (max_batch + 1) * stride * 4)?,
+            sample_params: alloc(dev, (max_batch + 1) * SAMPLE_PARAM_WORDS * 4)?,
+            seen: alloc(dev, (max_batch + 1) * seen_words(d.vocab) * 4)?,
+            sample_ws: alloc(dev, max_batch * d.vocab * 4)?,
             stage: alloc(dev, stride * 4)?,
             deltas: alloc(dev, (stride + DELTA_SLACK) * 8)?,
         };
@@ -335,6 +353,8 @@ impl Session {
         dev.htod(b.tables, &vec![0xFFu8; (max_batch + 1) * stride * 4])?;
         dev.htod(b.stage, &vec![0xFFu8; stride * 4])?;
         dev.htod(b.slot_token, &vec![0u8; (max_batch + 1) * 4])?;
+        dev.htod(b.sample_params, &vec![0u8; (max_batch + 1) * SAMPLE_PARAM_WORDS * 4])?;
+        dev.htod(b.seen, &vec![0u8; (max_batch + 1) * seen_words(d.vocab) * 4])?;
 
         let mut cublas_slot = backend.cublas.lock().expect("cublas mutex poisoned");
         if cublas_slot.is_none() {
@@ -362,6 +382,7 @@ impl Session {
             attention_split_rows: kernel(&format!("attention_split_rows_{hd}_bf16"))?,
             attention_combine_rows: kernel("attention_combine_rows_bf16")?,
             argmax_rows: kernel("argmax_rows_bf16")?,
+            sample_rows: kernel("sample_rows_bf16")?,
         };
         let (embed, head, final_norm, layers) = {
             let weights = backend.weights.lock().expect("weights mutex poisoned");
@@ -510,6 +531,20 @@ impl Session {
         dev.htod(self.b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
     }
 
+    /// Set the sampling state of the slots admitted by a plan: the parameters, the draw counter at 0 and an empty history. Greedy slots are written
+    /// too (temperature 0), so a slot that is reused never keeps the parameters of the sequence before it.
+    pub(super) fn apply_inits(&self, dev: &CudaDevice, inits: &[crate::step::SlotInit]) -> Result<()> {
+        let zeros = vec![0u8; seen_words(self.dims.vocab) * 4];
+        for init in inits {
+            let s = &init.sampling;
+            let words = [s.temperature.to_bits(), s.top_p.to_bits(), s.top_k, s.repetition_penalty.to_bits(), s.seed as u32, (s.seed >> 32) as u32, 0, 0];
+            let slot = init.slot as usize;
+            dev.htod(self.b.sample_params + (slot * SAMPLE_PARAM_WORDS * 4) as u64, &words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>())?;
+            dev.htod(self.b.seen + (slot * zeros.len()) as u64, &zeros)?;
+        }
+        Ok(())
+    }
+
     /// Set the token `slot` feeds into its next decode step.
     pub(super) fn set_slot_token(&self, dev: &CudaDevice, slot: usize, token: u32) -> Result<()> {
         dev.htod(self.b.slot_token + (slot * 4) as u64, &token.to_le_bytes())
@@ -545,7 +580,17 @@ impl Session {
     /// Choose the next token of every active row from the logits on the device and chain it to the next step.
     pub(super) fn pick(&self, dev: &CudaDevice, rows: usize) -> Result<()> {
         let b = &self.b;
-        launch(dev, self.kernels.argmax_rows, u32::try_from(rows)?, ARGMAX_BLOCK, 0, &[Arg::Ptr(b.logits), Arg::Int(i32::try_from(self.dims.vocab)?), Arg::Ptr(b.slots), Arg::Ptr(b.slot_token), Arg::Ptr(b.tokens_ring), Arg::Ptr(b.positions)])
+        let vocab = Arg::Int(i32::try_from(self.dims.vocab)?);
+        // The sampler first (it reads the position the token is drawn at), then the argmax of the slots that do not sample, which advances every position.
+        launch(
+            dev,
+            self.kernels.sample_rows,
+            u32::try_from(rows)?,
+            ARGMAX_BLOCK,
+            0,
+            &[Arg::Ptr(b.logits), Arg::Ptr(b.sample_ws), vocab, Arg::Ptr(b.slots), Arg::Ptr(b.sample_params), Arg::Ptr(b.seen), Arg::Int(i32::try_from(seen_words(self.dims.vocab))?), Arg::Ptr(b.slot_token), Arg::Ptr(b.tokens_ring), Arg::Ptr(b.positions)],
+        )?;
+        launch(dev, self.kernels.argmax_rows, u32::try_from(rows)?, ARGMAX_BLOCK, 0, &[Arg::Ptr(b.logits), Arg::Int(i32::try_from(self.dims.vocab)?), Arg::Ptr(b.slots), Arg::Ptr(b.slot_token), Arg::Ptr(b.tokens_ring), Arg::Ptr(b.positions), Arg::Ptr(b.sample_params)])
     }
 
     /// The launches of one forward step over `t` rows; see [`Step`]. For a decode step `t` is the bucket and the token ids are gathered from the

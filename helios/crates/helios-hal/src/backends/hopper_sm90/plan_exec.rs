@@ -1,6 +1,7 @@
 //! A `StepPlan` on the device (ADR 0006, 0007): apply the page-table deltas, then run the plan's rows: one prefill chunk of one slot, or one
 //! decode step over up to a bucket of slots. The step completes before `submit_step` returns (the scheduler of this run takes its output at
-//! once); the ticket and the ledger still follow the contract, so a pipelined caller keeps working. Sampling is greedy on the device.
+//! once); the ticket and the ledger still follow the contract, so a pipelined caller keeps working. A slot with temperature 0 is the argmax of the
+//! device; one with temperature above 0 is drawn by the sampler kernel (sampler v1, `sampler_reference.rs`).
 
 use anyhow::{anyhow, Result};
 
@@ -14,9 +15,16 @@ use crate::step::{Capacity, Input, RowOutput, StepOutput, StepPlan, Want};
 impl Session {
     pub(super) fn run_plan(&self, dev: &CudaDevice, cublas: &Cublas, plan: &StepPlan, layout: &PageTableLayout, pool_pages: usize, mode: DecodeMode) -> Result<StepOutput> {
         for init in &plan.inits {
-            // Greedy is a temperature of 0 (top-p and the seed change nothing then); anything that needs a random draw or a penalty is not on the device yet.
-            if init.sampling.temperature > 0.0 || init.sampling.repetition_penalty != 1.0 {
-                return Err(HalError::Unsupported("sampling other than greedy on sm_90 (the device chooses the argmax)").into());
+            let s = &init.sampling;
+            if init.slot as usize >= self.max_batch {
+                return Err(HalError::Invalid(format!("slot {} is outside the {} slots of this session", init.slot, self.max_batch)).into());
+            }
+            if !(s.temperature >= 0.0 && s.temperature.is_finite()) || !(s.top_p >= 0.0 && s.top_p.is_finite()) || !(s.repetition_penalty > 0.0 && s.repetition_penalty.is_finite()) {
+                return Err(HalError::Invalid(format!("sampling parameters out of range: temperature {}, top_p {}, repetition penalty {}", s.temperature, s.top_p, s.repetition_penalty)).into());
+            }
+            // Greedy decoding is the argmax of the raw logits: a penalty cannot apply to it, and silently ignoring one would be a wrong answer.
+            if s.temperature == 0.0 && s.repetition_penalty != 1.0 {
+                return Err(HalError::Unsupported("a repetition penalty with greedy decoding (temperature 0) on sm_90").into());
             }
         }
         for row in &plan.rows {
@@ -30,6 +38,7 @@ impl Session {
         // Nothing is applied from a plan with a bad delta: the encoding refuses it whole.
         let pairs = layout.encode(&plan.deltas, pool_pages)?;
         self.apply_deltas(dev, &pairs)?;
+        self.apply_inits(dev, &plan.inits)?;
         let mut rows = Vec::with_capacity(plan.rows.len());
         match plan.capacity {
             Capacity::Decode { bucket } => {

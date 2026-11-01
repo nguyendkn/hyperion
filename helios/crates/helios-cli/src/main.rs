@@ -125,6 +125,18 @@ const MAX_QUEUE: usize = 64;
 
 /// Reserve, capture and commit the KV pool of a loaded model and describe it to the scheduler. `None` when the backend has no paged KV yet
 /// (`HalError::Unsupported`), so the scheduler keeps the `generate` path; any other failure is an error.
+/// The sampling a request gets for the fields it omits: the manifest's `sampling_defaults`, else the OpenAI defaults.
+fn request_defaults(manifest: &hyperion_specification::v1::Manifest) -> helios_core::api::RequestDefaults {
+    let mut defaults = helios_core::api::RequestDefaults::default();
+    if let Some(d) = &manifest.generation.sampling_defaults {
+        defaults.temperature = d.temperature.map_or(defaults.temperature, |v| v as f32);
+        defaults.top_p = d.top_p.map_or(defaults.top_p, |v| v as f32);
+        defaults.top_k = d.top_k.unwrap_or(defaults.top_k);
+        defaults.repetition_penalty = d.repetition_penalty.map_or(defaults.repetition_penalty, |v| v as f32);
+    }
+    defaults
+}
+
 fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32, max_batch: usize, prefill_chunk_busy: u32, gauge: Arc<helios_core::load_gauge::LoadGauge>) -> Result<Option<helios_core::PlanPath>> {
     use helios_hal::{HalError, KvSpec, MemoryPolicy};
     let reservation = match backend.reserve_kv(model, &KvSpec { max_batch, ..KvSpec::default() }) {
@@ -281,6 +293,7 @@ async fn main() -> Result<()> {
         inflight: helios_core::inflight::InflightTracker::new(),
         default_max_tokens: cli.default_max_tokens,
         first_token_timeout: std::time::Duration::from_secs(cli.first_token_timeout),
+        request_defaults: request_defaults(&manifest),
         gauge,
     };
     let inflight = app_state.inflight.clone();

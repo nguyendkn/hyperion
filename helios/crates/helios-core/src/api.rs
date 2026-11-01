@@ -52,6 +52,8 @@ pub struct AppState {
     pub default_max_tokens: u32,
     /// `--first-token-timeout`.
     pub first_token_timeout: std::time::Duration,
+    /// Sampling fields a request may omit.
+    pub request_defaults: RequestDefaults,
     /// Shared with the scheduler's plan loop; see [`crate::load_gauge`].
     pub gauge: Arc<crate::load_gauge::LoadGauge>,
 }
@@ -68,6 +70,7 @@ impl From<Arc<StateMachine>> for AppState {
             inflight: InflightTracker::new(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
             first_token_timeout: DEFAULT_FIRST_TOKEN_TIMEOUT,
+            request_defaults: RequestDefaults::default(),
             gauge: Arc::default(),
         }
     }
@@ -112,6 +115,18 @@ pub struct ChatCompletionRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f32>,
+    /// vLLM-style extensions: `top_k`, `repetition_penalty` and `seed` (OpenAI has `seed` too).
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    #[serde(default)]
+    pub repetition_penalty: Option<f32>,
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// Accepted only as 0 (not implemented: a nonzero value is a 400).
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub frequency_penalty: Option<f32>,
     /// `true`: answer as server-sent events, one chunk per piece of text.
     #[serde(default)]
     pub stream: bool,
@@ -124,6 +139,54 @@ pub struct ChatCompletionRequest {
 pub struct StreamOptions {
     #[serde(default)]
     pub include_usage: bool,
+}
+
+/// What a request that omits a sampling field gets: the manifest's `sampling_defaults` where it has one, else the OpenAI default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RequestDefaults {
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: u32,
+    pub repetition_penalty: f32,
+}
+
+impl Default for RequestDefaults {
+    fn default() -> Self {
+        Self { temperature: 1.0, top_p: 1.0, top_k: 0, repetition_penalty: 1.0 }
+    }
+}
+
+/// The sampling a request runs with: each field from the request, else from `defaults`; out-of-range values and the fields that are not
+/// implemented are a 400 naming the parameter.
+pub fn resolve_sampling(req: &ChatCompletionRequest, defaults: &RequestDefaults, max_tokens: u32) -> Result<SamplingParams, ApiError> {
+    let bad = |name: &'static str, reason: &'static str| ApiError::InvalidParameter { name, reason };
+    let temperature = req.temperature.unwrap_or(defaults.temperature);
+    let top_p = req.top_p.unwrap_or(defaults.top_p);
+    // Greedy decoding cannot apply a penalty: one the client asked for is an error, one that only comes from the manifest defaults is dropped.
+    let repetition_penalty = match req.repetition_penalty {
+        Some(p) => p,
+        None if temperature == 0.0 => 1.0,
+        None => defaults.repetition_penalty,
+    };
+    if !(0.0..=2.0).contains(&temperature) {
+        return Err(bad("temperature", "must be between 0 and 2"));
+    }
+    if !(0.0..=1.0).contains(&top_p) {
+        return Err(bad("top_p", "must be between 0 and 1"));
+    }
+    if !(repetition_penalty > 0.0 && repetition_penalty.is_finite()) {
+        return Err(bad("repetition_penalty", "must be positive"));
+    }
+    if temperature == 0.0 && repetition_penalty != 1.0 {
+        return Err(bad("repetition_penalty", "is not supported with temperature 0 (greedy decoding)"));
+    }
+    if req.presence_penalty.is_some_and(|p| p != 0.0) {
+        return Err(bad("presence_penalty", "is not supported"));
+    }
+    if req.frequency_penalty.is_some_and(|p| p != 0.0) {
+        return Err(bad("frequency_penalty", "is not supported"));
+    }
+    Ok(SamplingParams { temperature: Some(temperature), top_p: Some(top_p), max_tokens, top_k: Some(req.top_k.unwrap_or(defaults.top_k)), repetition_penalty: Some(repetition_penalty), seed: req.seed })
 }
 
 /// The default of `--default-max-tokens`.
@@ -246,11 +309,7 @@ async fn serve_chat(
     let request = InferenceRequest {
         request_id: chrono_like_id(),
         token_ids: ids.clone(),
-        sampling_params: SamplingParams {
-            temperature: req.temperature,
-            top_p: req.top_p,
-            max_tokens: effective_max_tokens(req.max_tokens, app.default_max_tokens, tok.max_length(), ids.len()),
-        },
+        sampling_params: resolve_sampling(&req, &app.request_defaults, effective_max_tokens(req.max_tokens, app.default_max_tokens, tok.max_length(), ids.len()))?,
         response_tx,
     };
 

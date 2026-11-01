@@ -66,7 +66,7 @@ fn plan_path(backend: &dyn ComputeBackend, max_queue: usize) -> PlanPath {
 
 fn request(id: u64, prompt: usize, max_tokens: u32) -> (InferenceRequest, mpsc::UnboundedReceiver<StreamEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    let request = InferenceRequest { request_id: id, token_ids: (0..prompt as u32).map(|t| t + id as u32 * 10_000).collect(), sampling_params: SamplingParams { temperature: None, top_p: None, max_tokens }, response_tx: tx };
+    let request = InferenceRequest { request_id: id, token_ids: (0..prompt as u32).map(|t| t + id as u32 * 10_000).collect(), sampling_params: SamplingParams { temperature: None, top_p: None, max_tokens, ..Default::default() }, response_tx: tx };
     (request, rx)
 }
 

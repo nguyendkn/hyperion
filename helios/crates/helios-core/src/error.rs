@@ -38,6 +38,8 @@ pub enum ApiError {
     Scheduler(SchedulerFault),
     #[error("the scheduler did not answer in time")]
     FirstEventTimeout,
+    #[error("parameter {name}: {reason}")]
+    InvalidParameter { name: &'static str, reason: &'static str },
     #[error("generation failed")]
     GenerationFailed,
     #[error("the generated tokens could not be decoded")]
@@ -50,7 +52,7 @@ impl ApiError {
             Self::Scheduler(SchedulerFault::Overloaded) => StatusCode::TOO_MANY_REQUESTS,
             Self::EngineNotServing { .. } | Self::Scheduler(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::NoTokenizer => StatusCode::NOT_IMPLEMENTED,
-            Self::PromptTooLong { .. } => StatusCode::BAD_REQUEST,
+            Self::PromptTooLong { .. } | Self::InvalidParameter { .. } => StatusCode::BAD_REQUEST,
             Self::TokenizeFailed | Self::EmptyPrompt => StatusCode::UNPROCESSABLE_ENTITY,
             Self::FirstEventTimeout => StatusCode::GATEWAY_TIMEOUT,
             Self::GenerationFailed | Self::DecodeFailed => StatusCode::INTERNAL_SERVER_ERROR,
@@ -61,7 +63,7 @@ impl ApiError {
     /// `server_error` otherwise.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::PromptTooLong { .. } | Self::TokenizeFailed | Self::EmptyPrompt => "invalid_request_error",
+            Self::PromptTooLong { .. } | Self::TokenizeFailed | Self::EmptyPrompt | Self::InvalidParameter { .. } => "invalid_request_error",
             Self::Scheduler(SchedulerFault::Overloaded) => "rate_limit_error",
             _ => "server_error",
         }
@@ -75,6 +77,7 @@ impl ApiError {
             Self::PromptTooLong { .. } => "context_length_exceeded",
             Self::TokenizeFailed => "tokenize_failed",
             Self::EmptyPrompt => "empty_prompt",
+            Self::InvalidParameter { .. } => "invalid_parameter",
             Self::Scheduler(SchedulerFault::NotWired) => "scheduler_not_wired",
             Self::Scheduler(SchedulerFault::QueueClosed) => "scheduler_unavailable",
             Self::Scheduler(SchedulerFault::Overloaded) => "rate_limit_exceeded",
@@ -89,6 +92,7 @@ impl ApiError {
     pub fn param(&self) -> Option<&'static str> {
         match self {
             Self::PromptTooLong { .. } | Self::TokenizeFailed | Self::EmptyPrompt => Some("messages"),
+            Self::InvalidParameter { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -101,6 +105,7 @@ impl ApiError {
             Self::PromptTooLong { .. } => "shorten the messages, or start the server with a larger --max-seq-len",
             Self::TokenizeFailed => "check that the message contents are valid text",
             Self::EmptyPrompt => "send at least one message with content",
+            Self::InvalidParameter { .. } => "change the parameter to a supported value (the message names it)",
             Self::Scheduler(SchedulerFault::Overloaded) => "retry with backoff; the server is at capacity",
             Self::Scheduler(_) | Self::FirstEventTimeout => "retry later; if it persists, check the server log",
             Self::GenerationFailed | Self::DecodeFailed => "retry; if it persists, check the server log",

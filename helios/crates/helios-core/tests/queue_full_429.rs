@@ -15,7 +15,7 @@ async fn a_full_scheduler_queue_is_429_in_the_openai_shape() {
     let (tx, _rx) = ingress_channel();
     for id in 0..INGRESS_CAPACITY as u64 {
         let (response_tx, _response_rx) = tokio::sync::mpsc::unbounded_channel();
-        let request = InferenceRequest { request_id: id, token_ids: vec![1], sampling_params: SamplingParams { temperature: None, top_p: None, max_tokens: 1 }, response_tx };
+        let request = InferenceRequest { request_id: id, token_ids: vec![1], sampling_params: SamplingParams { temperature: None, top_p: None, max_tokens: 1, ..Default::default() }, response_tx };
         tx.send(request).await.unwrap();
     }
     let sm = StateMachine::new();

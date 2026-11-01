@@ -52,10 +52,13 @@ impl Scheduler {
                 let sampling = SamplingInit {
                     temperature: sampling_params.temperature.unwrap_or(0.0),
                     top_p: sampling_params.top_p.unwrap_or(1.0),
-                    top_k: 0,
-                    repetition_penalty: 1.0,
-                    seed: request_id,
+                    top_k: sampling_params.top_k.unwrap_or(0),
+                    repetition_penalty: sampling_params.repetition_penalty.unwrap_or(1.0),
+                    seed: sampling_params.seed.unwrap_or_else(|| os_seed(request_id)),
                 };
+                if sampling.temperature > 0.0 {
+                    tracing::info!(request = request_id, seed = sampling.seed, given = sampling_params.seed.is_some(), temperature = sampling.temperature, top_p = sampling.top_p, top_k = sampling.top_k, repetition_penalty = sampling.repetition_penalty, "request sampling");
+                }
                 let prompt_tokens = token_ids.len();
                 let request = Request { id: request_id, tokens: token_ids, max_new: sampling_params.max_tokens, sampling };
                 match machine.enqueue(request) {
@@ -124,6 +127,16 @@ impl Scheduler {
         self.ingress.close();
         Ok(())
     }
+}
+
+/// A seed for a request that gave none: the per-process random keys of the standard library (drawn from the operating system) hashed with the request
+/// id and the clock, so two requests never share one and it cannot be predicted from the id.
+fn os_seed(request_id: u64) -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(request_id);
+    hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    hasher.finish()
 }
 
 /// [`route`] the events; the first event of a request means its prompt is done, so it no longer waits for prefill in the gauge.

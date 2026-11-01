@@ -57,7 +57,7 @@ fn request(id: u64) -> (InferenceRequest, mpsc::UnboundedReceiver<StreamEvent>) 
     let request = InferenceRequest {
         request_id: id,
         token_ids: vec![1, 2, 3],
-        sampling_params: SamplingParams { temperature: None, top_p: None, max_tokens: 4 },
+        sampling_params: SamplingParams { temperature: None, top_p: None, max_tokens: 4, ..Default::default() },
         response_tx: tx,
     };
     (request, rx)

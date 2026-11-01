@@ -26,7 +26,7 @@ pub const INGRESS_CAPACITY: usize = 32;
 /// Mirrors a subset of the OpenAI `ChatCompletionRequest` fields; unknown
 /// knobs (top_k, frequency_penalty, …) land later via an extensible enum or
 /// a nested struct — YAGNI until a caller needs them.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SamplingParams {
     /// Softmax temperature. `None` → greedy / deterministic (treat as 1.0 only
     /// if `top_p` is also unset; the scheduler picks greedy when both are
@@ -37,6 +37,12 @@ pub struct SamplingParams {
     /// Hard cap on generated tokens *after* the prompt. The scheduler stops
     /// decoding at this count even if no EOS is sampled.
     pub max_tokens: u32,
+    /// Keep only the `k` most likely tokens (0 or `None`: all). Device sampling caps it at 1024.
+    pub top_k: Option<u32>,
+    /// Divide (positive) or multiply (negative) the logit of a token the sequence generated before. `None`: 1.
+    pub repetition_penalty: Option<f32>,
+    /// Seed of the random draws. `None`: drawn when the request is admitted and logged with the request id.
+    pub seed: Option<u64>,
 }
 
 /// Why a finished stream ended. Mirrors the OpenAI `finish_reason` vocabulary
