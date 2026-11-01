@@ -1022,8 +1022,6 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
     __shared__ float shared_f[SAMPLE_BLOCK];
     __shared__ float shared_key[SAMPLE_MAX_CANDIDATES];
     __shared__ int shared_idx[SAMPLE_MAX_CANDIDATES];
-    __shared__ unsigned int shared_a[SAMPLE_BLOCK];
-    __shared__ unsigned int shared_b[SAMPLE_BLOCK];
     __shared__ int shared_count;
     __shared__ int shared_pick;
     const int r = blockIdx.x;
@@ -1037,20 +1035,26 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
     const float repetition = __uint_as_float(p[3]);
     const unsigned int counter = p[6];
     const int t = threadIdx.x;
-    const int chunk = (n + SAMPLE_BLOCK - 1) / SAMPLE_BLOCK;
-    const int lo = min(t * chunk, n), hi = min((t + 1) * chunk, n);
     const float* in = logits + (size_t)r * n;
     float* z = ws + (size_t)r * n;
     const unsigned int* seen_row = seen + (size_t)s * seen_words;
 
-    // 1-2. penalty and temperature into the scratch row; the maximum.
+    // 1-2. penalty and temperature into the scratch row; the maximum; in mode B also the histogram of the top byte of the keys (first radix pass).
+    const bool mode_a = top_k == 0 && top_p >= 1.0f;
+    __shared__ unsigned int hist[256];
+    __shared__ unsigned int sel_prefix, sel_remaining, sel_equal;
+    if (!mode_a) {
+        if (t < 256) hist[t] = 0u;
+        __syncthreads();
+    }
     float local_max = -INFINITY;
-    for (int i = lo; i < hi; i++) {
+    for (int i = t; i < n; i += SAMPLE_BLOCK) {
         float v = in[i];
         if (repetition != 1.0f && ((seen_row[i >> 5] >> (i & 31)) & 1u)) v = v > 0.0f ? __fdiv_rn(v, repetition) : __fmul_rn(v, repetition);
         v = __fdiv_rn(v, temperature);
         z[i] = v;
         if (v > local_max) local_max = v;
+        if (!mode_a) atomicAdd(&hist[sample_key(v) >> 24], 1u);
     }
     shared_f[t] = local_max;
     __syncthreads();
@@ -1064,10 +1068,10 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
     const float u = (float)(philox_word0(counter, p[4], p[5]) >> 8) * (1.0f / 16777216.0f);
 
     int token = 0;
-    if (top_k == 0 && top_p >= 1.0f) {
-        // Mode A: every token is a candidate; chunk sums, cumulative sums over the chunks, then a walk inside the chosen chunk.
+    if (mode_a) {
+        // Mode A: every token is a candidate; chunk c is the tokens c, c + 1024, ... (so the loads are coalesced), chunk sums, cumulative sums over the chunks, then a walk inside the chosen chunk.
         float sum = 0.0f;
-        for (int i = lo; i < hi; i++) sum = __fadd_rn(sum, det_exp(__fsub_rn(z[i], vmax)));
+        for (int i = t; i < n; i += SAMPLE_BLOCK) sum = __fadd_rn(sum, det_exp(__fsub_rn(z[i], vmax)));
         shared_f[t] = sum;
         __syncthreads();
         if (t == 0) {
@@ -1094,10 +1098,9 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
                     }
                 }
             } else {
-                const int clo = min(c * chunk, n), chi = min((c + 1) * chunk, n);
                 float running = c == 0 ? 0.0f : shared_f[c - 1];
-                token = chi - 1;
-                for (int i = clo; i < chi; i++) {
+                token = c + SAMPLE_BLOCK * ((n - 1 - c) / SAMPLE_BLOCK);
+                for (int i = c; i < n; i += SAMPLE_BLOCK) {
                     running = __fadd_rn(running, det_exp(__fsub_rn(z[i], vmax)));
                     if (running > target) {
                         token = i;
@@ -1107,69 +1110,85 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
             }
         }
     } else {
-        // Mode B: the K best tokens (value descending, index ascending on ties), found by bisection on the ordered key, then sorted.
+        // Mode B: the K best tokens (value descending, index ascending on ties): a radix select of the K-th largest key (four passes of a byte each, the
+        // first fused into pass 1), the keys above it, and the lowest-index keys equal to it to make K; then sorted. The order the candidates are stored in
+        // before the sort does not matter: the sort orders them by (value, index), which is unique.
         int k = top_k == 0 ? SAMPLE_MAX_CANDIDATES : (int)min(top_k, (unsigned int)SAMPLE_MAX_CANDIDATES);
         k = min(k, n);
-        unsigned int threshold = 0u;
-        for (int bit = 31; bit >= 0; bit--) {
-            const unsigned int candidate = threshold | (1u << bit);
-            int count = 0;
-            for (int i = lo; i < hi; i++) count += sample_key(z[i]) >= candidate ? 1 : 0;
-            if (t == 0) shared_count = 0;
-            __syncthreads();
-            atomicAdd(&shared_count, count);
-            __syncthreads();
-            if (shared_count >= k) threshold = candidate;
-            __syncthreads();
-        }
-        // Counts of the keys above and at the threshold per thread, then offsets in index order.
-        int gt = 0, eq = 0;
-        for (int i = lo; i < hi; i++) {
-            const unsigned int key = sample_key(z[i]);
-            gt += key > threshold ? 1 : 0;
-            eq += key == threshold ? 1 : 0;
-        }
-        shared_a[t] = (unsigned int)gt;
-        shared_b[t] = (unsigned int)eq;
-        __syncthreads();
         if (t == 0) {
-            unsigned int run_gt = 0u, run_eq = 0u;
-            for (int c = 0; c < SAMPLE_BLOCK; c++) {
-                const unsigned int g = shared_a[c], e = shared_b[c];
-                shared_a[c] = run_gt;
-                shared_b[c] = run_eq;
-                run_gt += g;
-                run_eq += e;
-            }
-            shared_count = (int)run_gt;
+            sel_prefix = 0u;
+            sel_remaining = (unsigned int)k;
         }
         __syncthreads();
-        const int total_gt = shared_count;
-        int at_gt = (int)shared_a[t], at_eq = (int)shared_b[t];
-        for (int i = lo; i < hi; i++) {
-            const unsigned int key = sample_key(z[i]);
-            int slot = -1;
-            if (key > threshold) {
-                slot = at_gt++;
-            } else if (key == threshold) {
-                const int rank = at_eq++;
-                if (rank < k - total_gt) slot = total_gt + rank;
+        for (int digit = 3; digit >= 0; digit--) {
+            if (digit < 3) {
+                if (t < 256) hist[t] = 0u;
+                __syncthreads();
+                const unsigned int high = sel_prefix;
+                const int shift = digit * 8;
+                for (int i = t; i < n; i += SAMPLE_BLOCK) {
+                    const unsigned int key = sample_key(z[i]);
+                    if ((key >> (shift + 8)) == high) atomicAdd(&hist[(key >> shift) & 255u], 1u);
+                }
+                __syncthreads();
             }
-            if (slot >= 0) {
+            if (t == 0) {
+                unsigned int cumulative = 0u, remaining = sel_remaining;
+                int chosen = 0;
+                for (int d = 255; d >= 0; d--) {
+                    const unsigned int c = hist[d];
+                    if (cumulative + c >= remaining) {
+                        chosen = d;
+                        if (digit == 0) sel_equal = c;
+                        break;
+                    }
+                    cumulative += c;
+                }
+                sel_remaining = remaining - cumulative;
+                sel_prefix = digit == 3 ? (unsigned int)chosen : ((sel_prefix << 8) | (unsigned int)chosen);
+            }
+            __syncthreads();
+        }
+        const unsigned int threshold = sel_prefix;
+        // Keys above the threshold number k - sel_remaining; those equal to it number sel_equal, of which sel_remaining are needed.
+        const int total_gt = k - (int)sel_remaining;
+        const bool equal_fits = (int)sel_equal <= (int)sel_remaining;
+        if (t == 0) shared_count = 0;
+        __syncthreads();
+        for (int i = t; i < n; i += SAMPLE_BLOCK) {
+            const unsigned int key = sample_key(z[i]);
+            if (key > threshold || (equal_fits && key == threshold)) {
+                const int slot = atomicAdd(&shared_count, 1);
                 shared_key[slot] = z[i];
                 shared_idx[slot] = i;
             }
         }
+        if (!equal_fits) {
+            // More keys tie at the threshold than are needed: the lowest indices win. Rare (a flat distribution), so one thread walks the tokens in order.
+            __syncthreads();
+            if (t == 0) {
+                int rank = 0;
+                for (int i = 0; i < n && rank < (int)sel_remaining; i++) {
+                    if (sample_key(z[i]) == threshold) {
+                        shared_key[total_gt + rank] = z[i];
+                        shared_idx[total_gt + rank] = i;
+                        rank++;
+                    }
+                }
+            }
+        }
         __syncthreads();
-        if (t >= k) {
+        int sorted = 2;  // the candidates are sorted in the smallest power of two that holds them; the padding sorts last
+        while (sorted < k) sorted <<= 1;
+        if (t >= k && t < sorted) {
             shared_key[t] = -INFINITY;
             shared_idx[t] = 0x7fffffff;
         }
         __syncthreads();
-        for (int size = 2; size <= SAMPLE_MAX_CANDIDATES; size <<= 1) {
+        for (int size = 2; size <= sorted; size <<= 1) {
             for (int j = size >> 1; j > 0; j >>= 1) {
                 const int other = t ^ j;
-                if (other > t) {
+                if (other > t && other < sorted) {
                     const float va = shared_key[t], vb = shared_key[other];
                     const int ia = shared_idx[t], ib = shared_idx[other];
                     const bool ascending = (t & size) == 0;

@@ -272,6 +272,7 @@ fn sampling_costs_at_most_the_declared_share_of_a_decode_step() {
     };
     let sampled = SamplingInit { temperature: 0.8, top_p: 0.95, top_k: 50, repetition_penalty: 1.0, seed: 0 };
     let full = SamplingInit { temperature: 1.0, top_p: 1.0, top_k: 0, repetition_penalty: 1.0, seed: 0 };
+    let mut misses = Vec::new();
     println!("context 512; GPU ms per step, median of 10 windows of 128 steps; overhead against greedy");
     for bucket in [1usize, 2, 4, 8, 16, 32] {
         let greedy = median_of(SamplingInit::GREEDY, bucket);
@@ -284,8 +285,11 @@ fn sampling_costs_at_most_the_declared_share_of_a_decode_step() {
             _ => None,
         };
         if let Some(limit) = budget {
-            assert!(100.0 * (b / greedy - 1.0) <= limit, "bucket {bucket}: sampling costs {:.2}% against a budget of {limit}%", 100.0 * (b / greedy - 1.0));
+            if 100.0 * (b / greedy - 1.0) > limit {
+                misses.push(format!("bucket {bucket}: sampling costs {:.2}% against a budget of {limit}%", 100.0 * (b / greedy - 1.0)));
+            }
         }
     }
+    assert!(misses.is_empty(), "{misses:?}");
     backend.shutdown().unwrap();
 }

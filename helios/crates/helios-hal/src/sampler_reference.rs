@@ -16,9 +16,10 @@
 //!    renormalised top-k.
 //! 6. *Draw.* `u = (philox4x32_10(counter = [step, 0, 0, 0], key = [seed_lo, seed_hi])[0] >> 8) * 2^-24`, `step` the number of tokens the sequence
 //!    sampled before. Mode B: `target = u * P_{n-1}`, the token is the first kept candidate with `P_j > target` (the last kept one if none). Mode A: the
-//!    vocabulary is cut into 1024 chunks of `ceil(vocab / 1024)` consecutive tokens, chunk sums are sequential f32 sums, cumulative sums `C_c` are
-//!    sequential over the chunks, `target = u * C_last`, the chunk is the first with `C_c > target` (the first maximal token if none) and the token is
-//!    the first one in it whose running sum from `C_{c-1}` exceeds `target` (the chunk's last token if none).
+//!    tokens are split into 1024 chunks, chunk `c` being tokens `c, c + 1024, c + 2048, ...` (any fixed order of the tokens draws from the same
+//!    distribution; this one makes the device loads coalesced). Chunk sums are sequential f32 sums, cumulative sums `C_c` are sequential over the chunks,
+//!    `target = u * C_last`, the chunk is the first with `C_c > target` (the first maximal token if none) and the token is the first one in it (in
+//!    ascending index) whose running sum from `C_{c-1}` exceeds `target` (the chunk's last token if none).
 //!
 //! Non-finite logits are an error here; the device does not check.
 
@@ -149,14 +150,13 @@ pub fn sample(logits: &[f32], seen: &[bool], params: &Params, seed: u64, step: u
 }
 
 fn draw_full(z: &[f32], max: f32, u: f32) -> u32 {
-    let chunk = z.len().div_ceil(CHUNKS);
+    let n = z.len();
     let w: Vec<f32> = z.iter().map(|&v| det_exp(v - max)).collect();
     let mut cumulative = Vec::with_capacity(CHUNKS);
     let mut run = 0.0f32;
     for c in 0..CHUNKS {
-        let (lo, hi) = ((c * chunk).min(z.len()), ((c + 1) * chunk).min(z.len()));
         let mut sum = 0.0f32;
-        for &x in &w[lo..hi] {
+        for &x in w.iter().skip(c).step_by(CHUNKS) {
             sum += x;
         }
         run += sum;
@@ -166,15 +166,14 @@ fn draw_full(z: &[f32], max: f32, u: f32) -> u32 {
     let Some(c) = cumulative.iter().position(|&x| x > target) else {
         return z.iter().position(|&v| v == max).expect("the maximum is in the logits") as u32;
     };
-    let (lo, hi) = ((c * chunk).min(z.len()), ((c + 1) * chunk).min(z.len()));
     let mut running = if c == 0 { 0.0 } else { cumulative[c - 1] };
-    for i in lo..hi {
+    for i in (c..n).step_by(CHUNKS) {
         running += w[i];
         if running > target {
             return i as u32;
         }
     }
-    (hi - 1) as u32
+    (c + CHUNKS * ((n - 1 - c) / CHUNKS)) as u32
 }
 
 #[cfg(test)]
