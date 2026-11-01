@@ -52,6 +52,11 @@ pub struct Report {
     pub peak_running: usize,
     /// Ticks from a request's arrival to its first token, by request id (the queueing delay plus its prefill).
     pub first_token_ticks: BTreeMap<SeqId, u64>,
+    /// The most prompt tokens prefilled between two decode steps once decoding had started: a running sequence's wait for its next token is
+    /// at most this many tokens of prefill (plus one decode step), the stall `--prefill-chunk-busy` bounds.
+    pub max_stall_tokens: usize,
+    /// Prefill steps by chunk size in tokens (chunk size -> steps).
+    pub prefill_chunks: BTreeMap<usize, usize>,
 }
 
 /// Replay `trace`. `pool` is the pool the backend committed; the page geometry comes from it.
@@ -60,7 +65,8 @@ pub fn replay(trace: &Trace, cfg: StepConfig, identity: crate::kv::BlockHash, ha
     let kv = KvManager::new(KvConfig { pages: info.pages, page_tokens: info.page_tokens, hash_block_tokens, identity })?;
     let mut scheduler = StepScheduler::new(cfg, kv);
     let events = scheduler.kv_mut().events().subscribe();
-    let mut report = Report { plans: Vec::new(), generated: BTreeMap::new(), finished: 0, cancelled: 0, rejected: 0, failed: 0, hit_rate: 0.0, peak_pages: 0, kv_events: Vec::new(), ticks: 0, final_pages_used: 0, final_registered_blocks: 0, decode_rows: BTreeMap::new(), peak_running: 0, first_token_ticks: BTreeMap::new() };
+    let mut report = Report { plans: Vec::new(), generated: BTreeMap::new(), finished: 0, cancelled: 0, rejected: 0, failed: 0, hit_rate: 0.0, peak_pages: 0, kv_events: Vec::new(), ticks: 0, final_pages_used: 0, final_registered_blocks: 0, decode_rows: BTreeMap::new(), peak_running: 0, first_token_ticks: BTreeMap::new(), max_stall_tokens: 0, prefill_chunks: BTreeMap::new() };
+    let (mut seen_decode, mut stall) = (false, 0usize);
     let mut tick = 0u64;
     let mut next = 0usize;
     let mut order: Vec<usize> = (0..trace.requests.len()).collect();
@@ -86,6 +92,14 @@ pub fn replay(trace: &Trace, cfg: StepConfig, identity: crate::kv::BlockHash, ha
                 report.plans.push(plan.encode());
                 if matches!(plan.capacity, helios_hal::step::Capacity::Decode { .. }) {
                     *report.decode_rows.entry(plan.rows.len()).or_default() += 1;
+                    (seen_decode, stall) = (true, 0);
+                } else {
+                    let tokens: usize = plan.rows.iter().map(|r| r.n_tokens as usize).sum();
+                    *report.prefill_chunks.entry(tokens).or_default() += 1;
+                    if seen_decode {
+                        stall += tokens;
+                        report.max_stall_tokens = report.max_stall_tokens.max(stall);
+                    }
                 }
                 let output = backend.take_output(backend.submit_step(pool, &plan)?)?;
                 let produced = scheduler.complete(&output);

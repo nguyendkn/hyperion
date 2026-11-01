@@ -29,6 +29,10 @@ pub struct StepConfig {
     pub decode_buckets: Vec<usize>,
     /// Prefill chunk steps run between two decode steps while both kinds of work wait (at least 1).
     pub prefill_steps_per_decode: usize,
+    /// Largest prefill chunk, in tokens, while decode rows are active (`--prefill-chunk-busy`): the biggest captured capacity not above it (the
+    /// smallest capacity if it is below all of them). With no decode row active the largest capacity is used. A decode step waits for at most one
+    /// chunk, so this bounds the stall of every running sequence. `usize::MAX` leaves the chunk at the largest capacity.
+    pub prefill_chunk_busy: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +202,16 @@ impl StepScheduler {
         }
     }
 
+    /// Largest chunk of the next prefill step: capped while a sequence is decoding, the largest capacity otherwise.
+    fn chunk_limit(&self) -> usize {
+        let caps = &self.cfg.prefill_capacities;
+        let largest = *caps.last().expect("at least one capacity");
+        if !self.active.iter().any(|s| matches!(s.phase, Phase::Decode)) {
+            return largest;
+        }
+        caps.iter().copied().take_while(|&c| c <= self.cfg.prefill_chunk_busy).last().unwrap_or(caps[0])
+    }
+
     fn capacity_for(&self, rows: usize) -> usize {
         self.cfg.prefill_capacities.iter().copied().find(|&c| c >= rows).unwrap_or_else(|| *self.cfg.prefill_capacities.last().expect("at least one capacity"))
     }
@@ -243,14 +257,14 @@ impl StepScheduler {
 
     fn prefill_plan(&mut self, at: usize) -> StepPlan {
         let page = self.kv.config().page_tokens;
-        let largest = *self.cfg.prefill_capacities.last().expect("at least one capacity");
+        let limit = self.chunk_limit();
         self.cursor = at + 1;
         let seq = &mut self.active[at];
         let (id, slot) = (seq.id, seq.slot);
         let deltas: Vec<PageDelta> = seq.announce.take().unwrap_or_default().into_iter().map(|(i, p)| PageDelta { slot, index: i as u32, page: p }).collect();
         let inits = if deltas.is_empty() { Vec::new() } else { vec![SlotInit { slot, sampling: seq.sampling, max_new_tokens: seq.max_new }] };
         let Phase::Prefill { next } = seq.phase else { unreachable!("a prefilling sequence") };
-        let chunk = (seq.prompt.len() - next).min(largest);
+        let chunk = (seq.prompt.len() - next).min(limit);
         let end = next + chunk;
         let last = end == seq.prompt.len();
         let row = Row { slot, input: Input::Tokens(seq.prompt[next..end].to_vec()), n_tokens: chunk as u32, position: next as u32, table_len: end.div_ceil(page) as u32, want: if last { Want::Token } else { Want::Nothing } };

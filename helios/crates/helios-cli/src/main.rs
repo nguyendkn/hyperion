@@ -76,6 +76,10 @@ struct Cli {
     /// wall time per prefilled token, decode steps between chunks included) already exceeds it is answered 429 at once.
     #[arg(long, default_value_t = helios_core::api::DEFAULT_FIRST_TOKEN_TIMEOUT.as_secs())]
     first_token_timeout: u64,
+    /// Largest prefill chunk, in tokens, while sequences are decoding (the biggest captured chunk size not above it). A running sequence waits
+    /// for at most one such chunk between two tokens; with nothing decoding, prompts are prefilled in the largest chunks. 0 is refused.
+    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..))]
+    prefill_chunk_busy: u32,
 }
 
 /// Bytes of KV cache one sequence of `tokens` needs: K and V, per layer, per
@@ -121,7 +125,7 @@ const MAX_QUEUE: usize = 64;
 
 /// Reserve, capture and commit the KV pool of a loaded model and describe it to the scheduler. `None` when the backend has no paged KV yet
 /// (`HalError::Unsupported`), so the scheduler keeps the `generate` path; any other failure is an error.
-fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32, max_batch: usize, gauge: Arc<helios_core::load_gauge::LoadGauge>) -> Result<Option<helios_core::PlanPath>> {
+fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32, max_batch: usize, prefill_chunk_busy: u32, gauge: Arc<helios_core::load_gauge::LoadGauge>) -> Result<Option<helios_core::PlanPath>> {
     use helios_hal::{HalError, KvSpec, MemoryPolicy};
     let reservation = match backend.reserve_kv(model, &KvSpec { max_batch, ..KvSpec::default() }) {
         Ok(reservation) => reservation,
@@ -144,6 +148,7 @@ fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedM
         max_seq_len: max_seq_len as usize,
         decode_buckets,
         prefill_steps_per_decode: PREFILL_STEPS_PER_DECODE,
+        prefill_chunk_busy: prefill_chunk_busy as usize,
     };
     Ok(Some(helios_core::PlanPath { pool: Arc::new(pool), step, identity, hash_block_tokens: HASH_BLOCK_TOKENS, gauge }))
 }
@@ -187,7 +192,7 @@ async fn main() -> Result<()> {
     // The rest of the load order (ADR 0002, 0006): reserve the KV addresses, capture the graphs, measure the free memory and map all of it.
     // A backend without a paged KV pool serves through `generate` until it has one.
     let gauge = Arc::new(helios_core::load_gauge::LoadGauge::new());
-    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len, cli.max_batch, gauge.clone())
+    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len, cli.max_batch, cli.prefill_chunk_busy, gauge.clone())
         .map_err(|e| anyhow!("preparing the KV pool failed: {e:#}"))?;
 
     // 6. Build the ingress channel and spawn the scheduler. The receiver

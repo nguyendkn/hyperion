@@ -72,6 +72,7 @@ fn config(max_batch: usize, max_queue: usize, prefill_steps_per_decode: usize) -
         max_seq_len: 8192,
         decode_buckets: helios_hal::decode_buckets::buckets(max_batch).unwrap(),
         prefill_steps_per_decode,
+        prefill_chunk_busy: usize::MAX,
     }
 }
 
@@ -221,4 +222,76 @@ fn a_shared_prefix_is_reserved_once_against_the_pool() {
     assert_eq!((report.finished, report.failed), (8, 0));
     assert!(report.peak_running >= 7, "the prefix did not hold the others back: {}", report.peak_running);
     assert!(report.peak_pages <= 100);
+}
+
+fn run_busy(trace: &Trace, tokens: usize, max_batch: usize, ratio: usize, busy: usize) -> Report {
+    let (backend, pool) = open(tokens);
+    replay(trace, StepConfig { prefill_chunk_busy: busy, ..config(max_batch, 8, ratio) }, IDENTITY, 64, backend.as_ref(), &pool).unwrap()
+}
+
+/// One sequence decodes for a long time; a prompt of 8000 tokens arrives while it does.
+fn decoder_and_long_prompt() -> Trace {
+    Trace {
+        requests: vec![
+            TraceRequest { arrive: 0, tokens: (0..100).collect(), max_new: 400, cancel_at: None },
+            TraceRequest { arrive: 10, tokens: (50_000..50_000 + 8000).collect(), max_new: 4, cancel_at: None },
+        ],
+    }
+}
+
+#[test]
+fn no_decode_step_waits_for_more_than_one_busy_chunk() {
+    let free = run_busy(&decoder_and_long_prompt(), 64 * 400, 4, 1, usize::MAX);
+    assert!(free.max_stall_tokens >= 4096, "without the cap the long prompt goes in its largest chunks: {}", free.max_stall_tokens);
+    for busy in [256usize, 512, 1024] {
+        let report = run_busy(&decoder_and_long_prompt(), 64 * 400, 4, 1, busy);
+        assert_eq!((report.finished, report.failed), (2, 0));
+        assert!(report.max_stall_tokens <= busy, "busy {busy}: a running sequence waited for {} prefill tokens", report.max_stall_tokens);
+        assert_eq!(report.generated[&1].len(), 400);
+        assert_eq!(report.generated[&2].len(), 4, "capping the chunks changes no result");
+        // Only captured capacities are used: every chunk but the last of a prompt is a whole capacity.
+        let capacities = [128usize, 256, 512, 1024, 2048, 4096];
+        for plan in plans(&report) {
+            if let Capacity::Prefill { rows } = plan.capacity {
+                assert!(capacities.contains(&(rows as usize)), "chunk graph of {rows} rows was not captured");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_idle_scheduler_prefills_in_the_largest_chunks() {
+    let trace = Trace { requests: vec![TraceRequest { arrive: 0, tokens: (0..8000).collect(), max_new: 2, cancel_at: None }] };
+    let report = run_busy(&trace, 64 * 200, 4, 1, 256);
+    assert_eq!(report.prefill_chunks.get(&4096), Some(&1), "{:?}", report.prefill_chunks);
+    assert!(report.prefill_chunks.keys().all(|&t| t > 256), "nothing was decoding, so nothing capped the chunks: {:?}", report.prefill_chunks);
+}
+
+#[test]
+fn the_starvation_bound_holds_under_a_busy_cap() {
+    for ratio in [1usize, 2] {
+        let report = run_busy(&decoder_and_long_prompt(), 64 * 400, 4, ratio, 256);
+        let (mut streak, mut worst, mut seen) = (0usize, 0usize, false);
+        for plan in plans(&report) {
+            match plan.capacity {
+                Capacity::Prefill { .. } if seen => {
+                    streak += 1;
+                    worst = worst.max(streak);
+                }
+                Capacity::Decode { .. } => (seen, streak) = (true, 0),
+                _ => {}
+            }
+        }
+        assert!(worst <= ratio, "ratio {ratio}: {worst} chunk steps in a row");
+        assert!(report.max_stall_tokens <= 256 * ratio, "ratio {ratio}: stall {} tokens", report.max_stall_tokens);
+    }
+}
+
+#[test]
+fn a_smaller_busy_chunk_trades_the_first_token_of_the_long_prompt_for_the_decoders_steadiness() {
+    let big = run_busy(&decoder_and_long_prompt(), 64 * 400, 4, 1, 1024);
+    let small = run_busy(&decoder_and_long_prompt(), 64 * 400, 4, 1, 256);
+    println!("INFO long prompt first token: {} ticks at busy 1024, {} ticks at busy 256; stall {} vs {} tokens", big.first_token_ticks[&2], small.first_token_ticks[&2], big.max_stall_tokens, small.max_stall_tokens);
+    assert!(small.first_token_ticks[&2] > big.first_token_ticks[&2], "more, smaller chunks take more steps to the long prompt's first token");
+    assert!(small.max_stall_tokens < big.max_stall_tokens);
 }
