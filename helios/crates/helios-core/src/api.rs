@@ -26,13 +26,12 @@ use crate::tokenizer::{ChatMessageForEncode, PromptTokenizer, StreamDecoder};
 /// hung connection.
 const INGRESS_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// How long the handler waits for the *first* stream event from the
-/// scheduler. Once the first event arrives we trust the scheduler is alive
-/// for this request and drop the timeout on subsequent reads (a decode loop
-/// can legitimately run long). With continuous batching a request also waits in the scheduler queue (and behind the prefills of the requests
-/// before it) until its first token, so the bound covers a full queue of long prompts: measured, 32 requests of 8192 tokens on the 7B wait up to
-/// about 10 s. The first-event latency stays a liveness probe, not a latency limit.
-const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Default of `--first-token-timeout`: how long the handler waits for the *first* stream event from the scheduler. Once the first event arrives
+/// we trust the scheduler is alive for this request and drop the timeout on subsequent reads (a decode loop can legitimately run long). With
+/// continuous batching a request also waits in the scheduler queue (and behind the prefills of the requests before it) until its first token:
+/// measured, 32 requests of 8192 tokens on the 7B wait up to about 10 s. A request whose estimated wait (see [`crate::load_gauge`]) already
+/// exceeds this bound is answered 429 at once instead of timing out later.
+pub const DEFAULT_FIRST_TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Shared state threaded through every handler. Combines the engine lifecycle
 /// (`StateMachine`), the tokenizer loaded from the package, and the ingress
@@ -51,6 +50,10 @@ pub struct AppState {
     pub inflight: InflightTracker,
     /// `max_tokens` when the client omits it, capped by the context left after the prompt (`--default-max-tokens`).
     pub default_max_tokens: u32,
+    /// `--first-token-timeout`.
+    pub first_token_timeout: std::time::Duration,
+    /// Shared with the scheduler's plan loop; see [`crate::load_gauge`].
+    pub gauge: Arc<crate::load_gauge::LoadGauge>,
 }
 
 impl From<Arc<StateMachine>> for AppState {
@@ -64,6 +67,8 @@ impl From<Arc<StateMachine>> for AppState {
             ingress_tx: None,
             inflight: InflightTracker::new(),
             default_max_tokens: DEFAULT_MAX_TOKENS,
+            first_token_timeout: DEFAULT_FIRST_TOKEN_TIMEOUT,
+            gauge: Arc::default(),
         }
     }
 }
@@ -249,19 +254,33 @@ async fn serve_chat(
         response_tx,
     };
 
+    // A request that cannot reach its first token within the timeout at the recent speed is refused now, with the same 429 as a full queue.
+    if let Some(wait) = app.gauge.estimated_first_token(ids.len()) {
+        if wait > app.first_token_timeout {
+            tracing::warn!(estimated_wait_s = wait.as_secs_f64(), timeout_s = app.first_token_timeout.as_secs_f64(), queued_prompt_tokens = app.gauge.queued_tokens(), prompt_tokens = ids.len(), "request refused: the estimated time to its first token exceeds the first-token timeout");
+            return Err(ApiError::Scheduler(SchedulerFault::Overloaded));
+        }
+    }
+    app.gauge.add(ids.len());
     match tokio::time::timeout(INGRESS_SEND_TIMEOUT, ingress_tx.send(request)).await {
         Ok(Ok(())) => { /* enqueued */ }
         // Scheduler dropped its receiver (task ended).
-        Ok(Err(_send_err)) => return Err(ApiError::Scheduler(SchedulerFault::QueueClosed)),
+        Ok(Err(_send_err)) => {
+            app.gauge.settle(ids.len());
+            return Err(ApiError::Scheduler(SchedulerFault::QueueClosed));
+        }
         // Bounded ingress queue is full: backpressure surfaced as 429 (OpenAI-shaped rate_limit_exceeded).
-        Err(_elapsed) => return Err(ApiError::Scheduler(SchedulerFault::Overloaded)),
+        Err(_elapsed) => {
+            app.gauge.settle(ids.len());
+            return Err(ApiError::Scheduler(SchedulerFault::Overloaded));
+        }
     }
 
     // 3. Drain the response stream. First event gated on a liveness timeout;
     //    subsequent events read without a timeout (decode can run long). We
     //    accumulate token ids until a terminal `Done`/`Error` arrives or the
     //    sender is dropped (recv -> None).
-    let first = match tokio::time::timeout(FIRST_EVENT_TIMEOUT, response_rx.recv()).await {
+    let first = match tokio::time::timeout(app.first_token_timeout, response_rx.recv()).await {
         Ok(Some(ev)) => ev,
         // Scheduler closed the channel before any event: it never started this request.
         Ok(None) => return Err(ApiError::Scheduler(SchedulerFault::ClosedEarly)),

@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::kv::{KvConfig, KvManager};
+use crate::load_gauge::LoadGauge;
 use crate::scheduler::{InferenceRequest, PlanPath, Scheduler, StreamEvent};
 use crate::step_scheduler::{Request, SeqEvent, StepScheduler};
 
@@ -24,6 +25,11 @@ impl Scheduler {
         let kv = KvManager::new(KvConfig { pages: info.pages, page_tokens: info.page_tokens, hash_block_tokens: plan_path.hash_block_tokens, identity: plan_path.identity })?;
         let mut machine = StepScheduler::new(plan_path.step, kv);
         let mut sinks: Sinks = HashMap::new();
+        // Prompt tokens of the requests that have not produced their first token: what the gauge counts as waiting for prefill.
+        let gauge = plan_path.gauge.clone();
+        let mut waiting: HashMap<u64, usize> = HashMap::new();
+        // The most recent decode step since the previous prefill step: the decode the policy interleaves, counted in the time per prefilled token.
+        let mut decode_between: Option<std::time::Duration> = None;
         // Wall time in the backend (submit, device, take) against the whole loop, logged every STEP_LOG_EVERY steps: the host share of a step.
         let (mut in_backend, mut steps, mut window_start, mut decode_rows) = (std::time::Duration::ZERO, 0u32, std::time::Instant::now(), 0usize);
         loop {
@@ -50,12 +56,15 @@ impl Scheduler {
                     repetition_penalty: 1.0,
                     seed: request_id,
                 };
+                let prompt_tokens = token_ids.len();
                 let request = Request { id: request_id, tokens: token_ids, max_new: sampling_params.max_tokens, sampling };
                 match machine.enqueue(request) {
                     Ok(()) => {
                         sinks.insert(request_id, response_tx);
+                        waiting.insert(request_id, prompt_tokens);
                     }
                     Err(_) => {
+                        gauge.settle(prompt_tokens);
                         let _ = response_tx.send(StreamEvent::Error("the scheduler queue is full".into()));
                     }
                 }
@@ -68,11 +77,18 @@ impl Scheduler {
             for id in gone {
                 machine.cancel(id);
                 sinks.remove(&id);
+                if let Some(tokens) = waiting.remove(&id) {
+                    gauge.settle(tokens);
+                }
                 tracing::info!(request = id, running = machine.running(), pages_used = machine.kv().pages_used(), "client went away: sequence cancelled, its pages freed");
             }
             let Some(plan) = machine.next_plan() else {
-                route(&mut sinks, machine.take_events());
+                deliver(&mut sinks, &mut waiting, &gauge, machine.take_events());
                 continue;
+            };
+            let prefill_tokens = match plan.capacity {
+                helios_hal::Capacity::Prefill { .. } => plan.rows.iter().map(|r| r.n_tokens as usize).sum(),
+                helios_hal::Capacity::Decode { .. } => 0,
             };
             decode_rows += if matches!(plan.capacity, helios_hal::Capacity::Decode { .. }) { plan.rows.len() } else { 0 };
             let backend_started = std::time::Instant::now();
@@ -82,7 +98,15 @@ impl Scheduler {
                 backend.take_output(ticket)
             })
             .await;
-            in_backend += backend_started.elapsed();
+            let step_time = backend_started.elapsed();
+            in_backend += step_time;
+            if matches!(step, Ok(Ok(_))) {
+                if prefill_tokens > 0 {
+                    gauge.record_prefill(prefill_tokens, step_time, decode_between.take().unwrap_or_default());
+                } else {
+                    decode_between = Some(step_time);
+                }
+            }
             steps += 1;
             if steps == STEP_LOG_EVERY {
                 let wall = window_start.elapsed();
@@ -94,12 +118,23 @@ impl Scheduler {
                 Ok(Err(error)) => machine.fail_pending(&format!("{error:#}")),
                 Err(join_error) => machine.fail_pending(&format!("step task failed: {join_error}")),
             };
-            route(&mut sinks, events);
-            route(&mut sinks, machine.take_events());
+            deliver(&mut sinks, &mut waiting, &gauge, events);
+            deliver(&mut sinks, &mut waiting, &gauge, machine.take_events());
         }
         self.ingress.close();
         Ok(())
     }
+}
+
+/// [`route`] the events; the first event of a request means its prompt is done, so it no longer waits for prefill in the gauge.
+fn deliver(sinks: &mut Sinks, waiting: &mut HashMap<u64, usize>, gauge: &LoadGauge, events: Vec<SeqEvent>) {
+    for event in &events {
+        let (SeqEvent::Tokens { id, .. } | SeqEvent::Finished { id, .. } | SeqEvent::Failed { id, .. }) = event;
+        if let Some(tokens) = waiting.remove(id) {
+            gauge.settle(tokens);
+        }
+    }
+    route(sinks, events);
 }
 
 /// Send each event to the stream of its request; a terminal event ends the stream.

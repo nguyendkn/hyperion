@@ -16,6 +16,7 @@ pub mod cache;
 pub mod error;
 pub mod inflight;
 pub mod kv;
+pub mod load_gauge;
 pub mod scheduler;
 mod scheduler_plans;
 pub mod simulator;

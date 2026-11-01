@@ -119,6 +119,8 @@ pub struct PlanPath {
     pub identity: crate::kv::BlockHash,
     /// Tokens per prefix-hash block (a multiple of the page size of the pool).
     pub hash_block_tokens: usize,
+    /// Shared with the API: the queued prompt tokens and the recent prefill time per token, behind the 429 on a long expected wait.
+    pub gauge: Arc<crate::load_gauge::LoadGauge>,
 }
 
 /// The sender half handed to the API layer. Stored in `AppState` so the

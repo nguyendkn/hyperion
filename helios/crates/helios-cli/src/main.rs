@@ -72,6 +72,10 @@ struct Cli {
     /// Admission reserves pages for the prompt plus this value.
     #[arg(long, default_value_t = helios_core::api::DEFAULT_MAX_TOKENS)]
     default_max_tokens: u32,
+    /// How long a request may wait for its first token, in seconds. A request whose estimated wait (queued prompt tokens times the recent
+    /// wall time per prefilled token, decode steps between chunks included) already exceeds it is answered 429 at once.
+    #[arg(long, default_value_t = helios_core::api::DEFAULT_FIRST_TOKEN_TIMEOUT.as_secs())]
+    first_token_timeout: u64,
 }
 
 /// Bytes of KV cache one sequence of `tokens` needs: K and V, per layer, per
@@ -117,7 +121,7 @@ const MAX_QUEUE: usize = 64;
 
 /// Reserve, capture and commit the KV pool of a loaded model and describe it to the scheduler. `None` when the backend has no paged KV yet
 /// (`HalError::Unsupported`), so the scheduler keeps the `generate` path; any other failure is an error.
-fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32, max_batch: usize) -> Result<Option<helios_core::PlanPath>> {
+fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedModel, manifest: &hyperion_specification::v1::Manifest, max_seq_len: u32, max_batch: usize, gauge: Arc<helios_core::load_gauge::LoadGauge>) -> Result<Option<helios_core::PlanPath>> {
     use helios_hal::{HalError, KvSpec, MemoryPolicy};
     let reservation = match backend.reserve_kv(model, &KvSpec { max_batch, ..KvSpec::default() }) {
         Ok(reservation) => reservation,
@@ -141,7 +145,7 @@ fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedM
         decode_buckets,
         prefill_steps_per_decode: PREFILL_STEPS_PER_DECODE,
     };
-    Ok(Some(helios_core::PlanPath { pool: Arc::new(pool), step, identity, hash_block_tokens: HASH_BLOCK_TOKENS }))
+    Ok(Some(helios_core::PlanPath { pool: Arc::new(pool), step, identity, hash_block_tokens: HASH_BLOCK_TOKENS, gauge }))
 }
 
 #[tokio::main]
@@ -182,7 +186,8 @@ async fn main() -> Result<()> {
     tracing::info!(status = ?sm.status(), "weights loaded");
     // The rest of the load order (ADR 0002, 0006): reserve the KV addresses, capture the graphs, measure the free memory and map all of it.
     // A backend without a paged KV pool serves through `generate` until it has one.
-    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len, cli.max_batch)
+    let gauge = Arc::new(helios_core::load_gauge::LoadGauge::new());
+    let plan_path = open_kv(backend.as_ref().as_ref(), &loaded, &manifest, max_seq_len, cli.max_batch, gauge.clone())
         .map_err(|e| anyhow!("preparing the KV pool failed: {e:#}"))?;
 
     // 6. Build the ingress channel and spawn the scheduler. The receiver
@@ -270,6 +275,8 @@ async fn main() -> Result<()> {
         ingress_tx: Some(ingress_tx),
         inflight: helios_core::inflight::InflightTracker::new(),
         default_max_tokens: cli.default_max_tokens,
+        first_token_timeout: std::time::Duration::from_secs(cli.first_token_timeout),
+        gauge,
     };
     let inflight = app_state.inflight.clone();
     let app = helios_core::api::router().with_state(app_state);
