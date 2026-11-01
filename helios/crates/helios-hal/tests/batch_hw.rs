@@ -34,8 +34,8 @@ fn open(max_batch: usize, pages: usize) -> (HopperBackend, KvPool) {
     let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
     let backend = HopperBackend::new().expect("an H100 must be present");
     helios_hal::load_package(&backend, &package, &manifest).expect("upload");
-    // The pool also holds a private area for `generate` (a quarter of it at most), so ask for a third more than the pages the scenario addresses.
-    let pool = backend.open_kv(max_batch, (pages * 4 / 3 + 1) * PAGE).expect("the KV pool");
+    // The pool also holds a private area for `generate` (a quarter of it at most), so ask for twice the pages the scenario addresses (the area is a quarter of the pool, and some scenarios run a long `generate`).
+    let pool = backend.open_kv(max_batch, (pages * 2 + 1) * PAGE).expect("the KV pool");
     assert!(pool.info().pages >= pages, "the scheduler's share of the pool holds the pages of the scenario");
     println!("POOL {:?}", pool.info());
     (backend, pool)
