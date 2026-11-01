@@ -34,6 +34,15 @@ compute-sanitizer --tool initcheck --error-exitcode 1 <test-exe> <test-name> --i
 - Run the paged-kernel unit tests (lengths 1, 63, 64, 65, 129) under all three before any end-to-end run; then the same for bucket 8.
 - A graph-captured launch is checked through its direct-launch twin: sanitizer does not step inside a replayed graph.
 - Record the tool, the test name and "0 errors" (or the report) in the ledger row with the tag `[RUN on H100]`.
+- **Repo kernels only**: `bash scripts/pod-sanitize.sh <memcheck|initcheck|racecheck> <test-exe> <test-name>` instruments only the kernels defined in `helios-hal/kernels/*.cu` (`--kernel-name regex:...`), so cuBLAS/cutlass kernels (whose warm-up on uninitialised buffers produced the 100 `initcheck` reports of 2026-11-01) are not instrumented. If a kernel is added, add its name prefix to the regex in the script.
+
+## Package store (optional, `PACKAGE_STORE`)
+
+`PACKAGE_STORE=<http(s) URL accepting GET and PUT>` caches built packages and oracles between sessions: `bash scripts/pod-package-store.sh pull <dir>` at the start (prints `HIT`/`MISS`; a checksum mismatch is an error), `push <dir>` at the end. Unset or `none` does nothing (emptyDir, rebuild). Checked against a local PUT/GET server only (`[RUN on local HTTP server]`); no real store has been used.
+
+## Profiling with nsys
+
+`pod-setup.sh` tries `apt-get install cuda-nsight-systems-12-4` when `nsys` is missing. Per-kernel A/B: `nsys profile -t cuda --stats=true -o /tmp/hyperion-scratch/<name> <test-exe> <test> --ignored`; compare the `cuda_gpu_kern_sum` tables of the two trees.
 
 ## Qwen2.5-7B session (planned; nothing here has run on a GPU yet)
 

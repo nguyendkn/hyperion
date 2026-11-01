@@ -12,6 +12,10 @@ if ! command -v cc > /dev/null || ! command -v git > /dev/null; then
   apt-get update -qq
   apt-get install -y -qq curl git build-essential pkg-config ca-certificates python3-venv > /dev/null
 fi
+# nsys (per-kernel timelines, docs/h100-test-runbook.md): from the CUDA repository the image is configured with; a failure only costs the timeline.
+if ! command -v nsys > /dev/null; then
+  apt-get install -y -qq cuda-nsight-systems-12-4 > /dev/null 2>&1 || echo "WARN: nsys could not be installed (profile with the cuEvent groups instead)"
+fi
 . scripts/pod-lib.sh
 use_cache
 export PATH="$CARGO_HOME/bin:/cache/uv:$PATH"
