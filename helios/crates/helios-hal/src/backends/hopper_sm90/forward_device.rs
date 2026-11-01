@@ -41,7 +41,7 @@ pub enum DecodeMode {
 
 impl HopperBackend {
     /// Greedy or sampled generation entirely on the device; see the module docs. Same contract as
-    /// [`HopperBackend::generate_streaming_host`]. Decode steps are launched one by one.
+    /// the host-sliced path that was removed (2026-11-01, see the ledger). Decode steps are launched one by one.
     ///
     /// Greedy decoding chains the steps on the GPU: the argmax kernel writes each token as the
     /// next step's input, so only 4-byte token ids reach the host and the host runs one step

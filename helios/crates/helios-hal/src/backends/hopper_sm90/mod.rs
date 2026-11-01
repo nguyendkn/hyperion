@@ -22,7 +22,7 @@ mod plan_exec;
 mod session;
 
 pub use backend::HopperBackend;
-pub use forward::{KvCache, Qwen2Dims, UnsupportedModel};
+pub use forward::{Qwen2Dims, UnsupportedModel};
 pub use ops_paged_attention::{LayoutBench, PageLayout};
 pub use prefill_plan::PrefillError;
 mod ops_chunk_attention;

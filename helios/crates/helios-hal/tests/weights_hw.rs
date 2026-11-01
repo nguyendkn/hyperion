@@ -413,55 +413,6 @@ fn attention_matches_the_cpu_reference_for_prefill_and_decode() {
     backend.shutdown().unwrap();
 }
 
-/// The decisive test: the whole model on the H100 against the Hugging Face reference. The
-/// criteria and tolerance are the ones declared in the oracle file BEFORE any Hyperion run
-/// (`scripts/gen-oracle.py`): max abs logit difference within `tolerance_max_abs`, the same
-/// argmax, and at least 4 of the oracle's top-5 in ours.
-///
-/// Needs `HYPERION_ORACLE=/path/qwen2.5-0.5b.json` next to the usual package variable.
-#[test]
-#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
-fn first_forward_matches_the_hf_oracle() {
-
-    let package = package();
-    let oracle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
-    let dims = qwen2_dims(&package);
-
-    let ids: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
-    let want: Vec<f32> = oracle["logits"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
-    let tolerance = oracle["tolerance_max_abs"].as_f64().unwrap() as f32;
-    let want_top5: Vec<usize> = oracle["next_token_top5"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect();
-
-    let (_, _, backend) = loaded_backend();
-    let started = std::time::Instant::now();
-    let got = backend.forward_prefill_logits(&dims, &ids).expect("forward pass");
-    let elapsed = started.elapsed();
-    assert_eq!(got.len(), want.len());
-
-    let max_abs = got.iter().zip(&want).fold(0.0f32, |m, (g, r)| m.max((g - r).abs()));
-    let top = |v: &[f32]| -> Vec<usize> {
-        let mut idx: Vec<usize> = (0..v.len()).collect();
-        idx.sort_by(|&a, &b| v[b].partial_cmp(&v[a]).unwrap());
-        idx.truncate(5);
-        idx
-    };
-    let got_top5 = top(&got);
-    let overlap = want_top5.iter().filter(|t| got_top5.contains(t)).count();
-    println!(
-        "forward {} layers over {} tokens in {:.2?}: max abs logit diff {max_abs:.4} (tolerance {tolerance}), argmax ours {} vs oracle {}, top-5 overlap {overlap}/5, ours {got_top5:?}, oracle {want_top5:?}",
-        dims.layers,
-        ids.len(),
-        elapsed,
-        got_top5[0],
-        want_top5[0],
-    );
-    assert_eq!(got_top5[0], want_top5[0], "argmax must equal the oracle's");
-    assert!(overlap >= 4, "at least 4 of the oracle's top-5 must be in ours");
-    assert!(max_abs <= tolerance, "max abs logit difference {max_abs} exceeds the declared tolerance {tolerance}");
-    backend.shutdown().unwrap();
-}
-
 /// Decode path: greedy generation with the K/V cache against Hugging Face's `generate`. The
 /// criterion was declared in the oracle file before any Hyperion run: the first 8 generated ids
 /// must equal ours; later ones may diverge when two bf16 logits are nearly tied.
@@ -490,62 +441,6 @@ fn greedy_generation_matches_hf_generate() {
         oracle["generated_text"].as_str().unwrap_or(""),
     );
     assert!(prefix >= 8, "the first 8 generated tokens must equal HF's, only {prefix} do");
-    backend.shutdown().unwrap();
-}
-
-/// The device-resident pipeline against the host-sliced reference path (verified against Hugging Face): the prefill logits
-/// agree within a declared bound and a short greedy continuation is token for token the same.
-///
-/// This test used to demand bit-identical prefill logits. That held while both paths ran the same untiled attention kernel in
-/// the same order; chunked prefill (online softmax over 128-key tiles), the cuBLASLt projections and the fused residual and
-/// norm kernels sum in other orders, so since 2026-10-30 the device path is no longer bit-identical to the host path (88% of
-/// the 0.5B logits differ in the last bit or more). Bit-identity is still demanded where it can hold (graph against direct
-/// launches of the same kernels); against the host path the criterion is the bound used for the same comparison elsewhere in
-/// this file, declared before the first run: max absolute logit difference <= 0.5 (`chunked_prefill_matches_the_untiled_reference`).
-#[test]
-#[ignore = "needs an H100, a compiled package and the oracle file (see module docs)"]
-fn device_pipeline_matches_the_host_path_within_the_declared_bound() {
-    use helios_hal::SamplingConfig;
-
-    let package = package();
-    let oracle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
-    let dims = qwen2_dims(&package);
-    let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
-    let want: Vec<u32> = oracle["generated_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
-
-    let (_, _, backend) = loaded_backend();
-    let host = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
-    let device = backend.forward_prefill_logits_device(&dims, &prompt).expect("device path");
-    assert_eq!(host.len(), device.len());
-    let differing = host.iter().zip(&device).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-    let worst = host.iter().zip(&device).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-    let bound = 0.5f32;
-    println!("prefill logits: {differing} of {} differ between the host and the device pipeline; max |difference| {worst:.4} (bound {bound})", host.len());
-    assert!(worst <= bound, "device pipeline differs from the host path by {worst}, more than the declared bound {bound}");
-
-    // Speed and generation equality, device vs host vs Hugging Face.
-    let started = std::time::Instant::now();
-    let mut device_tokens = Vec::new();
-    backend
-        .generate_streaming(&dims, &prompt, want.len(), &[], &SamplingConfig::greedy(), &mut |t| device_tokens.push(t))
-        .expect("device generation");
-    let device_time = started.elapsed();
-    let started = std::time::Instant::now();
-    let host_tokens = backend.generate_greedy_host(&dims, &prompt, want.len(), &[]).expect("host generation");
-    let host_time = started.elapsed();
-    println!(
-        "{} tokens: device {:.2?} ({:.1} ms/token incl. prefill) vs host path {:.2?} ({:.1} ms/token); equal to HF: device {}, host {}",
-        want.len(),
-        device_time,
-        device_time.as_secs_f64() * 1000.0 / want.len() as f64,
-        host_time,
-        host_time.as_secs_f64() * 1000.0 / want.len() as f64,
-        device_tokens == want,
-        host_tokens == want,
-    );
-    assert_eq!(device_tokens, host_tokens, "device and host paths must generate the same tokens");
-    assert_eq!(device_tokens, want, "must equal Hugging Face's greedy continuation");
     backend.shutdown().unwrap();
 }
 
@@ -1116,47 +1011,9 @@ fn paged_chunked_prefill_matches_the_decode_path() {
         let mut trace = Vec::new();
         backend.generate_forced(&dims, &prompt[..len - 1], &[prompt[len - 1], 0], helios_hal::DecodeMode::Direct, &mut trace).expect("decode path");
         let reference = trace.swap_remove(1);
-        if len <= 1000 {
-            let host = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
-            let host_diff = host.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-            println!("INFO prompt {len:>5}: legacy host path vs the decode path: max |logit difference| {host_diff:.4}");
-        }
         let diff = chunked.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
         println!("prompt {len:>5}: max |paged chunked prefill - decode path| logit diff {diff:.4} (bound {bound}); argmax prefill {} decode {}", argmax(&chunked), argmax(&reference));
         assert!(diff <= bound, "prompt {len}: {diff} exceeds the declared bound {bound}");
-    }
-    backend.shutdown().unwrap();
-}
-
-/// W2, second half: is the legacy host path wrong, or is a prompt made of the seed text repeated an ill-conditioned input? (1) The host path's logits for
-/// each real prompt of the compact oracle (up to its untiled limit) are compared with Hugging Face under the declared tolerance, like the device path.
-/// (2) On the repeated-seed prompt of the test above, the host-versus-decode difference is printed at many lengths: a cliff would show as a step at one
-/// length, an ill-conditioned input as a growth with the length.
-#[test]
-#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
-fn legacy_host_path_on_real_prompts_and_on_a_repeated_prompt() {
-    use helios_hal::oracle::{compare_at, CompactOracle};
-    let package = package();
-    let oracle = CompactOracle::from_json(&std::fs::read(std::env::var("HYPERION_COMPACT_ORACLE").expect("set HYPERION_COMPACT_ORACLE")).unwrap()).expect("compact oracle");
-    let dims = qwen2_dims(&package);
-    let (_, _, backend) = loaded_backend();
-    for prompt in oracle.prompts.iter().filter(|p| p.ids.len() <= 8000) {
-        let host = backend.forward_prefill_logits(&dims, &prompt.ids).expect("host path");
-        let device = backend.forward_prefill_logits_device(&dims, &prompt.ids).expect("device path");
-        let record = &prompt.reference[0];
-        let h = compare_at(&host, record, &oracle.tolerance, prompt.bf16_deviation.as_ref().map(|d| d[0].0)).expect("comparison");
-        let d = compare_at(&device, record, &oracle.tolerance, prompt.bf16_deviation.as_ref().map(|d| d[0].0)).expect("comparison");
-        println!("INFO real prompt {:>5} tokens: top-k difference to HF fp32 (tolerance {:.4}): host path {:.4}, device path {:.4}", prompt.ids.len(), oracle.tolerance.max_abs_top_logits, h.max_abs_top_logits, d.max_abs_top_logits);
-    }
-    let seed: Vec<u32> = seed_prompt_ids();
-    for len in [2usize, 8, 16, 32, 64, 96, 127, 128, 129, 160, 256, 512, 1000] {
-        let prompt: Vec<u32> = (0..len).map(|i| seed[i % seed.len()]).collect();
-        let mut trace = Vec::new();
-        backend.generate_forced(&dims, &prompt[..len - 1], &[prompt[len - 1], 0], helios_hal::DecodeMode::Direct, &mut trace).expect("decode path");
-        let reference = trace.swap_remove(1);
-        let host = backend.forward_prefill_logits(&dims, &prompt).expect("host path");
-        let diff = host.iter().zip(&reference).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-        println!("INFO repeated prompt {len:>5}: host path vs decode path max |logit difference| {diff:.4}");
     }
     backend.shutdown().unwrap();
 }
