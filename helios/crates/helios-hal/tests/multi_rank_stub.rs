@@ -228,3 +228,78 @@ fn a_rendezvous_refuses_ranks_that_report_different_library_versions() {
     let agreeing = StubGroup::spawn(3, LONG);
     assert!(agreeing.run_all(LONG, |ctx| ctx.rendezvous("nccl 2.21.5")).iter().all(Result::is_ok));
 }
+
+/// A tiny synthetic model at 1 rank and at 2 ranks on the stub, both from the same weights: an MLP block (gate and up column-split, down row-split with
+/// one all-reduce, the down bias added **once after** the reduce) and a vocab-parallel head (the vocabulary of 10 padded to 12, the logits all-gathered, the
+/// pad masked). The 2-rank logits must equal the 1-rank logits within f32 rounding (the order of the sum over the intermediate dimension differs) and
+/// choose the same greedy token. `[RUN on stub]`: it tests the sharding plan, where the collectives go and the pad, not numerics of a GPU.
+#[test]
+fn a_two_rank_forward_of_a_tiny_model_equals_the_one_rank_forward() {
+    let (hidden, inter, vocab, padded, tp) = (16usize, 16usize, 10usize, 12usize, 2usize);
+    let mut state = 12345u64;
+    let mut next = move || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((state >> 33) as f32 / (1u64 << 31) as f32 - 0.5) * 2.0
+    };
+    let mut matrix = |rows: usize, cols: usize| -> Vec<f32> { (0..rows * cols).map(|_| next() * 0.5).collect() };
+    let (gate, up, down) = (matrix(inter, hidden), matrix(inter, hidden), matrix(hidden, inter));
+    let mut head = matrix(vocab, hidden);
+    head.extend(std::iter::repeat(0.0).take((padded - vocab) * hidden));
+    let bias: Vec<f32> = (0..hidden).map(|i| 0.1 * i as f32 - 0.5).collect();
+    let x: Vec<f32> = (0..hidden).map(|i| ((i * 3) % 7) as f32 * 0.25 - 0.75).collect();
+    let silu = |v: f32| v / (1.0 + (-v).exp());
+
+    // One rank, the whole matrices.
+    let g = matvec(&gate, inter, hidden, &x);
+    let u = matvec(&up, inter, hidden, &x);
+    let act: Vec<f32> = g.iter().zip(&u).map(|(a, b)| silu(*a) * b).collect();
+    let mut h = matvec(&down, hidden, inter, &act);
+    for (v, (b, xi)) in h.iter_mut().zip(bias.iter().zip(&x)) {
+        *v += b + xi; // the bias once, then the residual
+    }
+    let one_rank: Vec<f32> = matvec(&head, padded, hidden, &h).into_iter().take(vocab).collect();
+
+    // Two ranks on the stub.
+    let spec = |name: &str, shape: Vec<usize>, sharding| TensorSpec { name: name.into(), payload: 0, byte_offset: 0, byte_length: 0, dtype: "f32".into(), shape, sharding: Some(sharding) };
+    let tensors = vec![
+        spec("layers.0.mlp.gate_proj.weight", vec![inter, hidden], ShardClass::Column),
+        spec("layers.0.mlp.up_proj.weight", vec![inter, hidden], ShardClass::Column),
+        spec("layers.0.mlp.down_proj.weight", vec![hidden, inter], ShardClass::Row),
+        spec("lm_head.weight", vec![padded, hidden], ShardClass::Column),
+    ];
+    let base = config(tensors.clone(), tp as u32);
+    let (gate_b, up_b, down_b, head_b) = (f32_bytes(&gate), f32_bytes(&up), f32_bytes(&down), f32_bytes(&head));
+    let (x2, bias2) = (x.clone(), bias.clone());
+    let answers = group_run(tp, move |ctx| {
+        let mut c = base.clone();
+        c.deployment.tp_rank = ctx.rank as u32;
+        let take = |spec: &TensorSpec, bytes: &[u8]| -> (Vec<f32>, usize) {
+            let slice: TensorSlice = rank_slice(&c, spec).unwrap().unwrap();
+            (f32s(&extract(bytes, &spec.shape, 4, &slice)), slice.end - slice.start)
+        };
+        let (g_w, rows) = take(&tensors[0], &gate_b);
+        let (u_w, _) = take(&tensors[1], &up_b);
+        let (d_w, width) = take(&tensors[2], &down_b);
+        assert_eq!(rows, width, "the intermediate shard of gate/up is the input shard of down: no collective between them");
+        let g = matvec(&g_w, rows, hidden, &x2);
+        let u = matvec(&u_w, rows, hidden, &x2);
+        let act: Vec<f32> = g.iter().zip(&u).map(|(a, b)| silu(*a) * b).collect();
+        let partial = matvec(&d_w, hidden, width, &act);
+        let mut h = ctx.all_reduce_sum(&partial)?;
+        for (v, (b, xi)) in h.iter_mut().zip(bias2.iter().zip(&x2)) {
+            *v += b + xi; // after the reduce, once (adding it before would count it tp times)
+        }
+        let (head_w, head_rows) = take(&tensors[3], &head_b);
+        let local = matvec(&head_w, head_rows, hidden, &h);
+        let gathered = ctx.all_gather(&local)?;
+        Ok(gathered.into_iter().take(vocab).collect::<Vec<f32>>())
+    });
+    let argmax = |v: &[f32]| v.iter().enumerate().fold((0, f32::NEG_INFINITY), |best, (i, &x)| if x > best.1 { (i, x) } else { best }).0;
+    for (rank, logits) in answers.iter().enumerate() {
+        assert_eq!(logits.len(), vocab, "the pad is dropped");
+        let worst = logits.iter().zip(&one_rank).map(|(a, b)| (a - b).abs() / b.abs().max(1.0)).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "rank {rank}: relative difference {worst} against the one-rank logits");
+        assert_eq!(argmax(logits), argmax(&one_rank), "rank {rank} picks the same greedy token");
+    }
+    assert_eq!(answers[0], answers[1], "both ranks hold the same gathered logits, bit for bit");
+}
