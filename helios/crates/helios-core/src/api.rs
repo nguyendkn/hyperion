@@ -320,6 +320,9 @@ async fn serve_chat(
             return Err(ApiError::Scheduler(SchedulerFault::Overloaded));
         }
     }
+    if let Some(wait) = app.gauge.estimated_first_token(ids.len()) {
+        tracing::info!(estimated_wait_s = wait.as_secs_f64(), queued_prompt_tokens = app.gauge.queued_tokens(), prompt_tokens = ids.len(), "request admitted");
+    }
     app.gauge.add(ids.len());
     match tokio::time::timeout(INGRESS_SEND_TIMEOUT, ingress_tx.send(request)).await {
         Ok(Ok(())) => { /* enqueued */ }
