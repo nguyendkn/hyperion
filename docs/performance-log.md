@@ -401,3 +401,18 @@ Within budget on the 7B (0.5B: over, see above). Exact match with the host refer
 Sampled loadgen on the 7B (temperature 0.8, top_p 0.95, top_k 50, default busy 512; sampled sequences run all 256 tokens, which greedy ones often do not, so the figures are not comparable with the greedy tables): 512 in: c = 1 143 tokens/s, ITL p50 6.83 ms; c = 8 716 tokens/s, ITL p90 12.1 ms, TTFT p50 43 ms; c = 32 1847 tokens/s, ITL p90 19.4 ms, TTFT p50 82 ms. 8192 in: c = 1 92 tokens/s; c = 8 144 tokens/s, ITL p90 36.5 ms, TTFT p50 2134 ms; c = 32 182 tokens/s, ITL p90 42.7 ms, TTFT p50 16.5 s.
 
 **Sampling budget restated (2026-11-04, source: the owner's autonomous-run prompt, authorization A3).** For sampling only, the percentage budget (+3% bucket 1, +5% bucket 32) is replaced by an absolute one: the bounded top-k/top-p path (temperature 0.8, top_p 0.95, top_k 50) costs at most 150 us per step at every bucket 1-32 (measured 2026-11-01: 110-130 us). The full-vocabulary path and the wide path (full per-row sort, used when a nucleus needs more than the 1024 best tokens) have no budget but must be exact; their cost is reported. Greedy decode keeps the +1.5% / +3% (16000) budget against the numbers above.
+
+**2026-11-04, exact top-k/top-p sampler (v2) on a 2xH100 pod, GPU 0, tree 49fd8ba + rebuilt fatbin (nvcc 12.4.131), release, cuEvent 128 steps x 10 windows, SM clock 1980 MHz.** Source of the budget: owner prompt of this run, A3 (sampling: <= 150 us per step on the bounded path at every bucket) and A4 (greedy within +1.5%, +3% at 16000, of the numbers above).
+
+Greedy decode, 0.5B, graph, ms/token (median of 10 windows; previous in brackets): context 5 1.339 (1.343), 1024 1.368 (1.371), 4096 1.439 (1.441), 8000 1.523 (1.528), 16000 1.774 (1.778): -0.2% to -0.3%, A4 met. 7B per bucket 1/2/4/8/16/32 at context 512: 6.758 / 6.782 / 6.826 / 7.264 / 7.795 / 8.863 ms (previous 6.763 / 6.780 / 6.826 / 7.263 / 7.793 / 8.855): within +-0.1%, A4 met. 7B at the five contexts was not re-measured (the decode kernels did not change; only the sampler and the argmax signature did).
+
+Extra GPU time of sampling against greedy at context 512, microseconds per step (bucket 1 / 2 / 4 / 8 / 16 / 32):
+
+| path | 0.5B | 7B |
+|---|---|---|
+| bounded: temperature 0.8, top_p 0.95, top_k 50 (**budget 150**) | 74 / 69 / 70 / 73 / 71 / 87 | 76 / 78 / 79 / 81 / 83 / 91 |
+| top_p 0.95 only (no top_k) | 120 / 111 / 114 / 117 / 162 / 424 | 108 / 265 / 719 / 922 / 2081 / 3188 |
+| whole vocabulary, no truncation | 35 / 27 / 25 / 32 / 35 / 51 | 39 / 40 / 37 / 46 / 50 / 57 |
+| wide path (temperature 60, top_p 0.9: every row needs the full sort) | 6534 / 6562 / 6569 / 6582 / 6656 / 7186 | 6572 / 6586 / 6596 / 6611 / 6714 / 7534 |
+
+The bounded path meets the 150 us budget (was 110-130 us). The wide path (a one-block radix sort in 11 passes plus a serial scan) is exact but costs about 6.5 ms a step whenever one row needs it, because the step waits for the slowest row; with the sort 7B top_p-only at bucket 32 averages 3.2 ms: on the benchmark prompts (repeated seed text, flat next-token distributions) many nucleus rows exceed 1024 tokens. On real chat traffic the share of wide rows is not measured. A histogram/radix select that avoids the sort is the lever (owner decision).
