@@ -217,7 +217,7 @@ fn the_draws_of_a_row_follow_the_distribution_the_sampler_defines() {
     // exact-match test covers the flat modes; here the wide set (top_k 2000, top_k 1025 with a nucleus, a wide nucleus) is tested with distributions that
     // still have bins.
     let mut seqs = sequences(rows, |i| 24 + 5 * i, false);
-    for (i, (temperature, top_p, top_k)) in [(2.5f32, 0.995f32, 0u32), (1.6, 1.0, 2000), (1.2, 0.97, 1025), (1.0, 1.0, u32::MAX)].into_iter().enumerate() {
+    for (i, (temperature, top_p, top_k)) in [(1.0f32, 0.9999f32, 0u32), (1.6, 1.0, 2000), (1.2, 0.97, 1025), (1.0, 1.0, u32::MAX)].into_iter().enumerate() {
         seqs[4 + i].sampling = SamplingInit { temperature, top_p, top_k, repetition_penalty: 1.0, seed: 2000 + i as u64 };
     }
     let mut d = Driver { backend: &backend, pool: &pool, step: 0 };

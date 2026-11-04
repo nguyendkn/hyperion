@@ -437,7 +437,7 @@ fn a_serving_pool_gives_every_page_to_the_scheduler_and_refuses_generate() {
     assert!(matches!(error.downcast_ref::<helios_hal::HalError>(), Some(helios_hal::HalError::Unsupported(_))), "a typed refusal, got {error:#}");
     // The scheduler still serves from the full pool: a prefill into the last page of the pool works.
     let last = serving as u32 - 1;
-    let prompt = seed_prompt()[..40].to_vec();
+    let prompt = seed_prompt();
     let plan = StepPlan {
         step: 1,
         capacity: Capacity::Prefill { rows: chunk_capacity(prompt.len()) },

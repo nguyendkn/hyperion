@@ -100,8 +100,10 @@ impl HopperBackend {
             Ok(())
         })();
 
-        // Pass 2: launch.
+        // Pass 2: launch. The uploads of pass 1 are `cuMemcpyHtoD` copies from pageable memory: they are not ordered with the kernel stream (a non-blocking
+        // one), so the DMA of an input can still be running when the kernel starts. Wait for them first (without it the inputs were sometimes read half-written).
         let result = setup.and_then(|()| {
+            dev.synchronize()?;
             let mut params: Vec<*mut c_void> = order
                 .iter()
                 .map(|&(is_ptr, i)| {

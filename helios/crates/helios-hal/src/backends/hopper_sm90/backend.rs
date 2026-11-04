@@ -199,6 +199,7 @@ impl HopperBackend {
         };
         let result = (|| -> Result<Vec<f32>> {
             dev.htod(x_ptr, &x_bytes)?;
+            dev.synchronize()?; // the copy from pageable memory is not ordered with the kernel stream
             cublas.as_ref().expect("created above").linear_bf16_f32(w_ptr, x_ptr, y_ptr, tokens, out_features, in_features)?;
             dev.synchronize()?;
             let mut raw = vec![0u8; y_len];
@@ -265,6 +266,7 @@ impl HopperBackend {
         };
         let result = (|| -> Result<Vec<u16>> {
             dev.htod(x_ptr, &bytes)?;
+            dev.synchronize()?; // the copy from pageable memory is not ordered with the kernel stream
             let (mut a, mut b, mut c) = (x_ptr, w_ptr, y_ptr);
             let (mut hidden_arg, mut eps_arg) = (i32::try_from(hidden)?, eps);
             let mut params: [*mut c_void; 5] = [
