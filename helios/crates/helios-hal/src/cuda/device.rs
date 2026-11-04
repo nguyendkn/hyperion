@@ -50,6 +50,11 @@ impl CudaDevice {
     /// Probe the first available device, create a primary context, read its
     /// properties, and stand up a non-blocking capture stream.
     pub fn probe() -> Result<Self> {
+        Self::probe_ordinal(0)
+    }
+
+    /// [`CudaDevice::probe`] for the device with this ordinal (a rank of a multi-GPU node binds its own).
+    pub fn probe_ordinal(ordinal: i32) -> Result<Self> {
         // The driver library is loaded here, at the first probe: a host without one gets a typed
         // `LoadError` (downcast the error to tell it from a CUDA failure), never a link failure.
         load_driver()?;
@@ -58,12 +63,12 @@ impl CudaDevice {
 
             let mut count: c_int = 0;
             eval_cuda("cuDeviceGetCount", cuDeviceGetCount(&mut count))?;
-            if count < 1 {
-                return Err(anyhow::anyhow!("no CUDA devices present"));
+            if ordinal < 0 || count <= ordinal {
+                return Err(anyhow::anyhow!("CUDA device {ordinal} is not present ({count} device(s))"));
             }
 
             let mut device: CUdevice = 0;
-            eval_cuda("cuDeviceGet", cuDeviceGet(&mut device, 0))?;
+            eval_cuda("cuDeviceGet", cuDeviceGet(&mut device, ordinal))?;
 
             let mut cap_major: c_int = 0;
             let mut cap_minor: c_int = 0;
