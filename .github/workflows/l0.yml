@@ -38,13 +38,20 @@ jobs:
             target
           key: l0-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
 
+      # Full output of every test run is kept as an artifact (test-logs), pass or fail, so a flaky failure can be read afterwards.
       - name: Rust tests (stub backend)
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          mkdir -p test-logs
+          cargo test --workspace 2>&1 | tee test-logs/cargo-test-workspace.log; test "${PIPESTATUS[0]}" -eq 0
 
       # The CUDA backends build and link without the toolkit (the driver and cuBLAS are loaded at
       # run time), and their CUDA-free tests run; with no driver the factory falls back to the stub.
       - name: Hopper backend, CUDA-free tests
-        run: cargo test -p helios-hal --features sm90
+        shell: bash
+        run: |
+          mkdir -p test-logs
+          cargo test -p helios-hal --features sm90 2>&1 | tee test-logs/cargo-test-sm90.log; test "${PIPESTATUS[0]}" -eq 0
 
       - name: Blackwell backend, CUDA-free tests
         run: cargo test -p helios-hal --features sm120
@@ -67,6 +74,16 @@ jobs:
           python-version: "3.12"
 
       - name: Ignition tests
+        shell: bash
         run: |
+          mkdir -p test-logs
           python -m pip install -e "ignition[test]"
-          python -m pytest ignition/tests
+          python -m pytest ignition/tests -rA --junitxml=test-logs/pytest-junit.xml 2>&1 | tee test-logs/pytest.log; test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Keep the test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: test-logs
+          if-no-files-found: ignore
