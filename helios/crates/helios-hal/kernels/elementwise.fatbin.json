@@ -1,7 +1,7 @@
 {
   "source": "elementwise.cu",
-  "source_sha256": "4bf0eaaa6aa7b4741970e1aa6792484acdc278818f472d36131e5a6d73312483",
-  "sass_sha256": "f6905a521af3e6d7df2ce6a4d8c6fa816a9faf8acc2639e56ae186e183033cd3",
+  "source_sha256": "1f96407b910324d0dc2152628e2a95a9621f3b655163525200b00a5088aaa66e",
+  "sass_sha256": "c50631c8da422a1464ddc5c098a0348510bd2cecd8555f170c0dc034dd5f47a7",
   "nvcc": "release 12.4, V12.4.131",
   "flags": "-fatbin -O3 -gencode arch=compute_80,code=compute_80 -gencode arch=compute_90,code=sm_90"
 }
