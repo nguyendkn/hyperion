@@ -43,6 +43,8 @@ const MAX_SPLIT_PAGES: usize = 96;
 pub(super) const RING: usize = 64;
 /// Table deltas a step may carry beyond one full table (a decode step adds at most one page per row).
 const DELTA_SLACK: usize = 64;
+/// Vocabulary-sized 4-byte arrays per row in the sampler scratch: `z`, and the keys and indices of the two buffers of the full sort (`sample_rows_bf16`).
+const SAMPLE_WS_ROWS: usize = 5;
 /// Words of the per-slot sampling parameters the sampler kernel reads.
 const SAMPLE_PARAM_WORDS: usize = 8;
 
@@ -179,7 +181,7 @@ pub(super) struct Buffers {
     sample_params: u64,
     /// `[max_batch + 1][seen_words]` u32: per slot a bitmap of the tokens it generated (the repetition penalty's history).
     seen: u64,
-    /// `[max_batch][vocab]` f32: scratch of the sampler (the logits after penalty and temperature).
+    /// `[max_batch][SAMPLE_WS_ROWS][vocab]` 4-byte words: scratch of the sampler (the logits after penalty and temperature, then the buffers of the full sort).
     sample_ws: u64,
     /// `[max_batch][stride]` i32: the page table of every slot (NO_PAGE = -1).
     pub(super) tables: u64,
@@ -206,7 +208,7 @@ pub(super) fn session_bytes(d: &Qwen2Dims, splits: usize, chunk: usize, max_batc
     let stride = max_seq_len.div_ceil(PAGE_TOKENS);
     let tables = (max_batch + 2) * stride * 4 + (stride + DELTA_SLACK) * 8; // one table per slot, the slot of `generate`, the staging table
     let rope = max_seq_len * 2 * d.head_dim * bf;
-    let sampler = (max_batch + 1) * (SAMPLE_PARAM_WORDS * 4 + seen_words(d.vocab) * 4) + max_batch * d.vocab * 4;
+    let sampler = (max_batch + 1) * (SAMPLE_PARAM_WORDS * 4 + seen_words(d.vocab) * 4) + max_batch * d.vocab * 4 * SAMPLE_WS_ROWS;
     rows * per_row + decode + tables + rope + sampler + CUBLAS_WORKSPACE_BYTES + 4
 }
 
@@ -348,7 +350,7 @@ impl Session {
             tables: alloc(dev, (max_batch + 1) * stride * 4)?,
             sample_params: alloc(dev, (max_batch + 1) * SAMPLE_PARAM_WORDS * 4)?,
             seen: alloc(dev, (max_batch + 1) * seen_words(d.vocab) * 4)?,
-            sample_ws: alloc(dev, max_batch * d.vocab * 4)?,
+            sample_ws: alloc(dev, max_batch * d.vocab * 4 * SAMPLE_WS_ROWS)?,
             stage: alloc(dev, stride * 4)?,
             deltas: alloc(dev, (stride + DELTA_SLACK) * 8)?,
         };

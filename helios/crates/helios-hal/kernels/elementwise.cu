@@ -995,12 +995,13 @@ extern "C" __global__ void argmax_rows_bf16(const float* __restrict__ logits, in
     }
 }
 
-// ---- Device sampler v1 (H4). The algorithm, its order of operations and every constant are those of src/sampler_reference.rs: the host reference must
+// ---- Device sampler v2 (H4, exact top-k/top-p). The algorithm, its order of operations and every constant are those of src/sampler_reference.rs: the host reference must
 // choose exactly the token this kernel chooses. Only IEEE-exact operations (__fmul_rn, __fadd_rn, __fsub_rn, __fdiv_rn, __fmaf_rn, rintf) are used for the
 // values that decide a draw, so the compiler cannot contract or reorder them.
 #define SAMPLE_BLOCK 1024
 #define SAMPLE_PARAM_WORDS 8
 #define SAMPLE_MAX_CANDIDATES 1024
+#define SAMPLE_SEG 1024
 
 __device__ __forceinline__ float det_exp(float x) {
     if (x < -87.0f) return 0.0f;
@@ -1047,6 +1048,157 @@ __device__ __forceinline__ unsigned int philox_word0(unsigned int c0, unsigned i
     return c0;
 }
 
+// The wide path of the sampler: a full per-row sort of the vocabulary, for the rows the bounded path (the 1024 best tokens in shared memory) cannot prove
+// exact: a top_k above 1024 that is not the vocabulary, and a nucleus wider than 1024 tokens. It computes steps 3 to 7 of src/sampler_reference.rs literally:
+// the sorted order, the weights, the segmented prefix sums (segments of 1024 sorted tokens, sequential inside a segment and over the segment totals) and the
+// threshold top_p * T with T the chunk-interleaved total of the weights of the set. `z` is the row of the scratch (the adjusted logits, followed by four more
+// vocabulary-sized arrays of 4-byte words). Every thread of the block takes part; the returned token is valid in thread 0.
+__device__ int sample_wide(float* z, int n, int kk, float top_p, float u, float vmax, float* seg_total, float* seg_base) {
+    __shared__ unsigned int cnt[8][SAMPLE_BLOCK];
+    __shared__ unsigned int digit_total[8];
+    __shared__ unsigned int digit_base[8];
+    __shared__ float shared_total;
+    const int t = threadIdx.x;
+    unsigned int* ka = (unsigned int*)(z + n);
+    unsigned int* ia = ka + n;
+    unsigned int* kb = ia + n;
+    unsigned int* ib = kb + n;
+    // Ascending sort of the inverted order-preserving key is descending by value; the sort is stable and the input is in index order, so ties keep the lower index first.
+    for (int i = t; i < n; i += SAMPLE_BLOCK) {
+        ka[i] = ~sample_key(z[i]);
+        ia[i] = (unsigned int)i;
+    }
+    __syncthreads();
+    const int m = (n + SAMPLE_BLOCK - 1) / SAMPLE_BLOCK;  // thread t owns the contiguous tokens [lo, hi)
+    const int lo = min(t * m, n), hi = min(lo + m, n);
+    unsigned int *sk = ka, *si = ia, *dk = kb, *di = ib;
+    for (int pass = 0; pass < 11; pass++) {  // 3 bits per pass, 33 bits cover the 32-bit key
+        const int shift = 3 * pass;
+        for (int d = 0; d < 8; d++) cnt[d][t] = 0u;
+        for (int i = lo; i < hi; i++) cnt[(sk[i] >> shift) & 7u][t] += 1u;
+        __syncthreads();
+        if (t < 8) {
+            unsigned int run = 0u;
+            for (int tt = 0; tt < SAMPLE_BLOCK; tt++) {
+                const unsigned int c = cnt[t][tt];
+                cnt[t][tt] = run;
+                run += c;
+            }
+            digit_total[t] = run;
+        }
+        __syncthreads();
+        if (t == 0) {
+            unsigned int run = 0u;
+            for (int d = 0; d < 8; d++) {
+                digit_base[d] = run;
+                run += digit_total[d];
+            }
+        }
+        __syncthreads();
+        for (int i = lo; i < hi; i++) {
+            const unsigned int key = sk[i];
+            const unsigned int d = (key >> shift) & 7u;
+            const unsigned int pos = digit_base[d] + cnt[d][t];
+            cnt[d][t] += 1u;
+            dk[pos] = key;
+            di[pos] = si[i];
+        }
+        __syncthreads();
+        unsigned int* tmp = sk;
+        sk = dk;
+        dk = tmp;
+        tmp = si;
+        si = di;
+        di = tmp;
+    }
+    // si[j] is the token of sorted rank j; dk and di (the other buffers) are free: the weights by rank and the weights by token.
+    float* wj = (float*)di;
+    float* dense = (float*)dk;
+    const int nseg = (kk + SAMPLE_SEG - 1) / SAMPLE_SEG;
+    if (t < nseg) {
+        float local = 0.0f;
+        const int s0 = t * SAMPLE_SEG, s1 = min(s0 + SAMPLE_SEG, kk);
+        for (int j = s0; j < s1; j++) {
+            const float w = det_exp(__fsub_rn(z[si[j]], vmax));
+            wj[j] = w;
+            local = __fadd_rn(local, w);
+        }
+        seg_total[t] = local;
+    }
+    __syncthreads();
+    if (t == 0) {
+        float base = 0.0f;
+        for (int g = 0; g < nseg; g++) {
+            seg_base[g] = base;
+            base = __fadd_rn(base, seg_total[g]);
+        }
+        seg_base[nseg] = base;
+    }
+    if (top_p < 1.0f) {
+        // T: the chunk-interleaved total of the weights by token (0 for the tokens outside the set), the sum of step 8 of the reference.
+        float* chunk = (float*)&cnt[0][0];  // the histograms are no longer needed
+        for (int i = t; i < n; i += SAMPLE_BLOCK) dense[i] = 0.0f;
+        __syncthreads();
+        for (int j = t; j < kk; j += SAMPLE_BLOCK) dense[si[j]] = wj[j];
+        __syncthreads();
+        float sum = 0.0f;
+        for (int i = t; i < n; i += SAMPLE_BLOCK) sum = __fadd_rn(sum, dense[i]);
+        chunk[t] = sum;
+        __syncthreads();
+        if (t == 0) {
+            float run = 0.0f;
+            for (int c = 0; c < SAMPLE_BLOCK; c++) run = __fadd_rn(run, chunk[c]);
+            shared_total = run;
+        }
+    }
+    __syncthreads();
+    int token = 0;
+    if (t == 0) {
+        int keep = kk;
+        if (top_p < 1.0f) {
+            const float limit = __fmul_rn(top_p, shared_total);
+            for (int g = 0; g < nseg; g++) {
+                if (seg_base[g + 1] >= limit) {
+                    float run = 0.0f;
+                    const int s0 = g * SAMPLE_SEG, s1 = min(s0 + SAMPLE_SEG, kk);
+                    keep = s1;
+                    for (int j = s0; j < s1; j++) {
+                        run = __fadd_rn(run, wj[j]);
+                        if (__fadd_rn(seg_base[g], run) >= limit) {
+                            keep = j + 1;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        const int gk = (keep - 1) / SAMPLE_SEG;
+        float run = 0.0f;
+        for (int j = gk * SAMPLE_SEG; j < keep; j++) run = __fadd_rn(run, wj[j]);
+        const float h_keep = __fadd_rn(seg_base[gk], run);
+        const float target = __fmul_rn(u, h_keep);
+        int pick = keep - 1;
+        for (int g = 0; g <= gk; g++) {
+            const float last = g < gk ? seg_base[g + 1] : h_keep;
+            if (last > target) {
+                float r2 = 0.0f;
+                const int s0 = g * SAMPLE_SEG, s1 = min(s0 + SAMPLE_SEG, keep);
+                for (int j = s0; j < s1; j++) {
+                    r2 = __fadd_rn(r2, wj[j]);
+                    if (__fadd_rn(seg_base[g], r2) > target) {
+                        pick = j;
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        token = (int)si[pick];
+    }
+    return token;
+}
+
 // One block of 1024 threads per row. A row whose slot has temperature 0 is left to argmax_rows_bf16; this kernel runs before it, so positions[r] is still
 // the position the token is sampled at. Writes the token to slot_token and the row ring, advances the slot draw counter and marks the token as seen.
 // params: per slot 8 words: temperature, top_p, top_k, repetition_penalty (floats as bits), seed low, seed high, draw counter, unused.
@@ -1058,6 +1210,8 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
     __shared__ int shared_idx[SAMPLE_MAX_CANDIDATES];
     __shared__ int shared_count;
     __shared__ int shared_pick;
+    __shared__ int shared_wide;
+    __shared__ float shared_total;
     const int r = blockIdx.x;
     const int s = slots[r];
     if (s < 0) return;
@@ -1070,14 +1224,17 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
     const unsigned int counter = p[6];
     const int t = threadIdx.x;
     const float* in = logits + (size_t)r * n;
-    float* z = ws + (size_t)r * n;
+    float* z = ws + (size_t)r * n * 5;
     const unsigned int* seen_row = seen + (size_t)s * seen_words;
 
     // 1-2. penalty and temperature into the scratch row; the maximum; in mode B also the histogram of the top byte of the keys (first radix pass).
-    const bool mode_a = top_k == 0 && top_p >= 1.0f;
+    // kk tokens are in the set; the whole vocabulary with no nucleus is mode A; a set wider than 1024 that is not the vocabulary goes straight to the wide path.
+    const int kk = top_k == 0 ? n : (int)min(top_k, (unsigned int)n);
+    const bool mode_a = kk == n && top_p >= 1.0f;
+    const bool needs_select = !mode_a && !(kk > SAMPLE_MAX_CANDIDATES && kk < n);
     __shared__ unsigned int hist[256];
     __shared__ unsigned int sel_prefix, sel_remaining, sel_equal;
-    if (!mode_a) {
+    if (needs_select) {
         if (t < 256) hist[t] = 0u;
         __syncthreads();
     }
@@ -1088,7 +1245,7 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
         v = __fdiv_rn(v, temperature);
         z[i] = v;
         if (v > local_max) local_max = v;
-        if (!mode_a) atomicAdd(&hist[sample_key(v) >> 24], 1u);
+        if (needs_select) atomicAdd(&hist[sample_key(v) >> 24], 1u);
     }
     shared_f[t] = local_max;
     __syncthreads();
@@ -1144,11 +1301,27 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
             }
         }
     } else {
+        if (t == 0) shared_wide = needs_select ? 0 : 1;
+        __syncthreads();
+        if (needs_select) {
         // Mode B: the K best tokens (value descending, index ascending on ties): a radix select of the K-th largest key (four passes of a byte each, the
         // first fused into pass 1), the keys above it, and the lowest-index keys equal to it to make K; then sorted. The order the candidates are stored in
         // before the sort does not matter: the sort orders them by (value, index), which is unique.
-        int k = top_k == 0 ? SAMPLE_MAX_CANDIDATES : (int)min(top_k, (unsigned int)SAMPLE_MAX_CANDIDATES);
-        k = min(k, n);
+        // kk above 1024 only reaches here as the whole vocabulary with a nucleus: the 1024 best are tried, and the wide path decides if they are not enough.
+        const int k = min(kk, SAMPLE_MAX_CANDIDATES);
+        if (kk > SAMPLE_MAX_CANDIDATES) {
+            // T of the whole vocabulary (the chunk-interleaved total of step 8), for the nucleus threshold.
+            float tsum = 0.0f;
+            for (int i = t; i < n; i += SAMPLE_BLOCK) tsum = __fadd_rn(tsum, det_exp(__fsub_rn(z[i], vmax)));
+            shared_f[t] = tsum;
+            __syncthreads();
+            if (t == 0) {
+                float run = 0.0f;
+                for (int c = 0; c < SAMPLE_BLOCK; c++) run = __fadd_rn(run, shared_f[c]);
+                shared_total = run;
+            }
+            __syncthreads();
+        }
         if (t == 0) {
             sel_prefix = 0u;
             sel_remaining = (unsigned int)k;
@@ -1247,25 +1420,36 @@ extern "C" __global__ void sample_rows_bf16(const float* __restrict__ logits, fl
                 shared_f[j] = run;
             }
             int keep = k;
+            bool wide = false;
             if (top_p < 1.0f) {
-                const float limit = __fmul_rn(top_p, shared_f[k - 1]);
+                const float limit = kk <= SAMPLE_MAX_CANDIDATES ? __fmul_rn(top_p, shared_f[k - 1]) : __fmul_rn(top_p, shared_total);
+                bool found = false;
                 for (int j = 0; j < k; j++) {
                     if (shared_f[j] >= limit) {
                         keep = j + 1;
+                        found = true;
                         break;
                     }
                 }
+                wide = !found && kk > SAMPLE_MAX_CANDIDATES;
             }
-            const float target = __fmul_rn(u, shared_f[keep - 1]);
-            int pick = keep - 1;
-            for (int j = 0; j < keep; j++) {
-                if (shared_f[j] > target) {
-                    pick = j;
-                    break;
+            if (wide) {
+                shared_wide = 1;
+            } else {
+                const float target = __fmul_rn(u, shared_f[keep - 1]);
+                int pick = keep - 1;
+                for (int j = 0; j < keep; j++) {
+                    if (shared_f[j] > target) {
+                        pick = j;
+                        break;
+                    }
                 }
+                token = shared_idx[pick];
             }
-            token = shared_idx[pick];
         }
+        }
+        __syncthreads();
+        if (shared_wide) token = sample_wide(z, n, kk, top_p, u, vmax, shared_f, shared_key);
     }
     if (t == 0) {
         slot_token[s] = (unsigned int)token;

@@ -1,4 +1,4 @@
-//! Hardware tests (H100) of the device sampler (sampler v1, `sampler_reference.rs`), driven through `submit_step` the way a scheduler would.
+//! Hardware tests (H100) of the device sampler (sampler v2, exact for every top_k and top_p, `sampler_reference.rs`), driven through `submit_step` the way a scheduler would.
 //!
 //! * **Exact match** (declared before the first run: any differing token fails): the logits a step produced are captured by repeating the step
 //!   teacher-forced with the logits asked for, and the token the device drew must equal the host reference's on those logits with the same seed and
@@ -6,8 +6,8 @@
 //! * **Distribution** (significance level 0.001 per row, declared before the first run): one step is repeated with the draw counter advancing, so the
 //!   logits are fixed and the draws differ; the counts of a row must fit the distribution the sampler defines (chi-square, bins with an expected
 //!   count of at least 5, the rest pooled).
-//! * **Overhead**: the GPU time of a decode step at each bucket with every slot greedy and with every slot sampling; budget (A6) at most +3% at bucket
-//!   1 and +5% at bucket 32 for temperature 0.8, top_p 0.95, top_k 50.
+//! * **Overhead**: the GPU time of a decode step at each bucket with every slot greedy and with every slot sampling; budget (owner, 2026-11-04, in absolute
+//!   time) at most 150 microseconds per step at every bucket for temperature 0.8, top_p 0.95, top_k 50; the other paths are reported.
 //!
 //! ```text
 //! HYPERION_WEIGHTS_PACKAGE=/path/model.hyperion HYPERION_COMPACT_ORACLE=/path/<id>.compact.json \
@@ -46,9 +46,13 @@ fn open(max_batch: usize, pages: usize) -> (HopperBackend, KvPool) {
     (backend, pool)
 }
 
-/// The sampling of sequence `i`: the four modes in turn, a repetition penalty on the odd ones, a seed of its own.
+/// The sampling of sequence `i`: ten modes in turn, a repetition penalty on the odd ones, a seed of its own. Modes 0-3 are the bounded path (the whole
+/// vocabulary, top-k, top-p); modes 4-6 and 8 force the full per-row sort (a nucleus over a flat distribution wider than 1024 tokens, a top_k above 1024
+/// that is not the vocabulary); mode 7 sits on the boundary (top_k 1024); modes 8 and 9 use a top_k larger than the vocabulary.
+const MODES: usize = 10;
 fn sampling_of(i: usize, penalties: bool) -> SamplingInit {
-    let (temperature, top_p, top_k) = [(1.0, 1.0, 0), (0.8, 0.95, 50), (0.7, 1.0, 40), (1.3, 0.9, 0)][i % 4];
+    let (temperature, top_p, top_k) =
+        [(1.0, 1.0, 0), (0.8, 0.95, 50), (0.7, 1.0, 40), (1.3, 0.9, 0), (60.0, 0.9, 0), (1.0, 1.0, 2000), (1.0, 0.95, 1025), (200.0, 0.5, 1024), (60.0, 0.95, u32::MAX), (1.0, 1.0, u32::MAX)][i % MODES];
     SamplingInit { temperature, top_p, top_k, repetition_penalty: if penalties && i % 2 == 1 { 1.1 } else { 1.0 }, seed: 1000 + i as u64 }
 }
 
@@ -168,14 +172,14 @@ fn the_device_draws_exactly_the_tokens_of_the_host_reference_in_every_bucket() {
     backend.shutdown().unwrap();
 }
 
-/// The probabilities sampler v1 assigns, in f64.
+/// The probabilities sampler v2 assigns, in f64.
 fn expected(logits: &[f32], s: &SamplingInit) -> Vec<(u32, f64)> {
     let z: Vec<f64> = logits.iter().map(|&v| f64::from(v) / f64::from(s.temperature)).collect();
     let mut order: Vec<usize> = (0..z.len()).collect();
     let mut keep = z.len();
     if s.top_k != 0 || s.top_p < 1.0 {
         order.sort_by(|&a, &b| z[b].partial_cmp(&z[a]).unwrap().then(a.cmp(&b)));
-        keep = (if s.top_k == 0 { 1024 } else { (s.top_k as usize).min(1024) }).min(z.len());
+        keep = if s.top_k == 0 { z.len() } else { (s.top_k as usize).min(z.len()) };
         order.truncate(keep);
     }
     let max = order.iter().map(|&i| z[i]).fold(f64::NEG_INFINITY, f64::max);
@@ -209,7 +213,13 @@ fn the_draws_of_a_row_follow_the_distribution_the_sampler_defines() {
     let draws = 4000usize;
     let rows = 8usize;
     let (backend, pool) = open(8, 8 * PAGES_PER_SEQ);
-    let seqs = sequences(rows, |i| 24 + 5 * i, false);
+    // Rows 4-7 are modes 4, 5, 6, 9 of `sampling_of` replaced by moderate temperatures: a flat row cannot fill bins of expected count 5 in 4000 draws, the
+    // exact-match test covers the flat modes; here the wide set (top_k 2000, top_k 1025 with a nucleus, a wide nucleus) is tested with distributions that
+    // still have bins.
+    let mut seqs = sequences(rows, |i| 24 + 5 * i, false);
+    for (i, (temperature, top_p, top_k)) in [(2.5f32, 0.995f32, 0u32), (1.6, 1.0, 2000), (1.2, 0.97, 1025), (1.0, 1.0, u32::MAX)].into_iter().enumerate() {
+        seqs[4 + i].sampling = SamplingInit { temperature, top_p, top_k, repetition_penalty: 1.0, seed: 2000 + i as u64 };
+    }
     let mut d = Driver { backend: &backend, pool: &pool, step: 0 };
     for s in &seqs {
         d.prefill(s, Want::Nothing);
@@ -273,23 +283,19 @@ fn sampling_costs_at_most_the_declared_share_of_a_decode_step() {
         median_p10_p90(backend.time_decode_bucket(&rows, bucket, 128, 10).expect("timing")).0
     };
     let sampled = SamplingInit { temperature: 0.8, top_p: 0.95, top_k: 50, repetition_penalty: 1.0, seed: 0 };
+    let nucleus_only = SamplingInit { temperature: 0.8, top_p: 0.95, top_k: 0, repetition_penalty: 1.0, seed: 0 };
     let full = SamplingInit { temperature: 1.0, top_p: 1.0, top_k: 0, repetition_penalty: 1.0, seed: 0 };
+    let wide = SamplingInit { temperature: 60.0, top_p: 0.9, top_k: 0, repetition_penalty: 1.0, seed: 0 };
     let mut misses = Vec::new();
-    println!("context 512; GPU ms per step, median of 10 windows of 128 steps; overhead against greedy");
+    println!("context 512; GPU ms per step, median of 10 windows of 128 steps; extra cost against greedy in microseconds");
+    println!("budget (owner, 2026-11-04): the bounded path (temperature 0.8, top_p 0.95, top_k 50) costs at most 150 us per step at every bucket; the nucleus-only and full-vocabulary rows and the wide path (full sort) are reported without a budget");
     for bucket in [1usize, 2, 4, 8, 16, 32] {
         let greedy = median_of(SamplingInit::GREEDY, bucket);
-        let b = median_of(sampled, bucket);
-        let a = median_of(full, bucket);
-        println!("BUCKET {bucket:>2}: greedy {greedy:.3}  temp 0.8 top_p 0.95 top_k 50 {b:.3} ({:+.2}%)  full vocabulary {a:.3} ({:+.2}%)", 100.0 * (b / greedy - 1.0), 100.0 * (a / greedy - 1.0));
-        let budget = match bucket {
-            1 => Some(3.0),
-            32 => Some(5.0),
-            _ => None,
-        };
-        if let Some(limit) = budget {
-            if 100.0 * (b / greedy - 1.0) > limit {
-                misses.push(format!("bucket {bucket}: sampling costs {:.2}% against a budget of {limit}%", 100.0 * (b / greedy - 1.0)));
-            }
+        let us = |sampling: SamplingInit| (median_of(sampling, bucket) - greedy) * 1000.0;
+        let (bounded, nucleus, vocabulary, wide_us) = (us(sampled), us(nucleus_only), us(full), us(wide));
+        println!("BUCKET {bucket:>2}: greedy {greedy:.3} ms  extra us: top_k 50 + top_p 0.95 {bounded:.0}  top_p 0.95 only {nucleus:.0}  full vocabulary {vocabulary:.0}  wide nucleus (full sort) {wide_us:.0}");
+        if bounded > 150.0 {
+            misses.push(format!("bucket {bucket}: the bounded path costs {bounded:.0} us against a budget of 150 us"));
         }
     }
     assert!(misses.is_empty(), "{misses:?}");

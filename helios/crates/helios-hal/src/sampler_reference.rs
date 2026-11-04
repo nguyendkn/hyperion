@@ -1,30 +1,42 @@
 //! The host reference of the device sampler (H4): the same algorithm, the same Philox stream and the same f32 operations in the same order as the
 //! `sample_rows_bf16` kernel, so the device must choose exactly the token this code chooses (tests only; the serving path never calls it).
 //!
-//! **Sampler v1** (greedy, temperature 0, is the argmax kernel and is not described here). For the logits `z` of one step of one sequence:
+//! **Sampler v2** (greedy, temperature 0, is the argmax kernel and is not described here). The result is exact for every `top_k` up to the
+//! vocabulary and every `top_p`: there is no candidate cap. For the logits `z` of one step of one sequence:
 //!
 //! 1. *Penalty.* A token the sequence has already generated (the prompt does not count: a prefix-cache hit must not change the result) has its
 //!    logit divided by `repetition_penalty` if positive, multiplied by it if negative.
 //! 2. *Temperature.* `z' = z / temperature` (IEEE division).
-//! 3. *Candidates.* With no truncation (`top_k == 0` and `top_p >= 1`) every token is a candidate (mode A). Otherwise the candidates are the first
-//!    `K = min(top_k or 1024, 1024, vocab)` tokens ordered by `z'` descending, ties by lower index (mode B). **`top_k` above 1024, and a nucleus
-//!    wider than 1024 tokens, are capped at 1024 candidates** (a documented limit of the device sort).
-//! 4. *Probabilities.* `w = exp(z' - max z')` with [`det_exp`] (a polynomial built only from IEEE-exact operations and fused multiply-adds, so the
-//!    host and the device agree to the bit; relative error below 2e-6).
-//! 5. *Top-p* (mode B): with prefix sums `P_j` of `w` over the sorted candidates (sequential f32 additions), keep the first `n` candidates where `n - 1`
-//!    is the first `j` with `P_j >= top_p * P_{K-1}` (all `K` when `top_p >= 1`). Top-k is applied before top-p, so the nucleus is taken over the
-//!    renormalised top-k.
-//! 6. *Draw.* `u = (philox4x32_10(counter = [step, 0, 0, 0], key = [seed_lo, seed_hi])[0] >> 8) * 2^-24`, `step` the number of tokens the sequence
-//!    sampled before. Mode B: `target = u * P_{n-1}`, the token is the first kept candidate with `P_j > target` (the last kept one if none). Mode A: the
-//!    tokens are split into 1024 chunks, chunk `c` being tokens `c, c + 1024, c + 2048, ...` (any fixed order of the tokens draws from the same
-//!    distribution; this one makes the device loads coalesced). Chunk sums are sequential f32 sums, cumulative sums `C_c` are sequential over the chunks,
-//!    `target = u * C_last`, the chunk is the first with `C_c > target` (the first maximal token if none) and the token is the first one in it (in
-//!    ascending index) whose running sum from `C_{c-1}` exceeds `target` (the chunk's last token if none).
+//! 3. *Set.* `kk = min(top_k, vocab)` (`top_k == 0` means the whole vocabulary). The set `S` is the `kk` tokens ordered by `z'` descending, ties by
+//!    lower index; `sigma` is that order.
+//! 4. *Weights.* `w = exp(z' - max z')` with [`det_exp`] (a polynomial built only from IEEE-exact operations and fused multiply-adds, so the host
+//!    and the device agree to the bit; relative error below 2e-6).
+//! 5. *Prefix sums* `H_j` over `sigma` (all f32, in this order): the sorted tokens are cut into segments of [`SEGMENT`] = 1024; inside a segment the
+//!    sum `local_j` is sequential from the segment's first token; `H_j = base + local_j` where `base` is the sum of the full-segment totals before it
+//!    (`base_g = base_{g-1} + total_{g-1}`, sequential). For `kk <= 1024` this is the plain sequential prefix sum.
+//! 6. *Nucleus* (`top_p < 1`): the threshold is `top_p * H_{kk-1}` when `kk <= 1024`, else `top_p * T` where `T` is the chunk-interleaved sum
+//!    (see 8) of the weights of `S` (weights of other tokens count 0). `keep` is `j + 1` for the first `j` with `H_j >= threshold`, else `kk`.
+//!    `top_p >= 1` keeps all `kk`. Top-k is applied before top-p, so the nucleus is taken over the renormalised top-k.
+//! 7. *Draw.* `u = (philox4x32_10(counter = [step, 0, 0, 0], key = [seed_lo, seed_hi])[0] >> 8) * 2^-24`, `step` the number of tokens the sequence
+//!    sampled before. `target = u * H_{keep-1}`; the token is `sigma_j` for the first `j < keep` with `H_j > target` (`sigma_{keep-1}` if none).
+//! 8. *Whole vocabulary, no nucleus* (`kk == vocab`, `top_p >= 1`): the sorted order is never needed. The tokens are split into 1024 chunks, chunk
+//!    `c` being tokens `c, c + 1024, c + 2048, ...` (any fixed order draws from the same distribution; this one makes the device loads coalesced).
+//!    Chunk sums are sequential f32 sums, cumulative sums `C_c` are sequential over the chunks, `T = C_last`, `target = u * T`, the chunk is the first
+//!    with `C_c > target` (the first maximal token if none) and the token is the first one in it (ascending index) whose running sum from `C_{c-1}`
+//!    exceeds `target` (the chunk's last token if none).
+//!
+//! **Why the device may take a shortcut.** The device sorts only the 1024 best tokens (a bounded sort in shared memory, about 100 us) and falls back
+//! to a full per-row sort when that is not provably the same result: `kk <= 1024` needs no more than the bounded set, and for a wider `kk == vocab`
+//! with `top_p < 1` the nucleus lies inside the 1024 best tokens exactly when `H_1023 >= top_p * T`, because `H_j` for `j < 1024` is the plain
+//! sequential sum (segment 0, base 0) the full computation also uses, and the first `j` with `H_j >= threshold` is then below 1024, so the draw is
+//! over the same prefix. [`sample_bounded_shortcut`] is that decision on the host; a test requires it to agree with [`sample`] whenever it answers.
 //!
 //! Non-finite logits are an error here; the device does not check.
 
-/// Candidates the device sorts for top-k / top-p.
+/// Candidates the device sorts in shared memory for the bounded path.
 pub const MAX_CANDIDATES: usize = 1024;
+/// Tokens per segment of the prefix sums of step 5.
+pub const SEGMENT: usize = 1024;
 /// Chunks of the full-vocabulary draw (one per thread of the kernel block).
 pub const CHUNKS: usize = 1024;
 
@@ -121,32 +133,113 @@ pub fn adjust(logits: &[f32], seen: &[bool], params: &Params) -> Result<Vec<f32>
         .collect()
 }
 
-/// The token sampler v1 chooses for `logits` with `seed` at `step`.
+/// The sorted order of step 3: indices of the tokens by `z` descending, ties by lower index.
+fn sorted_order(z: &[f32]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..z.len()).collect();
+    order.sort_by(|&a, &b| z[b].partial_cmp(&z[a]).expect("finite").then(a.cmp(&b)));
+    order
+}
+
+/// Step 5 over the weights `w` in sorted order.
+fn segmented_prefix(w: &[f32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(w.len());
+    let mut base = 0.0f32;
+    for segment in w.chunks(SEGMENT) {
+        let mut local = 0.0f32;
+        for &x in segment {
+            local += x;
+            out.push(base + local);
+        }
+        base += local;
+    }
+    out
+}
+
+/// The chunk-interleaved total of step 8 of the weights `w` given by token index (non-members are 0).
+fn chunk_total(w_by_index: &[f32]) -> f32 {
+    let mut run = 0.0f32;
+    for c in 0..CHUNKS {
+        let mut sum = 0.0f32;
+        for &x in w_by_index.iter().skip(c).step_by(CHUNKS) {
+            sum += x;
+        }
+        run += sum;
+    }
+    run
+}
+
+fn set_size(z: &[f32], params: &Params) -> usize {
+    if params.top_k == 0 { z.len() } else { (params.top_k as usize).min(z.len()) }
+}
+
+/// The token sampler v2 chooses for `logits` with `seed` at `step`.
 pub fn sample(logits: &[f32], seen: &[bool], params: &Params, seed: u64, step: u32) -> Result<u32, SampleError> {
     let z = adjust(logits, seen, params)?;
     let u = uniform(seed, step);
     let max = z.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    if params.top_k == 0 && params.top_p >= 1.0 {
+    let kk = set_size(&z, params);
+    if kk == z.len() && params.top_p >= 1.0 {
         return Ok(draw_full(&z, max, u));
     }
-    let k = if params.top_k == 0 { MAX_CANDIDATES } else { (params.top_k as usize).min(MAX_CANDIDATES) }.min(z.len());
-    let mut order: Vec<usize> = (0..z.len()).collect();
-    order.sort_by(|&a, &b| z[b].partial_cmp(&z[a]).expect("finite").then(a.cmp(&b)));
-    order.truncate(k);
-    let mut prefix = Vec::with_capacity(k);
+    let order = sorted_order(&z);
+    let w: Vec<f32> = order[..kk].iter().map(|&i| det_exp(z[i] - max)).collect();
+    let h = segmented_prefix(&w);
+    let mut keep = kk;
+    if params.top_p < 1.0 {
+        let threshold = if kk <= MAX_CANDIDATES {
+            params.top_p * h[kk - 1]
+        } else {
+            let mut by_index = vec![0.0f32; z.len()];
+            for (j, &i) in order[..kk].iter().enumerate() {
+                by_index[i] = w[j];
+            }
+            params.top_p * chunk_total(&by_index)
+        };
+        keep = h.iter().position(|&p| p >= threshold).map_or(kk, |j| j + 1);
+    }
+    let target = u * h[keep - 1];
+    let j = h[..keep].iter().position(|&p| p > target).unwrap_or(keep - 1);
+    Ok(order[j] as u32)
+}
+
+/// What the bounded device path (the 1024 best tokens, sorted in shared memory) answers, or `None` when it cannot prove the exact result and the device
+/// uses the full sort instead. Written independently of [`sample`] from the 1024 best tokens only; a test requires `Some(t)` to equal `sample`.
+pub fn sample_bounded_shortcut(logits: &[f32], seen: &[bool], params: &Params, seed: u64, step: u32) -> Result<Option<u32>, SampleError> {
+    let z = adjust(logits, seen, params)?;
+    let u = uniform(seed, step);
+    let max = z.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let kk = set_size(&z, params);
+    if kk == z.len() && params.top_p >= 1.0 {
+        return Ok(Some(draw_full(&z, max, u)));
+    }
+    if kk > MAX_CANDIDATES && (kk != z.len() || params.top_p >= 1.0) {
+        return Ok(None);
+    }
+    let bounded = kk.min(MAX_CANDIDATES);
+    let order = sorted_order(&z);
+    let mut prefix = Vec::with_capacity(bounded);
     let mut run = 0.0f32;
-    for &i in &order {
+    for &i in &order[..bounded] {
         run += det_exp(z[i] - max);
         prefix.push(run);
     }
-    let mut n = k;
+    let mut keep = bounded;
     if params.top_p < 1.0 {
-        let threshold = params.top_p * prefix[k - 1];
-        n = prefix.iter().position(|&p| p >= threshold).map_or(k, |j| j + 1);
+        let threshold = if kk <= MAX_CANDIDATES {
+            params.top_p * prefix[bounded - 1]
+        } else {
+            let by_index: Vec<f32> = z.iter().map(|&v| det_exp(v - max)).collect();
+            params.top_p * chunk_total(&by_index)
+        };
+        match prefix.iter().position(|&p| p >= threshold) {
+            Some(j) => keep = j + 1,
+            None if kk <= MAX_CANDIDATES => keep = bounded,
+            None => return Ok(None),
+        }
     }
-    let target = u * prefix[n - 1];
-    let j = prefix[..n].iter().position(|&p| p > target).unwrap_or(n - 1);
-    Ok(order[j] as u32)
+    let target = u * prefix[keep - 1];
+    let j = prefix[..keep].iter().position(|&p| p > target).unwrap_or(keep - 1);
+    Ok(Some(order[j] as u32))
 }
 
 fn draw_full(z: &[f32], max: f32, u: f32) -> u32 {
@@ -256,25 +349,122 @@ mod tests {
             hit.insert(sample(&z, &[], &P, 9, s).unwrap());
         }
         assert!(hit.len() > 300 && hit.iter().all(|&t| t < 4096), "mode A spreads over the vocabulary: {}", hit.len());
-        // With a nucleus below 1 the candidates are the first 1024 by index (ties), and the draw stays among them.
+        // A nucleus of 0.5 over 4096 equal tokens is the first 2048 by index (ties by lower index), beyond the 1024 the bounded device path holds.
+        let mut wide = 0;
         for s in 0..200 {
-            assert!(sample(&z, &[], &Params { top_p: 0.5, ..P }, 9, s).unwrap() < 1024);
+            let t = sample(&z, &[], &Params { top_p: 0.5, ..P }, 9, s).unwrap();
+            assert!(t < 2048, "{t}");
+            wide += usize::from(t >= 1024);
         }
+        assert!(wide > 40, "{wide}");
         for s in 0..200 {
             assert!(sample(&z, &[], &Params { top_k: 5, ..P }, 9, s).unwrap() < 5);
         }
     }
 
     #[test]
-    fn top_k_never_leaves_the_k_best_and_a_wide_k_is_capped_at_1024() {
+    fn top_k_never_leaves_the_k_best_and_a_wide_k_is_not_capped() {
         let z = logits(3000, 3);
-        let mut order: Vec<usize> = (0..z.len()).collect();
-        order.sort_by(|&a, &b| z[b].partial_cmp(&z[a]).unwrap().then(a.cmp(&b)));
+        let order = sorted_order(&z);
+        let mut beyond = 0;
         for s in 0..300 {
             let t = sample(&z, &[], &Params { temperature: 1.5, top_k: 7, ..P }, 11, s).unwrap() as usize;
             assert!(order[..7].contains(&t), "step {s}: {t}");
-            let t = sample(&z, &[], &Params { temperature: 3.0, top_k: 5000, ..P }, 11, s).unwrap() as usize;
-            assert!(order[..1024].contains(&t));
+            // A hot temperature spreads the mass over the whole set: the draws must reach beyond the 1024 best.
+            let t = sample(&z, &[], &Params { temperature: 50.0, top_k: 2500, ..P }, 11, s).unwrap() as usize;
+            let rank = order.iter().position(|&i| i == t).unwrap();
+            assert!(rank < 2500, "step {s}: rank {rank}");
+            beyond += usize::from(rank >= 1024);
+        }
+        assert!(beyond > 50, "only {beyond} of 300 draws left the 1024 best");
+    }
+
+    /// Mass of the tokens the nucleus keeps, in f64, for a check independent of the f32 order of operations.
+    fn nucleus_rank_bound(z: &[f32], temperature: f32, top_p: f32) -> usize {
+        let order = sorted_order(z);
+        let w: Vec<f64> = order.iter().map(|&i| (f64::from(z[i]) / f64::from(temperature) - f64::from(z[order[0]]) / f64::from(temperature)).exp()).collect();
+        let total: f64 = w.iter().sum();
+        let mut run = 0.0;
+        for (j, x) in w.iter().enumerate() {
+            run += x;
+            if run >= f64::from(top_p) * total * (1.0 - 1e-5) {
+                return j + 1;
+            }
+        }
+        w.len()
+    }
+
+    #[test]
+    fn a_nucleus_wider_than_1024_tokens_is_exact_and_reaches_beyond_the_1024_best() {
+        // Flat logits: a tiny spread over 6000 tokens, so a nucleus of 0.9 needs about 5400 of them.
+        let z: Vec<f32> = logits(6000, 21).iter().map(|v| v * 0.01).collect();
+        let order = sorted_order(&z);
+        let params = Params { top_p: 0.9, ..P };
+        let bound = nucleus_rank_bound(&z, 1.0, 0.9);
+        assert!(bound > 4000, "the scenario must need a wide nucleus, needs {bound}");
+        let mut beyond = 0;
+        for s in 0..400 {
+            let t = sample(&z, &[], &params, 3, s).unwrap() as usize;
+            let rank = order.iter().position(|&i| i == t).unwrap();
+            assert!(rank < bound + 2, "step {s}: rank {rank} is outside a nucleus of {bound}");
+            beyond += usize::from(rank >= 1024);
+        }
+        assert!(beyond > 200, "only {beyond} of 400 draws left the 1024 best");
+        // The same flat row with a top_k that is not the vocabulary (the full sort on the device).
+        for s in 0..100 {
+            let t = sample(&z, &[], &Params { top_k: 5000, top_p: 0.9, ..P }, 3, s).unwrap() as usize;
+            assert!(order.iter().position(|&i| i == t).unwrap() < 5000);
+        }
+    }
+
+    #[test]
+    fn the_bounded_shortcut_agrees_with_the_exact_sampler_whenever_it_answers() {
+        let vocabularies = [700usize, 1024, 1025, 3000];
+        let (mut answered, mut declined) = (0, 0);
+        for (case, &n) in vocabularies.iter().enumerate() {
+            for (spread, name) in [(12.0f32, "peaked"), (0.01, "flat"), (1.0, "medium")] {
+                let z: Vec<f32> = (0..n).map(|i| (uniform(case as u64 * 7 + 1, i as u32) - 0.5) * spread).collect();
+                let mut tied = z.clone();
+                for i in (0..n).step_by(3) {
+                    tied[i] = 1.0; // many ties at the cut
+                }
+                for logits in [&z, &tied] {
+                    for top_k in [0u32, 1, 50, 1024, 1025, n as u32, n as u32 + 10] {
+                        for top_p in [1e-7f32, 0.5, 0.95, 0.999, 1.0] {
+                            for temperature in [0.1f32, 1.0, 40.0] {
+                                let params = Params { temperature, top_p, top_k, repetition_penalty: 1.0 };
+                                for step in 0..6 {
+                                    let exact = sample(logits, &[], &params, 77 + case as u64, step).unwrap();
+                                    match sample_bounded_shortcut(logits, &[], &params, 77 + case as u64, step).unwrap() {
+                                        Some(t) => {
+                                            answered += 1;
+                                            assert_eq!(t, exact, "{name} n={n} {params:?} step {step}");
+                                        }
+                                        None => declined += 1,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(answered > 1000 && declined > 100, "answered {answered}, declined {declined}: both branches must be exercised");
+    }
+
+    #[test]
+    fn extreme_parameters_and_a_flat_row_stay_inside_the_vocabulary() {
+        let z = logits(5000, 5);
+        for &(temperature, top_k, top_p) in &[(1e-3f32, 0u32, 0.95f32), (1e3, 0, 0.95), (1e3, 4999, 1.0), (1e3, 5000, 1.0), (1.0, 1_000_000, 0.5), (1.0, 1025, 1e-9)] {
+            for s in 0..20 {
+                let t = sample(&z, &[], &Params { temperature, top_k, top_p, repetition_penalty: 1.0 }, 2, s).unwrap();
+                assert!((t as usize) < z.len());
+            }
+        }
+        // A tiny top_p keeps only the first (maximal) token even when it needs the wide path.
+        let order = sorted_order(&z);
+        for s in 0..20 {
+            assert_eq!(sample(&z, &[], &Params { top_k: 2000, top_p: 1e-9, ..P }, 2, s).unwrap() as usize, order[0]);
         }
     }
 
