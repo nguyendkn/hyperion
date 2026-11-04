@@ -157,7 +157,7 @@ mod tests {
         let model = backend.load_model(&config(), &WeightSource { files: Vec::new(), slices: Vec::new() }).unwrap();
         let kv = backend.reserve_kv(&model, &KvSpec::default()).unwrap();
         let graphs = backend.capture_graphs(&model, &kv).unwrap();
-        backend.commit_kv(kv, &graphs, &MemoryPolicy { reserve_bytes: 0, max_tokens: 640 }).unwrap()
+        backend.commit_kv(kv, &graphs, &MemoryPolicy { reserve_bytes: 0, max_tokens: 640, ..MemoryPolicy::default() }).unwrap()
     }
 
     fn decode_plan(page: u32) -> StepPlan {

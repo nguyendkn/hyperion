@@ -837,6 +837,9 @@ impl Session {
         if self.pool_pages == 0 {
             return Err(anyhow!("the KV pool is not mapped: run reserve_kv, capture_graphs and commit_kv before generating"));
         }
+        if self.generate_pages() == 0 {
+            return Err(crate::HalError::Unsupported("generate has no private KV area: the pool was committed for serving (MemoryPolicy::generate_region is false), so every page belongs to the scheduler".into()).into());
+        }
         if tokens > self.generate_capacity() || pages > self.generate_pages() {
             return Err(PrefillError::ContextTooLong { requested: tokens, capacity: self.generate_capacity() }.into());
         }

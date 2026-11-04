@@ -413,3 +413,39 @@ fn every_row_of_a_batch_passes_the_oracle() {
     backend.shutdown().unwrap();
     assert!(failures.is_empty(), "{} failure(s); do not loosen the tolerance and rerun:\n{}", failures.len(), failures.join("\n"));
 }
+
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn a_serving_pool_gives_every_page_to_the_scheduler_and_refuses_generate() {
+    println!("BUILD revision={}", std::env::var("HYPERION_REVISION").unwrap_or_else(|_| "unknown".into()));
+    let package = package();
+    let Manifest::V1(manifest) = Manifest::from_json_bytes(&std::fs::read(package.with_extension("manifest.json")).unwrap()).unwrap();
+    let backend = HopperBackend::new().expect("an H100 must be present");
+    helios_hal::load_package(&backend, &package, &manifest).expect("upload");
+    let dims = helios_hal::Qwen2Dims::from_manifest(&manifest.model).unwrap();
+    // The same request as `open`, once with the private area (tests, one-shot CLI) and once as a server commits it: the page counts differ by the area.
+    let tokens = 160 * PAGE;
+    let with_area = backend.open_kv(4, tokens).expect("pool with the generate area").info().pages;
+    let capacity_with_area = backend.context_capacity().expect("a session");
+    let pool = backend.open_kv_serving(4, tokens).expect("serving pool");
+    let serving = pool.info().pages;
+    println!("POOL PAGES for max_tokens {tokens}: scheduler share {with_area} with the generate area, {serving} serving; generate capacity {capacity_with_area} tokens, then {:?}", backend.context_capacity());
+    assert_eq!(serving, tokens / PAGE, "a serving pool gives the scheduler every page");
+    assert!(with_area < serving, "the area is taken from the pool in test mode");
+    assert_eq!(backend.context_capacity(), Some(0));
+    let error = backend.generate_streaming(&dims, &[1, 2, 3], 4, &[], &helios_hal::SamplingConfig::greedy(), &mut |_| {}).expect_err("generate must be refused");
+    assert!(matches!(error.downcast_ref::<helios_hal::HalError>(), Some(helios_hal::HalError::Unsupported(_))), "a typed refusal, got {error:#}");
+    // The scheduler still serves from the full pool: a prefill into the last page of the pool works.
+    let last = serving as u32 - 1;
+    let prompt = seed_prompt()[..40].to_vec();
+    let plan = StepPlan {
+        step: 1,
+        capacity: Capacity::Prefill { rows: chunk_capacity(prompt.len()) },
+        rows: vec![Row { slot: 0, input: Input::Tokens(prompt.clone()), n_tokens: prompt.len() as u32, position: 0, table_len: 1, want: Want::Token }],
+        deltas: vec![PageDelta { slot: 0, index: 0, page: last }],
+        inits: vec![SlotInit { slot: 0, sampling: SamplingInit::GREEDY, max_new_tokens: 1 }],
+    };
+    let out = backend.take_output(backend.submit_step(&pool, &plan).expect("submit_step onto the last page")).expect("take_output");
+    assert_eq!(out.rows[0].tokens.len(), 1);
+    backend.shutdown().unwrap();
+}

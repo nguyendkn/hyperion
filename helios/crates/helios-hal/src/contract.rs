@@ -296,11 +296,14 @@ pub struct MemoryPolicy {
     pub reserve_bytes: usize,
     /// The model's maximum length caps the pool even when more memory is free (0: no cap).
     pub max_tokens: usize,
+    /// Whether the backend sets aside a private area for its direct `generate` entry point (tests, the one-shot CLI). A server that schedules every
+    /// request through `submit_step` passes `false`: all pages then belong to the scheduler and `generate` is refused with a typed error.
+    pub generate_region: bool,
 }
 
 impl Default for MemoryPolicy {
     fn default() -> Self {
-        Self { reserve_bytes: 2 << 30, max_tokens: 0 }
+        Self { reserve_bytes: 2 << 30, max_tokens: 0, generate_region: true }
     }
 }
 

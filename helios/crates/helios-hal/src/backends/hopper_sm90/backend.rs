@@ -120,6 +120,15 @@ impl HopperBackend {
         self.commit_kv(reservation, &graphs, &MemoryPolicy { max_tokens, ..MemoryPolicy::default() })
     }
 
+    /// [`HopperBackend::open_kv`] for a server: the pool has no private area for `generate` (`MemoryPolicy::generate_region == false`), every page belongs
+    /// to the scheduler, exactly as `helios-cli serve` commits it. `generate` is refused with a typed error on such a pool.
+    pub fn open_kv_serving(&self, max_batch: usize, max_tokens: usize) -> Result<KvPool> {
+        let model = LoadedModel::new(NAME, ());
+        let reservation = self.reserve_kv(&model, &KvSpec { max_batch, ..KvSpec::default() })?;
+        let graphs = self.capture_graphs(&model, &reservation)?;
+        self.commit_kv(reservation, &graphs, &MemoryPolicy { max_tokens, generate_region: false, ..MemoryPolicy::default() })
+    }
+
     /// Copy `bytes` bytes of the mapped KV pool, starting `offset` bytes into it, back to the host. A verification aid (a masked row must leave
     /// every page unchanged); not used on any serving path.
     pub fn read_pool_bytes(&self, offset: u64, bytes: usize) -> Result<Vec<u8>> {
@@ -398,11 +407,11 @@ impl ComputeBackend for HopperBackend {
         // `generate` gets a private area of one full sequence after the pages of scheduled requests (a quarter of the pool when the pool is small), so
         // it can never write a page a scheduled request or the prefix cache holds. With no token limit the cap leaves the whole area on top of the
         // pages `max_batch` full sequences need.
-        let cap = if policy.max_tokens > 0 { policy.max_tokens.div_ceil(geometry.page_tokens) } else { (lifecycle.max_batch + 1) * session.stride };
+        let cap = pool_cap(policy, geometry.page_tokens, lifecycle.max_batch, session.stride);
         let plan = plan_pool(free, reserve, geometry.page_bytes(), lifecycle.range.granule() as u64, Some(cap))?;
         lifecycle.range.map(&dev, plan.mapped_bytes as usize)?;
         let (free_after, _) = dev.memory_info()?;
-        let generate_pages = if policy.max_tokens == 0 && plan.pages == cap { session.stride } else { session.stride.min(plan.pages / 4) };
+        let generate_pages = generate_pages(policy, plan.pages, cap, session.stride);
         session.pool_pages = plan.pages;
         session.serve_pages = plan.pages - generate_pages;
         lifecycle.state = KvState::Committed;
@@ -511,5 +520,62 @@ mod tests {
         let groups = fused_groups(&dims(false));
         assert_eq!(groups.len(), 4);
         assert!(groups.iter().all(|g| !g.name.ends_with("qkv.bias")));
+    }
+}
+
+/// The page cap of the pool: the model's maximum length when `max_tokens` is set, otherwise `max_batch` full sequences plus, when the backend keeps a
+/// private area for `generate`, one more.
+fn pool_cap(policy: &MemoryPolicy, page_tokens: usize, max_batch: usize, stride: usize) -> usize {
+    if policy.max_tokens > 0 {
+        policy.max_tokens.div_ceil(page_tokens)
+    } else {
+        (max_batch + usize::from(policy.generate_region)) * stride
+    }
+}
+
+/// Pages set aside for `generate` out of a pool of `pages`: none for a server (`generate_region == false`); otherwise one full sequence, or a quarter of
+/// the pool when the pool is small.
+fn generate_pages(policy: &MemoryPolicy, pages: usize, cap: usize, stride: usize) -> usize {
+    if !policy.generate_region {
+        0
+    } else if policy.max_tokens == 0 && pages == cap {
+        stride
+    } else {
+        stride.min(pages / 4)
+    }
+}
+
+#[cfg(test)]
+mod pool_split_tests {
+    use super::*;
+
+    fn policy(max_tokens: usize, generate_region: bool) -> MemoryPolicy {
+        MemoryPolicy { reserve_bytes: 0, max_tokens, generate_region }
+    }
+
+    #[test]
+    fn a_server_pool_has_no_generate_pages_and_the_cap_is_max_batch_sequences() {
+        let (stride, max_batch) = (512usize, 32usize);
+        let server = policy(0, false);
+        let cap = pool_cap(&server, 64, max_batch, stride);
+        assert_eq!(cap, max_batch * stride);
+        assert_eq!(generate_pages(&server, cap, cap, stride), 0);
+        // Fewer pages than the cap (the device is nearly full): still all for the scheduler.
+        assert_eq!(generate_pages(&server, 1000, cap, stride), 0);
+    }
+
+    #[test]
+    fn the_test_mode_pool_keeps_one_private_sequence_or_a_quarter_of_a_small_pool() {
+        let (stride, max_batch) = (512usize, 32usize);
+        let test_mode = policy(0, true);
+        let cap = pool_cap(&test_mode, 64, max_batch, stride);
+        assert_eq!(cap, (max_batch + 1) * stride);
+        assert_eq!(generate_pages(&test_mode, cap, cap, stride), stride);
+        assert_eq!(generate_pages(&test_mode, 1000, cap, stride), 250);
+        // A token limit caps the pool by itself in both modes.
+        assert_eq!(pool_cap(&policy(64 * 200, true), 64, max_batch, stride), 200);
+        assert_eq!(pool_cap(&policy(64 * 200, false), 64, max_batch, stride), 200);
+        assert_eq!(generate_pages(&policy(64 * 200, true), 200, 200, stride), 50);
+        assert_eq!(generate_pages(&policy(64 * 200, false), 200, 200, stride), 0);
     }
 }

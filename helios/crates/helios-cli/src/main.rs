@@ -148,7 +148,8 @@ fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedM
         Err(error) => return Err(error),
     };
     let graphs = backend.capture_graphs(model, &reservation)?;
-    let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy::default())?;
+    // The server schedules every request through submit_step: no private area for `generate`, every page belongs to the scheduler.
+    let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy { generate_region: false, ..MemoryPolicy::default() })?;
     tracing::info!(pages = pool.info().pages, page_tokens = pool.info().page_tokens, bytes_per_page = pool.info().bytes_per_page, free_before = pool.info().free_before, free_after = pool.info().free_after, "KV pool mapped");
     let identity = helios_core::kv::BlockHash::from_identity(&manifest.cache_identity()).ok_or_else(|| anyhow!("the cache identity is not a 64-digit hex digest"))?;
     let decode_buckets = helios_hal::decode_buckets::buckets(max_batch)?;

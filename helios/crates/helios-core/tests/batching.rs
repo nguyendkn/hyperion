@@ -58,7 +58,7 @@ fn open(tokens: usize) -> (Box<dyn ComputeBackend>, KvPool) {
     let model = backend.load_model(&config, &WeightSource { files: Vec::new(), slices: Vec::new() }).unwrap();
     let reservation = backend.reserve_kv(&model, &KvSpec { max_batch: 32, ..KvSpec::default() }).unwrap();
     let graphs = backend.capture_graphs(&model, &reservation).unwrap();
-    let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy { reserve_bytes: 0, max_tokens: tokens }).unwrap();
+    let pool = backend.commit_kv(reservation, &graphs, &MemoryPolicy { reserve_bytes: 0, max_tokens: tokens, ..MemoryPolicy::default() }).unwrap();
     (backend, pool)
 }
 
