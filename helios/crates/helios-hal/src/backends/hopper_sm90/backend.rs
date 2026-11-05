@@ -117,6 +117,11 @@ impl HopperBackend {
         Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(device), tp: Mutex::new(None) }
     }
 
+    /// Bytes of weights this backend holds on its device (a rank of a tensor-parallel group holds its share).
+    pub fn weight_bytes(&self) -> usize {
+        self.weights.lock().expect("weights mutex poisoned").as_ref().map_or(0, |w| w.total_bytes())
+    }
+
     /// Make this backend rank `rank` of `size` tensor-parallel ranks, its collectives running on `comm`. Before `load_model`: the weights are then read as this
     /// rank's slices and the session built with this rank's dimensions, two all-reduces per layer and a vocab-parallel head.
     pub fn set_tensor_parallel(&self, size: usize, rank: usize, comm: std::sync::Arc<dyn crate::traits::Communicator>) {
@@ -150,6 +155,8 @@ impl HopperBackend {
         let model = LoadedModel::new(NAME, ());
         let reservation = self.reserve_kv(&model, &KvSpec { max_batch, ..KvSpec::default() })?;
         let graphs = self.capture_graphs(&model, &reservation)?;
+        // A tensor-parallel rank runs its collectives once here (every rank at the same time) so the first collective of a step allocates nothing.
+        self.warm_collectives()?;
         self.commit_kv(reservation, &graphs, &MemoryPolicy { max_tokens, generate_region: false, ..MemoryPolicy::default() })
     }
 

@@ -22,6 +22,8 @@ mod plan_exec;
 mod session;
 
 pub use backend::HopperBackend;
+pub mod tp_group;
+pub use tp_group::{TpBackend, TpError};
 pub use forward::{Qwen2Dims, UnsupportedModel};
 pub use ops_paged_attention::{LayoutBench, PageLayout};
 pub use prefill_plan::PrefillError;

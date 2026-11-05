@@ -687,6 +687,21 @@ impl Session {
             }
         };
 
+        // A row-split projection (o_proj, down): with tensor parallelism each rank multiplies its columns, the partial products are summed over the ranks **in
+        // float32** (the GEMM output before it is rounded to bf16) and rounded once, so the result differs from one GPU's by the order of an f32 sum, not by
+        // an extra bf16 rounding per rank.
+        let project_rows = |w: u64, x: u64, out_ptr: u64, out: usize, inn: usize| -> Result<()> {
+            match &self.tp {
+                None => project(w, 0, x, out_ptr, out, inn),
+                Some(tp) => {
+                    cublas.linear_bf16_f32(w, x, b.y_f32, t, out, inn)?;
+                    tp.comm.all_reduce_sum(b.y_f32, t * out, CommDType::F32)?;
+                    let n = t * out;
+                    launch(dev, k.bias_cast, grid_for(n)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.y_f32), Arg::Ptr(0), Arg::Ptr(out_ptr), Arg::Int(i32::try_from(n)?), Arg::Int(i32::try_from(out)?)])
+                }
+            }
+        };
+
         if decode {
             launch(dev, k.gather_inputs, 1, 32, 0, &[Arg::Ptr(b.slots), Arg::Ptr(b.slot_token), Arg::Ptr(b.ids), Arg::Int(i32::try_from(t)?)])?;
         }
@@ -754,9 +769,7 @@ impl Session {
                 launch_grid(dev, k.attention_combine_rows, (u32::try_from(heads)?, ti), u32::try_from(hd)?, 0, &[Arg::Ptr(b.attn_ws), Arg::Ptr(b.attn), Arg::Ptr(b.positions), Arg::Ptr(b.slots), Arg::Int(heads_i), Arg::Int(hd_i), Arg::Int(i32::try_from(splits)?)])?;
                 mark("attention_combine")?;
             }
-            project(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
-            // Tensor parallelism: this rank multiplied its columns of o_proj, the sum over the ranks is the projection.
-            self.all_reduce(b.o, t * hidden)?;
+            project_rows(w.o_w, b.attn, b.o, hidden, q_dim)?;
             mark("o_proj")?;
             add_norm(b.o, w.post_norm)?;
             mark("residual_norm")?;
@@ -777,8 +790,7 @@ impl Session {
                 launch(dev, k.swiglu, grid_for(t * d.intermediate)?, ELEMENT_BLOCK, 0, &[Arg::Ptr(b.gate), Arg::Ptr(b.up), Arg::Ptr(b.act), Arg::Int(i32::try_from(t * d.intermediate)?)])?;
             }
             mark("mlp_act")?;
-            project(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
-            self.all_reduce(b.down, t * hidden)?;
+            project_rows(w.down, b.act, b.down, hidden, d.intermediate)?;
             mark("mlp_down")?;
             match self.layers.get(l + 1) {
                 // The residual add and the next layer's input norm.
@@ -821,18 +833,10 @@ impl Session {
     /// One all-reduce of the sizes a step uses and one all-gather, then a wait: see [`HopperBackend::warm_collectives`].
     pub(super) fn warm_collectives(&self, dev: &CudaDevice, tp: &TpState) -> Result<()> {
         let b = &self.b;
-        tp.comm.all_reduce_sum(b.o, self.dims.hidden * self.max_batch.max(1), CommDType::Bf16)?;
+        tp.comm.all_reduce_sum(b.y_f32, self.dims.hidden * self.max_batch.max(1), CommDType::F32)?;
         let vl = self.dims.vocab / tp.size;
         tp.comm.all_gather(b.logits_part, b.gather, vl, CommDType::F32)?;
         dev.synchronize()
-    }
-
-    /// Sum `count` bf16 values at `ptr` over the ranks (in place); nothing on one GPU.
-    fn all_reduce(&self, ptr: u64, count: usize) -> Result<()> {
-        match &self.tp {
-            Some(tp) => tp.comm.all_reduce_sum(ptr, count, CommDType::Bf16),
-            None => Ok(()),
-        }
     }
 
     /// The logits of `rows` rows of `x` into `b.logits` `[rows][vocab]`: one GEMM, or with tensor parallelism each rank's block of the vocabulary, an

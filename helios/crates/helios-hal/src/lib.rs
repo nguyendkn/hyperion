@@ -38,6 +38,8 @@ pub mod backend_factory;
 mod backends;
 
 #[cfg(feature = "sm90")]
+pub use backends::hopper_sm90::{TpBackend, TpError};
+#[cfg(feature = "sm90")]
 pub use backends::hopper_sm90::{DecodeMode, DecodeProfile, DecodeTiming, HopperBackend, Qwen2Dims, PrefillError, UnsupportedModel};
 #[cfg(feature = "sm90")]
 pub use backends::hopper_sm90::{LayoutBench, PageLayout};
