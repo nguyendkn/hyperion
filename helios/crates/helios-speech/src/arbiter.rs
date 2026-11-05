@@ -44,7 +44,7 @@ impl<T> Arbiter<T> {
         Ok(())
     }
     /// The next job to submit: `(model, item)`.
-    pub fn next(&mut self) -> Option<(String, T)> {
+    pub fn pop(&mut self) -> Option<(String, T)> {
         let i = (0..self.jobs.len()).min_by_key(|&i| {
             let j = &self.jobs[i];
             (j.class, j.deadline_us, j.seq)
@@ -76,7 +76,7 @@ mod tests {
         a.enqueue("stt", InteractiveAudio, 900, 3).unwrap();
         a.enqueue("tts", InteractiveAudio, 100, 4).unwrap();
         a.enqueue("llm", InteractiveText, 50, 5).unwrap();
-        let order: Vec<u32> = std::iter::from_fn(|| a.next().map(|x| x.1)).collect();
+        let order: Vec<u32> = std::iter::from_fn(|| a.pop().map(|x| x.1)).collect();
         assert_eq!(order, vec![4, 3, 2, 5, 1]); // audio by deadline, text by arrival at equal deadline, batch last
         assert!(a.is_empty());
     }
@@ -86,7 +86,7 @@ mod tests {
         a.enqueue("tts", InteractiveAudio, 1, 1).unwrap();
         assert_eq!(a.enqueue("tts", InteractiveAudio, 2, 2), Err(Rejected::QueueFull("tts".into())));
         a.enqueue("stt", InteractiveAudio, 1, 3).unwrap(); // another model is unaffected
-        assert_eq!(a.next().unwrap().0, "tts");
+        assert_eq!(a.pop().unwrap().0, "tts");
         assert!(a.enqueue("tts", InteractiveAudio, 3, 4).is_ok());
         assert_eq!(a.enqueue("x", Batch, 0, 0), Err(Rejected::UnknownModel("x".into())));
     }
