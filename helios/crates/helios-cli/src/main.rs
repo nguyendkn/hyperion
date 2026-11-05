@@ -80,6 +80,10 @@ struct Cli {
     /// for at most one such chunk between two tokens; with nothing decoding, prompts are prefilled in the largest chunks. 0 is refused.
     #[arg(long, default_value_t = 512, value_parser = clap::value_parser!(u32).range(1..))]
     prefill_chunk_busy: u32,
+    /// Tensor-parallel size: the model is split over this many GPUs of the node (GPU ordinals 0 to N-1), one thread per GPU, NCCL between them. Must be a
+    /// size the package supports (`supported_tp_sizes` of its manifest). 1 (the default) serves from one GPU.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=8))]
+    tensor_parallel: u32,
 }
 
 /// Bytes of KV cache one sequence of `tokens` needs: K and V, per layer, per
@@ -166,6 +170,29 @@ fn open_kv(backend: &dyn helios_hal::ComputeBackend, model: &helios_hal::LoadedM
     Ok(Some(helios_core::PlanPath { pool: Arc::new(pool), step, identity, hash_block_tokens: HASH_BLOCK_TOKENS, gauge }))
 }
 
+/// The backend of a tensor-parallel run: one rank thread per GPU, the package's `supported_tp_sizes` and the exact `target_arch` checked first.
+#[cfg(feature = "sm90")]
+fn tensor_parallel_backend(manifest: &hyperion_specification::v1::Manifest, size: u32) -> Result<(helios_hal::DynBackend, u64)> {
+    use helios_hal::ComputeBackend;
+    let supported = manifest.parallelism.as_ref().map_or_else(|| vec![1], |p| p.supported_tp_sizes.clone());
+    if !supported.contains(&size) {
+        return Err(anyhow!("this package supports tensor-parallel sizes {supported:?}, not {size}"));
+    }
+    if manifest.target_arch != "sm_90" {
+        return Err(anyhow!("tensor parallelism is implemented for sm_90 only; the package targets {}", manifest.target_arch));
+    }
+    let ordinals: Vec<u32> = (0..size).collect();
+    let group = helios_hal::TpBackend::start(&ordinals, &helios_hal::rank_group::ExpectedVersions::default()).map_err(|e| anyhow!("starting {size} tensor-parallel ranks failed: {e:#}"))?;
+    let hardware = group.initialize_device(&helios_hal::RankInfo::single())?;
+    tracing::info!(ranks = size, total_vram_gib = hardware.total_vram_bytes as f64 / (1u64 << 30) as f64, nccl = %helios_hal::cuda::nccl::format_version(helios_hal::cuda::nccl::version()?), "tensor-parallel group started");
+    Ok((Box::new(group), hardware.total_vram_bytes))
+}
+
+#[cfg(not(feature = "sm90"))]
+fn tensor_parallel_backend(_manifest: &hyperion_specification::v1::Manifest, _size: u32) -> Result<(helios_hal::DynBackend, u64)> {
+    Err(anyhow!("tensor parallelism needs a build with the sm90 feature"))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -185,11 +212,17 @@ async fn main() -> Result<()> {
     //    the scheduler drives prefill/decode while it runs, and after the
     //    server stops the CLI calls `shutdown()` to tear down device
     //    allocations. `triage.outcome` is bound for logging only.
-    let created = helios_hal::create_backend(&manifest)?;
-    let (actual_cap, triage) = (created.device_arch, created.triage);
-    let max_seq_len = resolve_max_seq_len(cli.max_seq_len, &manifest.model, created.hardware.total_vram_bytes)?;
-    let backend: Arc<helios_hal::DynBackend> = Arc::from(created.backend);
-    tracing::info!(actual = %actual_cap, outcome = ?triage.outcome, "triage done");
+    let (backend, max_seq_len): (Arc<helios_hal::DynBackend>, u32) = if cli.tensor_parallel > 1 {
+        let (backend, total_vram) = tensor_parallel_backend(&manifest, cli.tensor_parallel)?;
+        let max_seq_len = resolve_max_seq_len(cli.max_seq_len, &manifest.model, total_vram)?;
+        (Arc::new(backend), max_seq_len)
+    } else {
+        let created = helios_hal::create_backend(&manifest)?;
+        let (actual_cap, triage) = (created.device_arch, created.triage);
+        let max_seq_len = resolve_max_seq_len(cli.max_seq_len, &manifest.model, created.hardware.total_vram_bytes)?;
+        tracing::info!(actual = %actual_cap, outcome = ?triage.outcome, "triage done");
+        (Arc::from(created.backend), max_seq_len)
+    };
 
     // 5. Bring up the engine state machine and load the weights. `Ready` means
     //    the device is probed and triage passed; `Loaded` means the weights are

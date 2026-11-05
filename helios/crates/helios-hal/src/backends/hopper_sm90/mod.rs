@@ -23,6 +23,7 @@ mod session;
 
 pub use backend::HopperBackend;
 pub mod tp_group;
+mod tp_contract;
 pub use tp_group::{TpBackend, TpError};
 pub use forward::{Qwen2Dims, UnsupportedModel};
 pub use ops_paged_attention::{LayoutBench, PageLayout};

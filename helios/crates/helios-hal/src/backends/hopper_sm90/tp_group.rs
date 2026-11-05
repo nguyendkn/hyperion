@@ -18,7 +18,8 @@ use thiserror::Error;
 
 use super::backend::HopperBackend;
 use super::forward_device::DecodeMode;
-use crate::contract::{BackendConfig, Deployment, KvPool, WeightSource};
+use crate::contract::{BackendConfig, Deployment, GraphSet, KvPool, KvReservation, LoadedModel, WeightSource};
+use crate::step_ledger::StepLedger;
 use crate::cuda::nccl::{self, RankVersions};
 use crate::cuda::CudaDevice;
 use crate::rank_group::ExpectedVersions;
@@ -44,6 +45,9 @@ struct RankState {
     rank: usize,
     backend: Arc<HopperBackend>,
     pool: Option<KvPool>,
+    model: Option<LoadedModel>,
+    reservation: Option<KvReservation>,
+    graphs: Option<GraphSet>,
 }
 
 type Job = Box<dyn FnOnce(&mut RankState) + Send>;
@@ -58,6 +62,7 @@ struct Worker {
 pub struct TpBackend {
     workers: Vec<Worker>,
     timeout: Duration,
+    pub(super) ledger: std::sync::Mutex<StepLedger>,
 }
 
 impl TpBackend {
@@ -90,7 +95,7 @@ impl TpBackend {
             let (tx, rx): (Sender<Job>, Receiver<Job>) = mpsc::channel();
             let state_backend = Arc::clone(&backend);
             let handle = thread::Builder::new().name(format!("hyperion-tp-rank-{rank}")).spawn(move || {
-                let mut state = RankState { rank, backend: state_backend, pool: None };
+                let mut state = RankState { rank, backend: state_backend, pool: None, model: None, reservation: None, graphs: None };
                 // This thread drives this GPU: its context is current here for every driver call the rank makes (an allocation does not select it itself).
                 let _ = state.backend.device.lock().expect("device mutex poisoned").set_current();
                 while let Ok(job) = rx.recv() {
@@ -102,7 +107,7 @@ impl TpBackend {
             })?;
             workers.push(Worker { tx, handle: Some(handle), backend });
         }
-        Ok(Self { workers, timeout: Duration::from_secs(900) })
+        Ok(Self { workers, timeout: Duration::from_secs(900), ledger: std::sync::Mutex::new(StepLedger::new(2)) })
     }
 
     pub fn size(&self) -> usize {
@@ -125,7 +130,7 @@ impl TpBackend {
                 let f = Arc::clone(&f);
                 let job: Job = Box::new(move |state| {
                     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let mut view = RankStateView { rank: state.rank, backend: &state.backend, pool: &mut state.pool };
+                        let mut view = RankStateView { rank: state.rank, backend: &state.backend, pool: &mut state.pool, model: &mut state.model, reservation: &mut state.reservation, graphs: &mut state.graphs };
                         f(&mut view)
                     }));
                     let _ = tx.send(outcome);
@@ -146,7 +151,7 @@ impl TpBackend {
             .collect()
     }
 
-    fn all_ok<T>(results: Vec<Result<T>>) -> Result<Vec<T>> {
+    pub(super) fn all_ok<T>(results: Vec<Result<T>>) -> Result<Vec<T>> {
         let mut out = Vec::new();
         for (rank, r) in results.into_iter().enumerate() {
             out.push(r.map_err(|e| e.context(format!("rank {rank}")))?);
@@ -194,6 +199,10 @@ impl TpBackend {
 
     /// One step: the plan is encoded once, every rank decodes (hash-checked) and applies it, graph or direct launches; rank 0's output is returned.
     pub fn submit_step(&self, plan: &StepPlan, mode: DecodeMode) -> Result<StepOutput> {
+        self.submit_step_on_ranks(plan, mode)
+    }
+
+    pub(super) fn submit_step_on_ranks(&self, plan: &StepPlan, mode: DecodeMode) -> Result<StepOutput> {
         let bytes = Arc::new(plan.encode());
         let answers = self.run_all(move |rank| {
             let plan = StepPlan::decode(&bytes).map_err(|e| anyhow!("rank {} refused the plan: {e}", rank.rank))?;
@@ -218,6 +227,36 @@ pub struct RankStateView<'a> {
     pub rank: usize,
     pub backend: &'a HopperBackend,
     pub pool: &'a mut Option<KvPool>,
+    model: &'a mut Option<LoadedModel>,
+    reservation: &'a mut Option<KvReservation>,
+    graphs: &'a mut Option<GraphSet>,
+}
+
+impl RankStateView<'_> {
+    pub(super) fn set_model(&mut self, model: LoadedModel) {
+        *self.model = Some(model);
+    }
+    pub(super) fn model_ref(&self) -> Result<&LoadedModel> {
+        self.model.as_ref().ok_or_else(|| anyhow!("no model loaded: load_model first"))
+    }
+    pub(super) fn set_reservation(&mut self, reservation: KvReservation) {
+        *self.reservation = Some(reservation);
+    }
+    pub(super) fn reservation_ref(&self) -> Result<&KvReservation> {
+        self.reservation.as_ref().ok_or_else(|| anyhow!("no reservation: reserve_kv first"))
+    }
+    pub(super) fn take_reservation(&mut self) -> Result<KvReservation> {
+        self.reservation.take().ok_or_else(|| anyhow!("no reservation: reserve_kv first"))
+    }
+    pub(super) fn set_graphs(&mut self, graphs: GraphSet) {
+        *self.graphs = Some(graphs);
+    }
+    pub(super) fn graphs_ref(&self) -> Result<&GraphSet> {
+        self.graphs.as_ref().ok_or_else(|| anyhow!("no graphs: capture_graphs first"))
+    }
+    pub(super) fn set_pool(&mut self, pool: KvPool) {
+        *self.pool = Some(pool);
+    }
 }
 
 impl Drop for TpBackend {
