@@ -449,3 +449,105 @@ fn a_serving_pool_gives_every_page_to_the_scheduler_and_refuses_generate() {
     assert_eq!(out.rows[0].tokens.len(), 1);
     backend.shutdown().unwrap();
 }
+
+/// FNV-1a over u32 words: a compact fingerprint of everything a stress run returned.
+fn fold(hash: &mut u64, words: impl IntoIterator<Item = u32>) {
+    for w in words {
+        for byte in w.to_le_bytes() {
+            *hash = (*hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
+/// `rounds` rounds of: prefill eight sequences, then twelve decode steps whose rows change every step (which sequences, in which order, which bucket),
+/// the logits asked for on every fourth. `mode`: 0 = submit and take back to back; 1 = a pause of 50 us between submit and take; 2 = one step in flight
+/// (the next step is submitted before the previous is taken). Returns the fingerprint of all outputs and the number of steps.
+fn stress(backend: &HopperBackend, pool: &KvPool, seqs: &[Seq], rounds: usize, mode: u8) -> (u64, usize) {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut step = 0u64;
+    let mut steps = 0usize;
+    let mut pending: Option<helios_hal::StepTicket> = None;
+    let mut collect = |out: helios_hal::StepOutput, hash: &mut u64| {
+        for row in &out.rows {
+            fold(hash, [row.slot]);
+            fold(hash, row.tokens.iter().copied());
+            if let Some(l) = &row.logits {
+                fold(hash, l.iter().map(|v| v.to_bits()));
+            }
+        }
+    };
+    let mut run_plan = |plan: StepPlan, hash: &mut u64| {
+        let ticket = backend.submit_step(pool, &plan).expect("submit_step");
+        match mode {
+            0 => collect(backend.take_output(ticket).expect("take_output"), hash),
+            1 => {
+                std::thread::sleep(std::time::Duration::from_micros(50));
+                collect(backend.take_output(ticket).expect("take_output"), hash);
+            }
+            _ => {
+                if let Some(previous) = pending.replace(ticket) {
+                    collect(backend.take_output(previous).expect("take_output"), hash);
+                }
+            }
+        }
+    };
+    for round in 0..rounds {
+        for s in seqs {
+            step += 1;
+            steps += 1;
+            let deltas = s.pages.iter().enumerate().map(|(i, &page)| PageDelta { slot: s.slot, index: i as u32, page }).collect();
+            run_plan(
+                StepPlan {
+                    step,
+                    capacity: Capacity::Prefill { rows: chunk_capacity(s.prompt.len()) },
+                    rows: vec![Row { slot: s.slot, input: Input::Tokens(s.prompt.clone()), n_tokens: s.prompt.len() as u32, position: 0, table_len: s.prompt.len().div_ceil(PAGE) as u32, want: Want::Token }],
+                    deltas,
+                    inits: vec![SlotInit { slot: s.slot, sampling: SamplingInit::GREEDY, max_new_tokens: 16 }],
+                },
+                &mut hash,
+            );
+        }
+        let mut done = vec![0usize; seqs.len()];
+        for k in 0..12usize {
+            let mut chosen: Vec<usize> = (0..seqs.len()).filter(|i| (i + round + k) % 3 != 0).collect();
+            if (round + k) % 2 == 1 {
+                chosen.reverse();
+            }
+            let bucket = chosen.len().next_power_of_two().max(1) as u16;
+            let rows = chosen
+                .iter()
+                .map(|&i| {
+                    let s = &seqs[i];
+                    let position = s.prompt.len() + done[i];
+                    Row { slot: s.slot, input: Input::FromDevice, n_tokens: 1, position: position as u32, table_len: (position + 1).div_ceil(PAGE) as u32, want: if k % 4 == 0 { Want::Logits } else { Want::Token } }
+                })
+                .collect();
+            for &i in &chosen {
+                done[i] += 1;
+            }
+            step += 1;
+            steps += 1;
+            run_plan(StepPlan { step, capacity: Capacity::Decode { bucket }, rows, deltas: Vec::new(), inits: Vec::new() }, &mut hash);
+        }
+    }
+    if let Some(last) = pending.take() {
+        collect(backend.take_output(last).expect("take_output"), &mut hash);
+    }
+    (hash, steps)
+}
+
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn thousands_of_steps_with_changing_plans_are_bit_identical_whatever_the_timing() {
+    let (backend, pool) = open(8, 16);
+    let seqs = sequences(8);
+    let rounds = 150;
+    let (reference, steps) = stress(&backend, &pool, &seqs, rounds, 0);
+    println!("{steps} steps, back to back: fingerprint {reference:016x}");
+    for mode in [1u8, 2, 0, 1] {
+        let (hash, n) = stress(&backend, &pool, &seqs, rounds, mode);
+        println!("mode {mode} ({}): {n} steps, fingerprint {hash:016x}", ["back to back", "50 us pause before take", "one step in flight"][mode as usize]);
+        assert_eq!(hash, reference, "mode {mode}: the outputs of {n} steps differ from the back-to-back run");
+    }
+    backend.shutdown().unwrap();
+}
