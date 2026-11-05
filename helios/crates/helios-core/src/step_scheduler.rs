@@ -224,12 +224,6 @@ impl StepScheduler {
         helios_hal::decode_buckets::bucket_for(&self.cfg.decode_buckets, rows).unwrap_or_else(|| self.largest_bucket())
     }
 
-    /// The first sequence at or after the cursor (round-robin) in the given phase.
-    fn next_in_phase(&self, decode: bool) -> Option<usize> {
-        let n = self.active.len();
-        (0..n).map(|k| (self.cursor + k) % n).find(|&i| matches!(self.active[i].phase, Phase::Decode) == decode)
-    }
-
     /// The plan of the next step, or `None` when there is nothing to run. The plan is built from the sequences' state; `complete` must be
     /// called with its output before the next call.
     pub fn next_plan(&mut self) -> Option<StepPlan> {

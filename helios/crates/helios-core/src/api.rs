@@ -361,7 +361,7 @@ async fn serve_chat(
     }
 
     let mut generated: Vec<u32> = Vec::new();
-    let mut finish_reason = String::from("stop");
+    let finish_reason: String;
 
     // Fold the first event, then keep reading until terminal/drop.
     let mut current = Some(first);

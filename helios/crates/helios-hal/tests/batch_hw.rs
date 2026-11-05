@@ -472,7 +472,7 @@ fn stress(backend: &HopperBackend, pool: &KvPool, seqs: &[Seq], rounds: usize, m
     let mut step = 0u64;
     let mut steps = 0usize;
     let mut pending: Option<helios_hal::StepTicket> = None;
-    let mut collect = |out: helios_hal::StepOutput, hash: &mut u64| {
+    let collect = |out: helios_hal::StepOutput, hash: &mut u64| {
         for row in &out.rows {
             fold(hash, [row.slot]);
             fold(hash, row.tokens.iter().copied());
