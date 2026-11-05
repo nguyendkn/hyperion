@@ -197,8 +197,8 @@
         "max_source_positions"
       ]
     },
-    "AudioFrontend": {
-      "description": "Audio front end exactly as the reference defines it (`helios-audio::mel::MelConfig` is built from this).",
+    "AudioFrontendConfig": {
+      "description": "Audio front end exactly as the reference defines it; shared by every speech family (`helios-audio::mel::MelConfig` is built from it).",
       "type": "object",
       "properties": {
         "chunk_seconds": {
@@ -220,6 +220,9 @@
           "format": "uint32",
           "minimum": 0
         },
+        "mel_scale": {
+          "$ref": "#/$defs/MelScale"
+        },
         "n_fft": {
           "type": "integer",
           "format": "uint32",
@@ -230,14 +233,16 @@
           "format": "uint32",
           "minimum": 0
         },
+        "normalization": {
+          "$ref": "#/$defs/FeatureNormalization"
+        },
         "sample_rate": {
           "type": "integer",
           "format": "uint32",
           "minimum": 0
         },
-        "whisper_norm": {
-          "description": "Whisper-style floor at (max - 8) and (x + 4) / 4.",
-          "type": "boolean"
+        "window": {
+          "$ref": "#/$defs/WindowKind"
         }
       },
       "additionalProperties": false,
@@ -248,7 +253,9 @@
         "n_mels",
         "f_min",
         "f_max",
-        "whisper_norm",
+        "window",
+        "mel_scale",
+        "normalization",
         "chunk_seconds"
       ]
     },
@@ -317,6 +324,20 @@
         "intermediate_size"
       ]
     },
+    "FeatureNormalization": {
+      "oneOf": [
+        {
+          "description": "`log10`, floor at (max - 8), then (x + 4) / 4.",
+          "type": "string",
+          "const": "whisper_log_max8"
+        },
+        {
+          "description": "`log10` only.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
     "LayerMapping": {
       "description": "Maps one transformer layer to its weight tensor(s) inside the package blob.\nByte offsets let the loader mmap the blob and slice without copying.",
       "type": "object",
@@ -372,6 +393,15 @@
         "byte_offset",
         "byte_length",
         "tensor"
+      ]
+    },
+    "MelScale": {
+      "oneOf": [
+        {
+          "description": "Slaney scale and Slaney area normalisation (librosa default, used by the Whisper feature extractor).",
+          "type": "string",
+          "const": "slaney"
+        }
       ]
     },
     "ModelConfig": {
@@ -621,7 +651,7 @@
           "$ref": "#/$defs/AudioEncoderConfig"
         },
         "frontend": {
-          "$ref": "#/$defs/AudioFrontend"
+          "$ref": "#/$defs/AudioFrontendConfig"
         }
       },
       "additionalProperties": false,
@@ -707,6 +737,15 @@
         "depth_decoder",
         "codec",
         "voices"
+      ]
+    },
+    "WindowKind": {
+      "oneOf": [
+        {
+          "description": "Periodic Hann, `0.5 - 0.5 cos(2 pi i / n)`.",
+          "type": "string",
+          "const": "hann_periodic"
+        }
       ]
     }
   }

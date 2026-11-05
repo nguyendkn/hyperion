@@ -3,19 +3,46 @@
 use crate::v1::ModelConfig;
 use serde::{Deserialize, Serialize};
 
-/// Audio front end exactly as the reference defines it (`helios-audio::mel::MelConfig` is built from this).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum WindowKind {
+    /// Periodic Hann, `0.5 - 0.5 cos(2 pi i / n)`.
+    HannPeriodic,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum MelScale {
+    /// Slaney scale and Slaney area normalisation (librosa default, used by the Whisper feature extractor).
+    Slaney,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum FeatureNormalization {
+    /// `log10`, floor at (max - 8), then (x + 4) / 4.
+    WhisperLogMax8,
+    /// `log10` only.
+    None,
+}
+
+/// Audio front end exactly as the reference defines it; shared by every speech family (`helios-audio::mel::MelConfig` is built from it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AudioFrontend {
+pub struct AudioFrontendConfig {
     pub sample_rate: u32,
     pub n_fft: u32,
     pub hop: u32,
     pub n_mels: u32,
     pub f_min: f64,
     pub f_max: f64,
-    /// Whisper-style floor at (max - 8) and (x + 4) / 4.
-    pub whisper_norm: bool,
+    pub window: WindowKind,
+    pub mel_scale: MelScale,
+    pub normalization: FeatureNormalization,
     /// Longest chunk the front end hands to the encoder, in seconds.
     pub chunk_seconds: u32,
 }
@@ -55,7 +82,7 @@ pub struct AudioEncoderConfig {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SttConfig {
     pub architecture: SttArchitecture,
-    pub frontend: AudioFrontend,
+    pub frontend: AudioFrontendConfig,
     pub encoder: AudioEncoderConfig,
     /// The decoder is a complete `decoder_lm` description, so the unchanged LLM path serves it.
     pub decoder: ModelConfig,

@@ -4,4 +4,5 @@ pub mod api;
 pub mod arbiter;
 pub mod family;
 pub mod partition;
+pub mod profile;
 pub mod registry;
