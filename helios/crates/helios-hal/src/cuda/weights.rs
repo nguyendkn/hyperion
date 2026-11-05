@@ -17,7 +17,31 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 
 use super::device::CudaDevice;
+use crate::contract::TensorSlice;
+use crate::sharding::extract;
 use crate::weights_plan::TensorPlan;
+
+/// The part of a tensor one rank of a tensor-parallel group reads: the slice, the whole tensor's shape and the bytes per element. Only the sliced bytes
+/// are read into memory and uploaded, straight to their place in the rank's buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shard {
+    pub slice: TensorSlice,
+    pub shape: Vec<usize>,
+    pub elem: usize,
+}
+
+impl Shard {
+    /// Bytes of the slice.
+    pub fn len(&self) -> usize {
+        let mut shape = self.shape.clone();
+        shape[self.slice.axis] = self.slice.end - self.slice.start;
+        shape.iter().product::<usize>() * self.elem
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 /// Tensors to be laid out back to back in one allocation, in this order, under the name `name`.
 /// Row-major `[out, in]` matrices with the same `in` stack along `out` by concatenating their bytes.
@@ -48,8 +72,14 @@ impl DeviceWeights {
     /// [`Self::upload`], with the tensors of each group placed contiguously in one allocation. Every member of a group
     /// must be a planned tensor.
     pub fn upload_grouped(dev: &mut CudaDevice, files: &[PathBuf], plans: &[TensorPlan], groups: &[Group]) -> Result<Self> {
+        Self::upload_sharded(dev, files, plans, groups, &HashMap::new())
+    }
+
+    /// [`Self::upload_grouped`] for one rank of a tensor-parallel group: a tensor named in `shards` uploads only its slice (and a group counts the sliced
+    /// length of its members), so each rank holds only its share of the weights and nothing is copied twice.
+    pub fn upload_sharded(dev: &mut CudaDevice, files: &[PathBuf], plans: &[TensorPlan], groups: &[Group], shards: &HashMap<String, Shard>) -> Result<Self> {
         let mut weights = Self::default();
-        let outcome = weights.upload_all(dev, files, plans, groups);
+        let outcome = weights.upload_all(dev, files, plans, groups, shards);
         if let Err(e) = outcome {
             let _ = weights.free(dev);
             return Err(e);
@@ -57,7 +87,7 @@ impl DeviceWeights {
         Ok(weights)
     }
 
-    fn upload_all(&mut self, dev: &mut CudaDevice, files: &[PathBuf], plans: &[TensorPlan], groups: &[Group]) -> Result<()> {
+    fn upload_all(&mut self, dev: &mut CudaDevice, files: &[PathBuf], plans: &[TensorPlan], groups: &[Group], shards: &HashMap<String, Shard>) -> Result<()> {
         // Reserve each group's buffer and name the place of every member in it.
         let mut placed: HashMap<&str, (u64, usize)> = HashMap::new();
         for group in groups {
@@ -65,7 +95,10 @@ impl DeviceWeights {
             let mut offsets = Vec::with_capacity(group.members.len());
             for member in &group.members {
                 let plan = plans.iter().find(|p| &p.name == member).ok_or_else(|| anyhow!("group {} names tensor {member}, which is not in the package", group.name))?;
-                let len = usize::try_from(plan.len).map_err(|_| anyhow!("tensor too large for this platform"))?;
+                let len = match shards.get(member) {
+                    Some(shard) => shard.len(),
+                    None => usize::try_from(plan.len).map_err(|_| anyhow!("tensor too large for this platform"))?,
+                };
                 offsets.push(total);
                 total += len;
             }
@@ -85,17 +118,24 @@ impl DeviceWeights {
                 return Err(anyhow!("tensor {} refers to payload {} but only {} file(s) are open", plan.name, plan.payload, files.len()));
             };
             let at = placed.get(plan.name.as_str()).map(|(ptr, _)| *ptr);
-            self.upload_one(dev, source, plan, at).with_context(|| format!("uploading tensor {}", plan.name))?;
+            self.upload_one(dev, source, plan, at, shards.get(&plan.name)).with_context(|| format!("uploading tensor {}", plan.name))?;
         }
         Ok(())
     }
 
     /// Copy one tensor to `at` (a place inside a group's buffer), or to an allocation of its own.
-    fn upload_one(&mut self, dev: &mut CudaDevice, source: &mut File, plan: &TensorPlan, at: Option<u64>) -> Result<()> {
-        let len = usize::try_from(plan.len).map_err(|_| anyhow!("tensor too large for this platform"))?;
-        let mut bytes = vec![0u8; len];
+    fn upload_one(&mut self, dev: &mut CudaDevice, source: &mut File, plan: &TensorPlan, at: Option<u64>, shard: Option<&Shard>) -> Result<()> {
+        let whole = usize::try_from(plan.len).map_err(|_| anyhow!("tensor too large for this platform"))?;
+        let mut bytes = vec![0u8; whole];
         source.seek(SeekFrom::Start(plan.file_offset))?;
         source.read_exact(&mut bytes).context("read tensor bytes")?;
+        if let Some(shard) = shard {
+            if shard.shape.iter().product::<usize>() * shard.elem != whole {
+                return Err(anyhow!("tensor {} holds {whole} bytes but its shape {:?} of {}-byte elements needs {}", plan.name, shard.shape, shard.elem, shard.shape.iter().product::<usize>() * shard.elem));
+            }
+            bytes = extract(&bytes, &shard.shape, shard.elem, &shard.slice);
+        }
+        let len = bytes.len();
         let ptr = match at {
             Some(ptr) => ptr,
             None => {

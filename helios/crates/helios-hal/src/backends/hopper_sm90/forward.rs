@@ -50,6 +50,22 @@ impl Qwen2Dims {
         }
     }
 
+    /// The dimensions one rank of a tensor-parallel group computes with: its attention heads, KV heads and MLP width. `vocab` stays the whole
+    /// vocabulary (the logits are gathered before sampling); the head of a rank multiplies by `vocab / tp` rows. A size that does not divide the model is a
+    /// typed refusal, never a silent rounding.
+    pub fn sharded(&self, tp: usize) -> std::result::Result<Self, UnsupportedModel> {
+        if tp <= 1 {
+            return Ok(self.clone());
+        }
+        let must_divide = |what: &'static str, value: usize, by: usize| if value % by == 0 { Ok(()) } else { Err(UnsupportedModel::TensorParallel { what, value, by }) };
+        must_divide("attention heads", self.heads, tp)?;
+        must_divide("KV heads", self.kv_heads, tp)?;
+        must_divide("MLP width", self.intermediate, tp)?;
+        // The vocabulary is padded to a multiple of tp * 64 by the sharding plan; the rows of the head are not padded here, so it must already divide.
+        must_divide("vocabulary rows (tp * 64 per rank)", self.vocab, tp * 64)?;
+        Ok(Qwen2Dims { heads: self.heads / tp, kv_heads: self.kv_heads / tp, intermediate: self.intermediate / tp, ..self.clone() })
+    }
+
     /// The dimensions from the signed manifest, which is the only place the runtime learns them. Every
     /// variant of an operation the forward pass does not implement is refused with a typed
     /// [`UnsupportedModel`]: nothing is guessed and nothing is read from files beside the package.
@@ -91,6 +107,8 @@ impl Qwen2Dims {
 pub enum UnsupportedModel {
     #[error("the model normalises Q and K per head (qk_norm): the sm90 forward pass does not implement it yet")]
     QkNorm,
+    #[error("tensor parallelism of {by}: {what} ({value}) do not divide")]
+    TensorParallel { what: &'static str, value: usize, by: usize },
     #[error("the model's attention scale is {scale}, the sm90 kernels implement 1/sqrt(head_dim) = {expected}")]
     AttentionScale { scale: f64, expected: f64 },
 }

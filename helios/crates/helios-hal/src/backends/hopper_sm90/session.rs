@@ -24,6 +24,7 @@ use super::prefill_plan::{capacities, largest_chunk, mma_grid, plan_chunks, Pref
 use crate::cuda::event::Event;
 use crate::cuda::profile::StepMarks;
 use crate::cuda::{Cublas, CudaDevice, GraphExec, Kernel};
+use crate::traits::{CommDType, Communicator};
 use crate::reference::rope_tables;
 
 pub(super) const ELEMENT_BLOCK: u32 = 256;
@@ -47,6 +48,15 @@ const DELTA_SLACK: usize = 64;
 const STAGING_SLOTS: usize = 32;
 /// Vocabulary-sized 4-byte arrays per row in the sampler scratch: `z`, and the keys and indices of the two buffers of the full sort (`sample_rows_bf16`).
 const SAMPLE_WS_ROWS: usize = 5;
+/// This rank's place in a tensor-parallel group and the communicator its collectives run on (enqueued on the rank's step stream, so a graph capture records
+/// them).
+#[derive(Clone)]
+pub(super) struct TpState {
+    pub(super) size: usize,
+    pub(super) rank: usize,
+    pub(super) comm: std::sync::Arc<dyn Communicator>,
+}
+
 /// Words of the per-slot sampling parameters the sampler kernel reads.
 const SAMPLE_PARAM_WORDS: usize = 8;
 
@@ -144,6 +154,8 @@ pub(super) struct Kernels {
     attention_combine_rows: Kernel,
     argmax_rows: Kernel,
     sample_rows: Kernel,
+    /// Tensor parallelism only: lays the gathered logits of the vocab-parallel head out row-major.
+    gather_logits: Option<Kernel>,
 }
 
 pub(super) struct Buffers {
@@ -169,6 +181,9 @@ pub(super) struct Buffers {
     y_f32: u64,
     /// `[max_batch][vocab]` f32: row r holds the logits of decode row r (a prefill tail uses row 0).
     logits: u64,
+    /// Tensor parallelism only: this rank's logits `[rows][vocab / tp]` and the gathered `[tp][rows][vocab / tp]` (0 without tensor parallelism).
+    logits_part: u64,
+    gather: u64,
     /// Per decode row and split: (max, sum of exp, weighted V) of the split-K decode attention.
     attn_ws: u64,
     cos: u64,
@@ -237,6 +252,8 @@ pub(super) struct Session {
     layers: Vec<LayerWeights>,
     embed: u64,
     head: u64,
+    /// Tensor parallelism: the communicator and this rank's place in its group (`None`: one GPU).
+    pub(super) tp: Option<TpState>,
     final_norm: u64,
     pub(super) b: Buffers,
     splits: usize,
@@ -308,6 +325,8 @@ impl Session {
         let t = chunk_rows.max(max_batch); // rows of every activation buffer
         let bf = 2usize;
         let stride = capacity.div_ceil(PAGE_TOKENS);
+        let tp: Option<TpState> = backend.tp.lock().expect("tp mutex poisoned").clone();
+        let tp_size = tp.as_ref().map_or(1, |t| t.size);
 
         // The pinned staging ring of the step path (owner decision D4): one slot holds the largest single transfer of a step (the logits of a row, a padded
         // chunk of ids, the page-table deltas), 32 slots, allocated here so nothing is allocated after Ready.
@@ -348,6 +367,8 @@ impl Session {
             down: alloc(dev, t * hidden * bf)?,
             y_f32: alloc(dev, t * widest * 4)?,
             logits: alloc(dev, max_batch * d.vocab * 4)?,
+            logits_part: if tp.is_some() { alloc(dev, max_batch * (d.vocab / tp_size) * 4)? } else { 0 },
+            gather: if tp.is_some() { alloc(dev, max_batch * d.vocab * 4)? } else { 0 },
             attn_ws: alloc(dev, max_batch * heads * splits * (hd + 2) * 4)?,
             cos: alloc(dev, capacity * hd * bf)?,
             sin: alloc(dev, capacity * hd * bf)?,
@@ -401,6 +422,7 @@ impl Session {
             attention_combine_rows: kernel("attention_combine_rows_bf16")?,
             argmax_rows: kernel("argmax_rows_bf16")?,
             sample_rows: kernel("sample_rows_bf16")?,
+            gather_logits: if tp.is_some() { Some(kernel("gather_logits_rows")?) } else { None },
         };
         let (embed, head, final_norm, layers) = {
             let weights = backend.weights.lock().expect("weights mutex poisoned");
@@ -437,7 +459,13 @@ impl Session {
                     down: ptr(&n("mlp.down_proj.weight"))?,
                 });
             }
-            (ptr("embed_tokens.weight")?, ptr(d.head_weight())?, ptr("norm.weight")?, layers)
+            let embed = ptr("embed_tokens.weight")?;
+            let head = match (&tp, d.tied_head) {
+                // A tied head is the embedding matrix: each rank multiplies by its block of vocabulary rows, an offset into the whole table it holds.
+                (Some(t), true) => embed + (t.rank * (d.vocab / t.size) * d.hidden * 2) as u64,
+                _ => ptr(d.head_weight())?,
+            };
+            (embed, head, ptr("norm.weight")?, layers)
         };
 
         let events = (0..4).map(|_| Event::new(dev)).collect::<Result<Vec<_>>>()?;
@@ -456,6 +484,7 @@ impl Session {
             layers,
             embed,
             head,
+            tp,
             final_norm,
             b,
             splits,
@@ -726,6 +755,8 @@ impl Session {
                 mark("attention_combine")?;
             }
             project(w.o_w, 0, b.attn, b.o, hidden, q_dim)?;
+            // Tensor parallelism: this rank multiplied its columns of o_proj, the sum over the ranks is the projection.
+            self.all_reduce(b.o, t * hidden)?;
             mark("o_proj")?;
             add_norm(b.o, w.post_norm)?;
             mark("residual_norm")?;
@@ -747,6 +778,7 @@ impl Session {
             }
             mark("mlp_act")?;
             project(w.down, 0, b.act, b.down, hidden, d.intermediate)?;
+            self.all_reduce(b.down, t * hidden)?;
             mark("mlp_down")?;
             match self.layers.get(l + 1) {
                 // The residual add and the next layer's input norm.
@@ -762,7 +794,7 @@ impl Session {
         // Final norm of every row, then the output head: logits [t, vocab].
         norm(b.h, self.final_norm, b.x, ti)?;
         mark("norm")?;
-        cublas.linear_bf16_f32(self.head, b.x, b.logits, t, d.vocab, hidden)?;
+        self.head_logits(dev, cublas, b.x, t)?;
         mark("lm_head")
     }
 
@@ -783,7 +815,38 @@ impl Session {
         let (b, d) = (&self.b, &self.dims);
         let source = b.h + (row * d.hidden * 2) as u64;
         launch(dev, self.kernels.rmsnorm, 1, ROW_BLOCK, ROW_BLOCK * 4, &[Arg::Ptr(source), Arg::Ptr(self.final_norm), Arg::Ptr(b.x), Arg::Int(i32::try_from(d.hidden)?), Arg::Float(d.rms_eps)])?;
-        cublas.linear_bf16_f32(self.head, b.x, b.logits, 1, d.vocab, d.hidden)
+        self.head_logits(dev, cublas, b.x, 1)
+    }
+
+    /// One all-reduce of the sizes a step uses and one all-gather, then a wait: see [`HopperBackend::warm_collectives`].
+    pub(super) fn warm_collectives(&self, dev: &CudaDevice, tp: &TpState) -> Result<()> {
+        let b = &self.b;
+        tp.comm.all_reduce_sum(b.o, self.dims.hidden * self.max_batch.max(1), CommDType::Bf16)?;
+        let vl = self.dims.vocab / tp.size;
+        tp.comm.all_gather(b.logits_part, b.gather, vl, CommDType::F32)?;
+        dev.synchronize()
+    }
+
+    /// Sum `count` bf16 values at `ptr` over the ranks (in place); nothing on one GPU.
+    fn all_reduce(&self, ptr: u64, count: usize) -> Result<()> {
+        match &self.tp {
+            Some(tp) => tp.comm.all_reduce_sum(ptr, count, CommDType::Bf16),
+            None => Ok(()),
+        }
+    }
+
+    /// The logits of `rows` rows of `x` into `b.logits` `[rows][vocab]`: one GEMM, or with tensor parallelism each rank's block of the vocabulary, an
+    /// all-gather and the row-major layout.
+    fn head_logits(&self, dev: &CudaDevice, cublas: &Cublas, x: u64, rows: usize) -> Result<()> {
+        let (b, d) = (&self.b, &self.dims);
+        let Some(tp) = &self.tp else {
+            return cublas.linear_bf16_f32(self.head, x, b.logits, rows, d.vocab, d.hidden);
+        };
+        let vl = d.vocab / tp.size;
+        cublas.linear_bf16_f32(self.head, x, b.logits_part, rows, vl, d.hidden)?;
+        tp.comm.all_gather(b.logits_part, b.gather, rows * vl, CommDType::F32)?;
+        let gather = self.kernels.gather_logits.expect("created with tensor parallelism");
+        launch_grid(dev, gather, (grid_for(vl)?, u32::try_from(rows)?), ELEMENT_BLOCK, 0, &[Arg::Ptr(b.gather), Arg::Ptr(b.logits), Arg::Int(i32::try_from(rows)?), Arg::Int(i32::try_from(vl)?), Arg::Int(i32::try_from(tp.size)?)])
     }
 
     fn chunk_graph(&self, capacity: usize) -> Result<&GraphExec> {

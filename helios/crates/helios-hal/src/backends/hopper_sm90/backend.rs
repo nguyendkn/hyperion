@@ -86,6 +86,8 @@ pub struct HopperBackend {
     model_max_seq: Mutex<usize>,
     ledger: Mutex<StepLedger>,
     pub(super) device: Mutex<CudaDevice>,
+    /// Tensor parallelism: this backend is one rank of a group (set before `load_model`).
+    pub(super) tp: Mutex<Option<super::session::TpState>>,
 }
 
 /// The weight groups the decode step reads as one matrix: per layer `qkv` (Q, K, V rows, and their biases when the model has
@@ -107,7 +109,29 @@ impl HopperBackend {
     /// Probe a real CUDA device. Fails when the driver or a device is absent, so
     /// the factory skips this backend on hosts without a GPU.
     pub fn new() -> Result<Self> {
-        Ok(Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(CudaDevice::probe()?) })
+        Ok(Self::with_device(CudaDevice::probe()?))
+    }
+
+    /// A backend on a device the caller made (a rank of a group owns the device of its GPU).
+    pub fn with_device(device: CudaDevice) -> Self {
+        Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(device), tp: Mutex::new(None) }
+    }
+
+    /// Make this backend rank `rank` of `size` tensor-parallel ranks, its collectives running on `comm`. Before `load_model`: the weights are then read as this
+    /// rank's slices and the session built with this rank's dimensions, two all-reduces per layer and a vocab-parallel head.
+    pub fn set_tensor_parallel(&self, size: usize, rank: usize, comm: std::sync::Arc<dyn crate::traits::Communicator>) {
+        *self.tp.lock().expect("tp mutex poisoned") = if size > 1 { Some(super::session::TpState { size, rank, comm }) } else { None };
+    }
+
+    /// Run a small collective of every kind the step uses, once, so the library has made its buffers and connections before Ready (nothing is allocated
+    /// by the first collective of a step). Every rank of the group must call it at the same time. A no-op on one GPU.
+    pub fn warm_collectives(&self) -> Result<()> {
+        let tp = self.tp.lock().expect("tp mutex poisoned").clone();
+        let Some(tp) = tp else { return Ok(()) };
+        let session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_ref().ok_or_else(|| anyhow!("no session: capture_graphs first"))?;
+        let dev = self.device.lock().expect("device mutex poisoned");
+        session.warm_collectives(&dev, &tp)
     }
 
     /// The whole load order after `load_model` with the defaults of a single-sequence user: reserve, capture the graphs for buckets up to
@@ -357,7 +381,13 @@ impl ComputeBackend for HopperBackend {
         // Everything the forward pass needs to know about the model is in the signed manifest; nothing is
         // read from files beside the package. A model the pass does not implement is a typed refusal.
         let allow_qk_norm = self.allow_qk_norm.load(std::sync::atomic::Ordering::Relaxed);
-        let runtime = (Qwen2Dims::from_manifest_allowing(&config.model, allow_qk_norm || super::forward::QK_NORM_VERIFIED)?, config.eos_token_ids.clone());
+        let whole = Qwen2Dims::from_manifest_allowing(&config.model, allow_qk_norm || super::forward::QK_NORM_VERIFIED)?;
+        let tp = self.tp.lock().expect("tp mutex poisoned").clone();
+        let tp_size = tp.as_ref().map_or(1, |t| t.size);
+        if tp.as_ref().is_some_and(|t| t.size != config.deployment.tp_size as usize || t.rank != config.deployment.tp_rank as usize) {
+            return Err(HalError::Invalid(format!("the backend is rank {:?} of {tp_size} but the config says rank {} of {}", tp.as_ref().map(|t| t.rank), config.deployment.tp_rank, config.deployment.tp_size)).into());
+        }
+        let runtime = (whole.sharded(tp_size)?, config.eos_token_ids.clone());
 
         let mut dev = self.device.lock().expect("device mutex poisoned");
         // A model loaded before is released first (its session refers to its weights, its pool to the session).
@@ -368,7 +398,17 @@ impl ComputeBackend for HopperBackend {
         // The fused projections of a decode step (Q|K|V and gate|up) are read from one matrix each: the tensors are placed
         // back to back in one allocation as they are uploaded, so there is no second copy of any weight.
         let groups = fused_groups(&runtime.0);
-        let uploaded = DeviceWeights::upload_grouped(&mut dev, files, &plans, &groups)?;
+        // Tensor parallelism: this rank reads only its slice of each split tensor (`weights.slices`), the embedding excepted: it stays whole on every rank (a
+        // vocab-parallel gather would need a collective per step), and a tied head reads its block of vocabulary rows out of it.
+        let mut shards = std::collections::HashMap::new();
+        for (name, slice) in &weights.slices {
+            if name == "embed_tokens.weight" {
+                continue;
+            }
+            let spec = config.tensors.iter().find(|t| &t.name == name).ok_or_else(|| HalError::Invalid(format!("a slice names tensor {name}, which the package does not list")))?;
+            shards.insert(name.clone(), crate::cuda::weights::Shard { slice: slice.clone(), shape: spec.shape.clone(), elem: 2 });
+        }
+        let uploaded = DeviceWeights::upload_sharded(&mut dev, files, &plans, &groups, &shards)?;
         {
             let mut slot = self.weights.lock().expect("weights mutex poisoned");
             if let Some(mut old) = slot.replace(uploaded) {

@@ -936,6 +936,15 @@ extern "C" __global__ void attention_combine_rows_bf16(const float* __restrict__
     out[((size_t)r * heads + h) * head_dim + d] = __float2bfloat16(acc / total);
 }
 
+// Tensor parallelism: the logits of a vocab-parallel head, gathered rank-major ([rank][row][vocab / world], f32) by an all-gather, laid out as the
+// row-major [row][vocab] the sampler and the argmax read.
+extern "C" __global__ void gather_logits_rows(const float* __restrict__ in, float* __restrict__ out, int rows, int vl, int world) {
+    const int r = blockIdx.y;
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= vl) return;
+    for (int w = 0; w < world; w++) out[(size_t)r * vl * world + (size_t)w * vl + i] = in[((size_t)w * rows + r) * vl + i];
+}
+
 // Greedy token choice of every active row: block r takes the highest f32 logit of logits[r][0..n) (lowest index on ties, NaN never wins, as
 // argmax_chain_bf16), stores it as slot_token[slot] (the next step input of that slot) and in the row ring tokens_ring[r][position & 63] (the host reads it at the
 // position the token was sampled at, at most 63 steps late), and advances positions[r].
