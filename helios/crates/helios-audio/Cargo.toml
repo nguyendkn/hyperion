@@ -1,0 +1,12 @@
+[package]
+name = "helios-audio"
+description = "Audio front end for the speech families (ADR 0012): WAV/PCM I/O, deterministic resampler, STFT and log-mel features. No dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
