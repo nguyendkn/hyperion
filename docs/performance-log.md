@@ -416,3 +416,27 @@ Extra GPU time of sampling against greedy at context 512, microseconds per step 
 | wide path (temperature 60, top_p 0.9: every row needs the full sort) | 6534 / 6562 / 6569 / 6582 / 6656 / 7186 | 6572 / 6586 / 6596 / 6611 / 6714 / 7534 |
 
 The bounded path meets the 150 us budget (was 110-130 us). The wide path (a one-block radix sort in 11 passes plus a serial scan) is exact but costs about 6.5 ms a step whenever one row needs it, because the step waits for the slowest row; with the sort 7B top_p-only at bucket 32 averages 3.2 ms: on the benchmark prompts (repeated seed text, flat next-token distributions) many nucleus rows exceed 1024 tokens. On real chat traffic the share of wide rows is not measured. A histogram/radix select that avoids the sort is the lever (owner decision).
+
+**2026-11-05, tensor parallelism: TP=1 against TP=2 on one node, 2 x H100 80GB (NV18), NCCL 2.21.5, driver 580.126.20, 1980 MHz, release, revision 779812f + patches (tests `tp_perf_hw`, `tp_hw`; serving with `helios-cli --tensor-parallel 2`).** All-reduce of o_proj and down in float32 (two per layer), vocab-parallel head with an all-gather; every rank runs its own graphs. GPU ms per decode step (cuEvent, 10 windows of 128 chained graph launches, median; p10/p90 within 0.1%), bucket 1 / 8 / 32:
+
+| model, context | TP=1 | TP=2 |
+|---|---|---|
+| 0.5B, 5 | 1.439 / 1.717 / 1.882 | 1.659 / 1.945 / 2.158 |
+| 0.5B, 4096 | 1.530 / 2.356 / 4.515 | 1.742 / 2.314 / 3.595 |
+| 0.5B, 16000 | 1.864 / 3.544 / 8.538 | 1.909 / 3.016 / 6.007 |
+| 7B, 5 | 6.701 / 6.811 / 7.160 | 4.790 / 5.050 / 5.457 |
+| 7B, 4096 | 6.965 / 9.119 / 16.938 | 4.930 / 6.645 / 12.288 |
+| 7B, 16000 | 8.475 / 15.499 / 41.847 | 5.631 / 9.579 / 23.542 |
+
+Wall time to the first token through the plan path (chunks of 4096, median of 3): 0.5B 1024 / 8192 / 16384 tokens 6.2 / 57.0 / 161.7 ms (TP=1) and 6.4 / 43.0 / 111.0 ms (TP=2); 7B 31.7 / 339.9 / 914.7 ms (TP=1) and 22.8 / 206.1 / 544.2 ms (TP=2).
+
+Serving the 7B (greedy, cold prompts, `usage` counts; TP=1 pool 17568 pages, **TP=2 36958 pages on each rank**), requests 4 x concurrency; tokens/s computed as output tokens over wall time:
+
+| profile, concurrency | TTFT p50 TP=1 / TP=2 (ms) | ITL p90 TP=1 / TP=2 (ms) | tokens/s TP=1 / TP=2 |
+|---|---|---|---|
+| 512/256, 8 | 115 / 88 | 17.9 / 14.1 | 571 / 715 |
+| 512/256, 32 | 283 / 222 | 20.6 / 15.8 | 1339 / 1763 |
+| 8192/256, 8 | 2891 / 2294 | 37.1 / 29.5 | 70 / 89 |
+| 8192/256, 32 | 17136 / 13498 | 38.7 / 30.9 | 94 / 117 |
+
+Reading: a 7B fits one H100, so TP=2 buys speed only because decode reads the weights (15 GB) once per step and each GPU now reads half: at short context and small batch the 7B step is 1.40x faster; where attention over the KV cache dominates (bucket 32, context 16000) it is 1.78x, the KV cache being split too. The 0.5B is launch- and latency-bound: at short context TP=2 is **slower** (+15% at bucket 1, +14% at bucket 32), the cost of 48 all-reduces and the all-gather per step, and only wins where attention is large (bucket 32 at 16000 tokens 1.42x). **All-reduce share (nsys, 7B, TP=2, the oracle run of prefill and decode over both GPUs):** `ncclDevKernel_AllReduce_Sum_f32_RING_LL` is 10.5% of GPU kernel time (8178 launches, median 9.5 us, mean 48.5 us; the tail is time spent waiting for the other rank at the barrier); it is a mixed prefill/decode figure, not the share of a decode step alone. Greedy outputs at TP=2 are not token-identical to TP=1 (output lengths differed in the 512/256 profile: 2692 against 2442 tokens at concurrency 8), as the bound below allows.

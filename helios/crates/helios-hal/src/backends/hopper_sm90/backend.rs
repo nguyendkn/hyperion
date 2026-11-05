@@ -117,6 +117,22 @@ impl HopperBackend {
         Self { session: Mutex::new(None), cublas: Mutex::new(None), modules: Mutex::new(HashMap::new()), weights: Mutex::new(None), runtime: Mutex::new(None), allow_qk_norm: std::sync::atomic::AtomicBool::new(false), kv: Mutex::new(None), model_max_seq: Mutex::new(0), ledger: Mutex::new(StepLedger::new(2)), device: Mutex::new(device), tp: Mutex::new(None) }
     }
 
+    /// The pages `commit_kv` would map for `policy` right now (the graphs captured, nothing mapped yet). A tensor-parallel group asks every rank and commits
+    /// all of them with the smallest answer, so every rank holds the same number of pages (their free memory differs by a few MiB).
+    pub fn planned_pool_pages(&self, policy: &MemoryPolicy) -> Result<usize> {
+        let (dims, _) = self.runtime.lock().expect("runtime mutex poisoned").clone().ok_or_else(|| anyhow!("no model loaded: call load_model first"))?;
+        let lifecycle = self.kv.lock().expect("kv mutex poisoned");
+        let lifecycle = lifecycle.as_ref().filter(|l| l.state == KvState::Captured).ok_or_else(|| HalError::Invalid("planned_pool_pages needs the graphs captured and the pool not yet mapped".into()))?;
+        let dev = self.device.lock().expect("device mutex poisoned");
+        let session = self.session.lock().expect("session mutex poisoned");
+        let session = session.as_ref().ok_or_else(|| anyhow!("no session: capture_graphs first"))?;
+        let (free, _) = dev.memory_info()?;
+        let reserve = reserve_bytes(lifecycle.growth, policy.reserve_bytes as u64);
+        let geometry = PoolGeometry { page_tokens: super::session::PAGE_TOKENS, layers: dims.layers, kv_heads: dims.kv_heads, head_dim: dims.head_dim };
+        let cap = pool_cap(policy, geometry.page_tokens, lifecycle.max_batch, session.stride);
+        Ok(plan_pool(free, reserve, geometry.page_bytes(), lifecycle.range.granule() as u64, Some(cap))?.pages)
+    }
+
     /// Bytes of weights this backend holds on its device (a rank of a tensor-parallel group holds its share).
     pub fn weight_bytes(&self) -> usize {
         self.weights.lock().expect("weights mutex poisoned").as_ref().map_or(0, |w| w.total_bytes())

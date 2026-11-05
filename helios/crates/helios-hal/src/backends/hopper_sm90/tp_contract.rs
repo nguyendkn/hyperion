@@ -84,7 +84,14 @@ impl ComputeBackend for TpBackend {
     fn commit_kv(&self, kv: KvReservation, graphs: &GraphSet, policy: &MemoryPolicy) -> Result<KvPool> {
         kv.payload::<()>(TP_NAME)?;
         graphs.payload::<()>(TP_NAME)?;
-        let policy = policy.clone();
+        let mut policy = policy.clone();
+        // Every rank must map the same number of pages: ask each what it could map and commit all of them with the smallest answer as the cap.
+        let planned = {
+            let asked = policy.clone();
+            TpBackend::all_ok(self.run_all(move |rank| rank.backend.planned_pool_pages(&asked)))?
+        };
+        let pages = planned.iter().copied().min().expect("at least two ranks");
+        policy.max_tokens = pages * super::session::PAGE_TOKENS;
         let answers = self.run_all(move |rank| {
             let reservation = rank.take_reservation()?;
             let pool = rank.backend.commit_kv(reservation, rank.graphs_ref()?, &policy)?;
