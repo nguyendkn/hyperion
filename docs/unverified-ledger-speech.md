@@ -46,3 +46,17 @@ Separate file from `docs/unverified-ledger.md` on purpose: both tracks append, a
 | Tolerances (declared before any Helios run): encoder per tap relative to tap max-abs, 0.01 floor up to 0.166; top logits 1.488 abs, logsumexp 0.974 abs (observed bf16 drift 0.992 / 0.650, margin 1.5); mel 1e-3 abs | declared | same file, `tolerance` |
 | The logit tolerance is wide because bf16 drift of the reference is large on the last encoder layers (up to 0.11 relative at layer 21); a Helios bf16 run is judged against it, and the argmax and text rules stay the real gate | note | same file |
 | Helios encoder, decoder, mel against this oracle | `[NEEDS-GPU]` / not run: mel Rust test still to write; decode blocked on R1 | open |
+
+## Speech run, CPU optimisation experiments (2026-11-06)
+
+40 oracle clips (332 s audio), batch 6, CPU reference. Rule declared before the runs: WER versus fp32 text must not rise by more than 0.3 points, EN and VI. Baseline fp32 b6 t16: 142.6 s, 12.30 GB.
+
+| Config | wall | RSS | WER vs fp32 EN / VI | Verdict |
+|---|---|---|---|---|
+| bf16 t16 | 111.7 s (1.28x) | 5.24 GB | 0.00 / 1.09 | speed and RAM good, VI fails the 0.3 rule at batch 6 |
+| bf16 t8 | 111.4 s | 5.24 GB | 0.00 / 1.09 | same speed as t16 with half the threads |
+| bf16 t4 | 137.2 s | 5.24 GB | 0.00 / 1.09 | slower |
+| int8 decoder only | 97.0 s (1.47x) | 12.31 GB | 1.40 / 30.43 | rejected: the decoder is what int8 breaks |
+| int8 encoder only | 153.0 s (0.93x) | 12.19 GB | 0.00 / 1.30 | rejected: slower, no RAM saving, VI over the rule |
+
+Open: bf16 batch 1 on the oracle path gave VI 0.22 points over fp32, batch 6 through `transcribe` gives 1.09. Cause not established (padding in a batch, or the other code path); needs bf16 b1 on these 40 clips in this script. `[RUN]` CPU reference only, `scripts/bench-stt-cpu.py`.

@@ -65,9 +65,10 @@ def run(a) -> None:
     t0 = time.time()
     dtype = torch.bfloat16 if a.dtype == "bf16" else torch.float32
     m = Qwen3ASRModel.from_pretrained(str(MODEL_DIR), dtype=dtype, device_map="cpu", max_new_tokens=300, max_inference_batch_size=a.batch)
-    if a.quant == "int8":
+    if a.quant != "none":
         th = m.model.thinker
-        for sub in (th.audio_tower, th.model):  # lm_head stays fp32 (tied to the embedding)
+        parts = {"int8": (th.audio_tower, th.model), "int8-dec": (th.model,), "int8-enc": (th.audio_tower,)}[a.quant]
+        for sub in parts:  # lm_head stays fp32 (tied to the embedding)
             torch.ao.quantization.quantize_dynamic(sub, {torch.nn.Linear}, dtype=torch.qint8, inplace=True)
     load = time.time() - t0
     audio = []
@@ -91,7 +92,7 @@ def run(a) -> None:
 
 def compare(path: str) -> None:
     rows = [json.loads(x) for x in Path(path).read_text(encoding="utf-8").splitlines()]
-    base = next(r for r in rows if (r["dtype"], r["quant"], r["batch"]) == ("fp32", "none", 1))
+    base = next(r for r in rows if (r["dtype"], r["quant"]) == ("fp32", "none"))  # first fp32 row: text reference (speed-up is vs that row too)
     print(f"{'config':32} {'wall s':>7} {'speedup':>8} {'RTF':>6} {'RSS GB':>7} {'load s':>7} | WER vs fp32 en/vi | WER vs ref en/vi")
     for r in rows:
         w = {}
@@ -111,7 +112,7 @@ def compare(path: str) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dtype", choices=("fp32", "bf16"), default="fp32")
-    ap.add_argument("--quant", choices=("none", "int8"), default="none")
+    ap.add_argument("--quant", choices=("none", "int8", "int8-dec", "int8-enc"), default="none")
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--threads", type=int, default=0)
     ap.add_argument("--n", type=int, default=6, help="clips per language")
