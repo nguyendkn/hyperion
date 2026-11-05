@@ -68,9 +68,14 @@ fn chunk_capacity(tokens: usize) -> u32 {
 /// Prefill every sequence (one plan each), then `steps` decode steps of `bucket` rows holding all of them, asking for the logits of every row.
 /// Returns, per sequence, the logits after the prompt's first sampled token was fed and after each later step.
 fn run(backend: &HopperBackend, pool: &KvPool, seqs: &[Seq], bucket: u16, steps: usize) -> Vec<Vec<Vec<f32>>> {
+    run_mode(backend, pool, seqs, bucket, steps, helios_hal::DecodeMode::Graph)
+}
+
+/// [`run`] with the decode launched as the captured graph or as direct launches.
+fn run_mode(backend: &HopperBackend, pool: &KvPool, seqs: &[Seq], bucket: u16, steps: usize, mode: helios_hal::DecodeMode) -> Vec<Vec<Vec<f32>>> {
     let mut step = 0u64;
     let take = |plan: &StepPlan| {
-        let ticket = backend.submit_step(pool, plan).expect("submit_step");
+        let ticket = backend.submit_step_mode(pool, plan, mode).expect("submit_step");
         backend.take_output(ticket).expect("take_output")
     };
     for s in seqs {
@@ -548,6 +553,36 @@ fn thousands_of_steps_with_changing_plans_are_bit_identical_whatever_the_timing(
         let (hash, n) = stress(&backend, &pool, &seqs, rounds, mode);
         println!("mode {mode} ({}): {n} steps, fingerprint {hash:016x}", ["back to back", "50 us pause before take", "one step in flight"][mode as usize]);
         assert_eq!(hash, reference, "mode {mode}: the outputs of {n} steps differ from the back-to-back run");
+    }
+    backend.shutdown().unwrap();
+}
+
+/// `count` sequences of 24 to 51 prompt tokens built from the seed prompt, two pages each (so 40 decode steps fit).
+fn small_sequences(count: usize) -> Vec<Seq> {
+    let seed = seed_prompt();
+    (0..count)
+        .map(|i| Seq { slot: i as u32, prompt: (0..24 + (i % 4) * 9).map(|j| seed[(j * (i + 1) + i * 5) % seed.len()]).collect(), pages: vec![(2 * i) as u32, (2 * i + 1) as u32] })
+        .collect()
+}
+
+/// The graph of a decode bucket and direct launches of the same kernels give the same logits **bit for bit** (declared before the first run: any differing
+/// bit fails), over 40 steps of 1, 8 and 32 rows, with no oracle file: only the prompt tokens of the compact oracle serve as input ids.
+#[test]
+#[ignore = "needs an H100, a compiled package and the compact oracle (see module docs)"]
+fn graph_decode_equals_direct_launches_bit_for_bit_in_buckets_1_8_and_32() {
+    let (backend, pool) = open(32, 64);
+    let steps = 40;
+    for bucket in [1usize, 8, 32] {
+        let seqs = small_sequences(bucket);
+        let graph = run_mode(&backend, &pool, &seqs, bucket as u16, steps, helios_hal::DecodeMode::Graph);
+        let direct = run_mode(&backend, &pool, &seqs, bucket as u16, steps, helios_hal::DecodeMode::Direct);
+        let mut compared = 0usize;
+        for (row, (g, d)) in graph.iter().zip(&direct).enumerate() {
+            assert_eq!(g.len(), steps);
+            assert!(bits(g) == bits(d), "bucket {bucket}, row {row}: the graph and direct launches differ (max |difference| {})", max_diff(g, d));
+            compared += g.iter().map(Vec::len).sum::<usize>();
+        }
+        println!("bucket {bucket:>2}: {} rows x {steps} steps, {compared} logits: graph == direct bit for bit", seqs.len());
     }
     backend.shutdown().unwrap();
 }

@@ -455,10 +455,18 @@ fn graph_decode_is_bit_identical_to_direct_launches() {
     use helios_hal::{DecodeMode, SamplingConfig};
 
     let package = package();
-    let oracle: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(std::env::var("HYPERION_ORACLE").expect("set HYPERION_ORACLE")).unwrap()).unwrap();
     let dims = qwen2_dims(&package);
-    let prompt: Vec<u32> = oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+    // The prompt ids come from the full-logit oracle when there is one (HYPERION_ORACLE), else from the compact oracle every model has.
+    let prompt: Vec<u32> = match std::env::var_os("HYPERION_ORACLE") {
+        Some(path) => {
+            let oracle: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            oracle["prompt_ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect()
+        }
+        None => {
+            let path = std::env::var_os("HYPERION_COMPACT_ORACLE").expect("set HYPERION_ORACLE or HYPERION_COMPACT_ORACLE");
+            helios_hal::oracle::CompactOracle::from_json(&std::fs::read(path).unwrap()).expect("compact oracle").prompts[0].ids.clone()
+        }
+    };
     let (_, _, backend) = loaded_backend();
 
     // Bit-identity over 40 steps (greedy; the same tokens feed both runs while they agree).

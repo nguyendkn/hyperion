@@ -129,6 +129,33 @@ impl HopperBackend {
         self.commit_kv(reservation, &graphs, &MemoryPolicy { max_tokens, generate_region: false, ..MemoryPolicy::default() })
     }
 
+    /// [`ComputeBackend::submit_step`] with the decode launched either as the captured graph (what serving does) or as direct launches (the reference the graph
+    /// must equal bit for bit; for the hardware tests).
+    pub fn submit_step_mode(&self, pool: &KvPool, plan: &StepPlan, mode: super::forward_device::DecodeMode) -> Result<StepTicket> {
+        let handle = pool.payload::<PoolHandle>(NAME)?;
+        plan.validate()?;
+        let ticket = self.ledger.lock().expect("ledger mutex poisoned").submit()?;
+        let run = || -> Result<StepOutput> {
+            let dev = self.device.lock().expect("device mutex poisoned");
+            let session = self.session.lock().expect("session mutex poisoned");
+            let session = session.as_ref().ok_or_else(|| anyhow!("no session: the load order was not completed"))?;
+            let cublas = self.cublas.lock().expect("cublas mutex poisoned");
+            let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the graphs were captured"))?;
+            // Everything a step uses exists since the graphs were captured and the pool mapped; refuse to build anything now.
+            let _no_new_gpu_work = dev.forbid_new_gpu_work();
+            let layout = PageTableLayout { slots: session.max_batch, max_pages_per_slot: session.stride };
+            session.run_plan(&dev, cublas, plan, &layout, handle.pages, mode)
+        };
+        match run() {
+            Ok(output) => Ok(StepTicket::new(NAME, Completed { ticket, output })),
+            Err(error) => {
+                // The step did not happen: it must not stay in flight.
+                let _ = self.ledger.lock().expect("ledger mutex poisoned").take(ticket);
+                Err(error)
+            }
+        }
+    }
+
     /// Copy `bytes` bytes of the mapped KV pool, starting `offset` bytes into it, back to the host. A verification aid (a masked row must leave
     /// every page unchanged); not used on any serving path.
     pub fn read_pool_bytes(&self, offset: u64, bytes: usize) -> Result<Vec<u8>> {
@@ -435,28 +462,7 @@ impl ComputeBackend for HopperBackend {
     }
 
     fn submit_step(&self, pool: &KvPool, plan: &StepPlan) -> Result<StepTicket> {
-        let handle = pool.payload::<PoolHandle>(NAME)?;
-        plan.validate()?;
-        let ticket = self.ledger.lock().expect("ledger mutex poisoned").submit()?;
-        let run = || -> Result<StepOutput> {
-            let dev = self.device.lock().expect("device mutex poisoned");
-            let session = self.session.lock().expect("session mutex poisoned");
-            let session = session.as_ref().ok_or_else(|| anyhow!("no session: the load order was not completed"))?;
-            let cublas = self.cublas.lock().expect("cublas mutex poisoned");
-            let cublas = cublas.as_ref().ok_or_else(|| anyhow!("the cuBLAS handle was not created when the graphs were captured"))?;
-            // Everything a step uses exists since the graphs were captured and the pool mapped; refuse to build anything now.
-            let _no_new_gpu_work = dev.forbid_new_gpu_work();
-            let layout = PageTableLayout { slots: session.max_batch, max_pages_per_slot: session.stride };
-            session.run_plan(&dev, cublas, plan, &layout, handle.pages, super::forward_device::DecodeMode::Graph)
-        };
-        match run() {
-            Ok(output) => Ok(StepTicket::new(NAME, Completed { ticket, output })),
-            Err(error) => {
-                // The step did not happen: it must not stay in flight.
-                let _ = self.ledger.lock().expect("ledger mutex poisoned").take(ticket);
-                Err(error)
-            }
-        }
+        self.submit_step_mode(pool, plan, super::forward_device::DecodeMode::Graph)
     }
 
     fn take_output(&self, ticket: StepTicket) -> Result<StepOutput> {

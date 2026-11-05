@@ -26,6 +26,8 @@ pub mod step_ledger;
 pub mod traits;
 #[cfg(feature = "cuda")]
 pub mod cuda;
+#[cfg(feature = "cuda")]
+pub mod rank_group;
 pub mod oracle;
 pub mod reference;
 pub mod sampling;
