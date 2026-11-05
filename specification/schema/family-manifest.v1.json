@@ -126,6 +126,18 @@
     "AudioEncoderConfig": {
       "type": "object",
       "properties": {
+        "attention_window_mel_frames": {
+          "description": "Mel frames per attention block (the reference's `n_window_infer`; 800, 104 tokens after the convolutions); attention is bidirectional inside a block.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "chunk_mel_frames": {
+          "description": "Mel frames per convolution chunk (the reference's `2 * n_window`; 100).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "conv_channels": {
           "description": "Channels after the stride-2 convolutions.",
           "type": "integer",
@@ -142,6 +154,12 @@
           "format": "uint32",
           "minimum": 0
         },
+        "max_source_positions": {
+          "description": "Length of the sinusoidal position table.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "num_heads": {
           "type": "integer",
           "format": "uint32",
@@ -152,19 +170,14 @@
           "format": "uint32",
           "minimum": 0
         },
+        "output_dim": {
+          "description": "Width of the projector output, equal to the decoder hidden size.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "subsample": {
           "description": "Total time downsampling of the convolutions (8 for three stride-2 layers).",
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "window_frames_max": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "window_frames_min": {
-          "description": "Attention window in encoder frames, shortest and longest (bidirectional inside the window).",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -178,8 +191,10 @@
         "intermediate_size",
         "conv_channels",
         "subsample",
-        "window_frames_min",
-        "window_frames_max"
+        "chunk_mel_frames",
+        "attention_window_mel_frames",
+        "output_dim",
+        "max_source_positions"
       ]
     },
     "AudioFrontend": {
@@ -582,6 +597,16 @@
         "architecture": {
           "$ref": "#/$defs/SttArchitecture"
         },
+        "audio_end_token_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "audio_start_token_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "audio_token_id": {
           "description": "Token id of the placeholder whose embedding row is replaced by an encoder frame (the splice rule of the reference).",
           "type": "integer",
@@ -605,7 +630,9 @@
         "frontend",
         "encoder",
         "decoder",
-        "audio_token_id"
+        "audio_token_id",
+        "audio_start_token_id",
+        "audio_end_token_id"
       ]
     },
     "TensorFormat": {

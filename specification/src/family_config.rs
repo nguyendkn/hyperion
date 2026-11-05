@@ -40,9 +40,14 @@ pub struct AudioEncoderConfig {
     pub conv_channels: u32,
     /// Total time downsampling of the convolutions (8 for three stride-2 layers).
     pub subsample: u32,
-    /// Attention window in encoder frames, shortest and longest (bidirectional inside the window).
-    pub window_frames_min: u32,
-    pub window_frames_max: u32,
+    /// Mel frames per convolution chunk (the reference's `2 * n_window`; 100).
+    pub chunk_mel_frames: u32,
+    /// Mel frames per attention block (the reference's `n_window_infer`; 800, 104 tokens after the convolutions); attention is bidirectional inside a block.
+    pub attention_window_mel_frames: u32,
+    /// Width of the projector output, equal to the decoder hidden size.
+    pub output_dim: u32,
+    /// Length of the sinusoidal position table.
+    pub max_source_positions: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +61,8 @@ pub struct SttConfig {
     pub decoder: ModelConfig,
     /// Token id of the placeholder whose embedding row is replaced by an encoder frame (the splice rule of the reference).
     pub audio_token_id: u32,
+    pub audio_start_token_id: u32,
+    pub audio_end_token_id: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

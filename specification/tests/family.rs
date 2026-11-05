@@ -55,9 +55,11 @@ fn stt() -> FamilyManifest {
         stt: Some(SttConfig {
             architecture: SttArchitecture::Qwen3Asr,
             frontend: AudioFrontend { sample_rate: 16000, n_fft: 400, hop: 160, n_mels: 128, f_min: 0.0, f_max: 8000.0, whisper_norm: true, chunk_seconds: 30 },
-            encoder: AudioEncoderConfig { num_layers: 24, hidden_size: 1024, num_heads: 16, intermediate_size: 4096, conv_channels: 480, subsample: 8, window_frames_min: 13, window_frames_max: 100 },
+            encoder: AudioEncoderConfig { num_layers: 24, hidden_size: 1024, num_heads: 16, intermediate_size: 4096, conv_channels: 480, subsample: 8, chunk_mel_frames: 100, attention_window_mel_frames: 800, output_dim: 2048, max_source_positions: 1500 },
             decoder: decoder(),
             audio_token_id: 151676,
+            audio_start_token_id: 151669,
+            audio_end_token_id: 151670,
         }),
         tts: None,
         signature: None,
