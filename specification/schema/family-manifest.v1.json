@@ -1,0 +1,752 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FamilyManifest",
+  "type": "object",
+  "properties": {
+    "contract_revision": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "family": {
+      "$ref": "#/$defs/ModelFamily"
+    },
+    "license_spdx": {
+      "description": "SPDX id of the weights' licence as verified by the packager (ADR 0013/0014 evidence rules).",
+      "type": "string"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "payloads": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Payload"
+      }
+    },
+    "production_approved": {
+      "description": "Owner gate: false until the owner approves the model for production (unknown training data, unverified licence). The server refuses an\nunapproved model unless started with an explicit override.",
+      "type": "boolean",
+      "default": false
+    },
+    "qualified_checkpoint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QualifiedCheckpoint"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signature": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "default": null,
+      "items": {
+        "type": "integer",
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0
+      }
+    },
+    "stt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SttConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "target_arch": {
+      "type": "string"
+    },
+    "tensor_format": {
+      "$ref": "#/$defs/TensorFormat"
+    },
+    "tensors": {
+      "description": "Weight tensors with byte offsets into their payload (the LLM `LayerMapping`, reused).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LayerMapping"
+      }
+    },
+    "tts": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TtsConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "family",
+    "contract_revision",
+    "model_id",
+    "target_arch",
+    "tensor_format",
+    "license_spdx",
+    "payloads",
+    "tensors"
+  ],
+  "$defs": {
+    "Activation": {
+      "description": "The MLP activation. Only the values the runtime implements exist; a model with another activation\nneeds a new variant here and a kernel, never a guess.",
+      "oneOf": [
+        {
+          "description": "`silu(gate) * up`, then the down projection.",
+          "type": "string",
+          "const": "silu"
+        }
+      ]
+    },
+    "AttentionKind": {
+      "description": "How the attention layers lay out their KV cache. Decides the geometry that\n`num_kv_heads` and `head_dim` describe; a variant with a different cache\nshape (e.g. latent attention) is added here, never guessed from the dims.",
+      "oneOf": [
+        {
+          "description": "Multi-head: `num_kv_heads == num_attention_heads`.",
+          "type": "string",
+          "const": "mha"
+        },
+        {
+          "description": "Grouped-query: `num_kv_heads < num_attention_heads`, divides it evenly.",
+          "type": "string",
+          "const": "gqa"
+        }
+      ]
+    },
+    "AudioEncoderConfig": {
+      "type": "object",
+      "properties": {
+        "attention_window_mel_frames": {
+          "description": "Mel frames per attention block (the reference's `n_window_infer`; 800, 104 tokens after the convolutions); attention is bidirectional inside a block.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "chunk_mel_frames": {
+          "description": "Mel frames per convolution chunk (the reference's `2 * n_window`; 100).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "conv_channels": {
+          "description": "Channels after the stride-2 convolutions.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "hidden_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "intermediate_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_source_positions": {
+          "description": "Length of the sinusoidal position table.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_heads": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_layers": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "output_dim": {
+          "description": "Width of the projector output, equal to the decoder hidden size.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "subsample": {
+          "description": "Total time downsampling of the convolutions (8 for three stride-2 layers).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "num_layers",
+        "hidden_size",
+        "num_heads",
+        "intermediate_size",
+        "conv_channels",
+        "subsample",
+        "chunk_mel_frames",
+        "attention_window_mel_frames",
+        "output_dim",
+        "max_source_positions"
+      ]
+    },
+    "AudioFrontendConfig": {
+      "description": "Audio front end exactly as the reference defines it; shared by every speech family (`helios-audio::mel::MelConfig` is built from it).",
+      "type": "object",
+      "properties": {
+        "chunk_seconds": {
+          "description": "Longest chunk the front end hands to the encoder, in seconds.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "f_max": {
+          "type": "number",
+          "format": "double"
+        },
+        "f_min": {
+          "type": "number",
+          "format": "double"
+        },
+        "hop": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mel_scale": {
+          "$ref": "#/$defs/MelScale"
+        },
+        "n_fft": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "n_mels": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "normalization": {
+          "$ref": "#/$defs/FeatureNormalization"
+        },
+        "sample_rate": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "window": {
+          "$ref": "#/$defs/WindowKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sample_rate",
+        "n_fft",
+        "hop",
+        "n_mels",
+        "f_min",
+        "f_max",
+        "window",
+        "mel_scale",
+        "normalization",
+        "chunk_seconds"
+      ]
+    },
+    "CodecConfig": {
+      "type": "object",
+      "properties": {
+        "codebook_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "frame_rate_milli_hz": {
+          "description": "Frames per second times 1000 (12.5 Hz is 12500), an integer so the manifest has no float to compare.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_codebooks": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sample_rate": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "sample_rate",
+        "frame_rate_milli_hz",
+        "num_codebooks",
+        "codebook_size"
+      ]
+    },
+    "DepthDecoderConfig": {
+      "type": "object",
+      "properties": {
+        "hidden_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "intermediate_size": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_heads": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_layers": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "num_layers",
+        "hidden_size",
+        "num_heads",
+        "intermediate_size"
+      ]
+    },
+    "FeatureNormalization": {
+      "oneOf": [
+        {
+          "description": "`log10`, floor at (max - 8), then (x + 4) / 4.",
+          "type": "string",
+          "const": "whisper_log_max8"
+        },
+        {
+          "description": "`log10` only.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "LayerMapping": {
+      "description": "Maps one transformer layer to its weight tensor(s) inside the package blob.\nByte offsets let the loader mmap the blob and slice without copying.",
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "description": "Length in bytes of the weight blob for this tensor.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "byte_offset": {
+          "description": "Byte range where this tensor's weights begin, counted from the start of the data section of its payload file.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "index": {
+          "description": "0-based layer index in the model graph.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "name": {
+          "description": "Logical name, e.g. \"attention.q_proj\" — matches the kernel registry.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "Index into the manifest's payload table of the file that holds this tensor (0, the default,\nis the first or only payload).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sharding": {
+          "description": "How the tensor may be split between tensor-parallel ranks (ADR 0005). Absent means it is not split.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ShardClass"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tensor": {
+          "description": "Tensor metadata describing dtype/shape — see [`TensorMetadata`].",
+          "$ref": "#/$defs/TensorMetadata"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "name",
+        "byte_offset",
+        "byte_length",
+        "tensor"
+      ]
+    },
+    "MelScale": {
+      "oneOf": [
+        {
+          "description": "Slaney scale and Slaney area normalisation (librosa default, used by the Whisper feature extractor).",
+          "type": "string",
+          "const": "slaney"
+        }
+      ]
+    },
+    "ModelConfig": {
+      "description": "Architecture dimensions of the compiled model. All fields are required except `attention_scale`: a\nmanifest that cannot say how big its tensors are, or which variant of each operation they feed, is\nnot loadable. The runtime reads these and nothing else about the model's shape.",
+      "type": "object",
+      "properties": {
+        "activation": {
+          "description": "MLP activation; see [`Activation`].",
+          "$ref": "#/$defs/Activation"
+        },
+        "attention": {
+          "description": "KV cache layout; see [`AttentionKind`].",
+          "$ref": "#/$defs/AttentionKind"
+        },
+        "attention_scale": {
+          "description": "Softmax scale override. Absent means `1 / sqrt(head_dim)`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "head_dim": {
+          "description": "Dimension of one attention head.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "hidden_size": {
+          "description": "Width of the residual stream.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "intermediate_size": {
+          "description": "Width of the MLP's inner (gate and up) projections.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_seq_len": {
+          "description": "Maximum sequence length the model was compiled with. Requests beyond\nthis are rejected to avoid KV cache overrun.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_attention_heads": {
+          "description": "Number of attention (query) heads.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_kv_heads": {
+          "description": "Number of key/value heads (equals `num_attention_heads` without GQA).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "num_layers": {
+          "description": "Number of transformer layers.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "qk_norm": {
+          "description": "Q and K are normalised per head before RoPE (Qwen3). A runtime that does not implement it\nrefuses the package with a typed error.",
+          "type": "boolean"
+        },
+        "qkv_bias": {
+          "description": "The Q, K and V projections have a bias.",
+          "type": "boolean"
+        },
+        "rms_norm_eps": {
+          "description": "Epsilon of every RMS normalisation.",
+          "type": "number",
+          "format": "double"
+        },
+        "rope_style": {
+          "description": "How rotary embedding pairs dimensions; see [`RopeStyle`].",
+          "$ref": "#/$defs/RopeStyle"
+        },
+        "rope_theta": {
+          "description": "Base of the rotary embedding frequencies.",
+          "type": "number",
+          "format": "double"
+        },
+        "tie_word_embeddings": {
+          "description": "The output head is the embedding matrix (no `lm_head.weight` tensor).",
+          "type": "boolean"
+        },
+        "vocab_size": {
+          "description": "Vocabulary size (logits width).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "num_layers",
+        "attention",
+        "num_attention_heads",
+        "num_kv_heads",
+        "head_dim",
+        "vocab_size",
+        "max_seq_len",
+        "hidden_size",
+        "intermediate_size",
+        "rope_theta",
+        "rope_style",
+        "rms_norm_eps",
+        "tie_word_embeddings",
+        "qkv_bias",
+        "qk_norm",
+        "activation"
+      ]
+    },
+    "ModelFamily": {
+      "description": "Families that use this envelope. `decoder_lm` is the implicit family of the LLM manifest and is deliberately not a variant.",
+      "type": "string",
+      "enum": [
+        "stt_qwen3_asr",
+        "tts_vieneu_v3"
+      ]
+    },
+    "Payload": {
+      "description": "One weights file of the package. The file sits beside the package under exactly this name; the\nname is part of what is signed, so a swapped or edited file is detectable once the runtime\nchecks `sha256` (planned with package signing; the runtime does not verify it yet).",
+      "type": "object",
+      "properties": {
+        "byte_length": {
+          "description": "Size of the file in bytes.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "file": {
+          "description": "File name only: no directory separator, no `:`, not `.` or `..`. See [`is_bare_file_name`].",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[^/\\\\:]+$"
+        },
+        "sha256": {
+          "description": "Lowercase hexadecimal SHA-256 of the whole file.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "byte_length",
+        "sha256"
+      ]
+    },
+    "QualifiedCheckpoint": {
+      "description": "The public checkpoint a package was made from.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Hugging Face repository id, `owner/name`.",
+          "type": "string"
+        },
+        "revision": {
+          "description": "The git commit of that repository, 40 lowercase hex digits. The weights' hashes are in `payloads`.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "repo",
+        "revision"
+      ]
+    },
+    "RopeStyle": {
+      "description": "How rotary position embedding pairs the dimensions of a head.",
+      "oneOf": [
+        {
+          "description": "Hugging Face `rotate_half` (GPT-NeoX): dimension `i` pairs with `i + head_dim / 2`; the whole head is rotated.",
+          "type": "string",
+          "const": "rotate_half"
+        }
+      ]
+    },
+    "ShardClass": {
+      "description": "How the tensor of a layer entry may be split between tensor-parallel ranks.",
+      "oneOf": [
+        {
+          "description": "Split along the output dimension (rows of a `[out, in]` matrix, and a bias with them): Q, K, V, gate, up.",
+          "type": "string",
+          "const": "column"
+        },
+        {
+          "description": "Split along the input dimension (columns): the attention output projection and the MLP down projection. A bias of a row-split\nprojection is added once, after the all-reduce, never per rank.",
+          "type": "string",
+          "const": "row"
+        },
+        {
+          "description": "Every rank holds the whole tensor: norms.",
+          "type": "string",
+          "const": "replicated"
+        },
+        {
+          "description": "Split along the vocabulary rows, which the loader pads to a multiple of `tp * 64`: the embedding and the output head.",
+          "type": "string",
+          "const": "vocab"
+        }
+      ]
+    },
+    "SttArchitecture": {
+      "oneOf": [
+        {
+          "description": "Audio encoder (conv2d subsampling + transformer) whose output is spliced into a Qwen3 decoder's input embeddings.",
+          "type": "string",
+          "const": "qwen3_asr"
+        }
+      ]
+    },
+    "SttConfig": {
+      "type": "object",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/SttArchitecture"
+        },
+        "audio_end_token_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "audio_start_token_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "audio_token_id": {
+          "description": "Token id of the placeholder whose embedding row is replaced by an encoder frame (the splice rule of the reference).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "decoder": {
+          "description": "The decoder is a complete `decoder_lm` description, so the unchanged LLM path serves it.",
+          "$ref": "#/$defs/ModelConfig"
+        },
+        "encoder": {
+          "$ref": "#/$defs/AudioEncoderConfig"
+        },
+        "frontend": {
+          "$ref": "#/$defs/AudioFrontendConfig"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "frontend",
+        "encoder",
+        "decoder",
+        "audio_token_id",
+        "audio_start_token_id",
+        "audio_end_token_id"
+      ]
+    },
+    "TensorFormat": {
+      "description": "Weight packing format of a package. Per-tensor dtypes live in\n[`TensorMetadata`]; this is the package-level format the recipe selected.",
+      "type": "string",
+      "enum": [
+        "bf16",
+        "fp8",
+        "fp4"
+      ]
+    },
+    "TensorMetadata": {
+      "description": "Shape + dtype of a single tensor. Mirrors `helios_hal::TensorData` but\nstays decoupled from device pointers — this is on-package metadata only.",
+      "type": "object",
+      "properties": {
+        "dtype": {
+          "description": "\"bf16\" | \"fp8\" | \"fp4\" | \"fp6\" — matches kernel dtype flags.",
+          "type": "string"
+        },
+        "shape": {
+          "description": "Logical shape in row-major order, e.g. [4096, 4096].",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "dtype",
+        "shape"
+      ]
+    },
+    "TtsArchitecture": {
+      "oneOf": [
+        {
+          "description": "LLM backbone emitting multi-codebook codec frames, small depth decoder per frame, causal transformer codec.",
+          "type": "string",
+          "const": "vieneu_v3"
+        }
+      ]
+    },
+    "TtsConfig": {
+      "type": "object",
+      "properties": {
+        "architecture": {
+          "$ref": "#/$defs/TtsArchitecture"
+        },
+        "backbone": {
+          "$ref": "#/$defs/ModelConfig"
+        },
+        "codec": {
+          "$ref": "#/$defs/CodecConfig"
+        },
+        "depth_decoder": {
+          "$ref": "#/$defs/DepthDecoderConfig"
+        },
+        "voices": {
+          "description": "Preset voices the package ships; a request naming another voice is a 400 (cloning is not supported).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "architecture",
+        "backbone",
+        "depth_decoder",
+        "codec",
+        "voices"
+      ]
+    },
+    "WindowKind": {
+      "oneOf": [
+        {
+          "description": "Periodic Hann, `0.5 - 0.5 cos(2 pi i / n)`.",
+          "type": "string",
+          "const": "hann_periodic"
+        }
+      ]
+    }
+  }
+}

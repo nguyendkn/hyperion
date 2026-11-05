@@ -1,0 +1,315 @@
+{
+ "_comment": "Fixed STT oracle clips. Rule in scripts/gen-oracle-stt-clips.py: duration 4 to 12 s, sorted by id, every (eligible // 20)-th, 20 per language.",
+ "datasets": {
+  "en": {
+   "repo": "openslr/librispeech_asr",
+   "revision": "71cacbfb7e2354c4226d01e70d77d5fca3d04ba1",
+   "config": "clean",
+   "split": "test",
+   "license": "CC-BY-4.0",
+   "force_language": "English",
+   "parquet": "librispeech_test_clean.parquet",
+   "parquet_sha256": "7113aa4c3cf963fb54697145719a7725f984c8836d1c494a554cbb9f1a017df0",
+   "eligible": 1419,
+   "step": 70
+  },
+  "vi": {
+   "repo": "google/fleurs",
+   "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+   "config": "vi_vn",
+   "split": "test",
+   "license": "CC-BY-4.0",
+   "force_language": "Vietnamese",
+   "parquet": "fleurs_vi_test.parquet",
+   "parquet_sha256": "65325be18bef84bb97b5bad1145958ae752919bb0b6696e7cfa8409ef5c46c77",
+   "eligible": 463,
+   "step": 23
+  }
+ },
+ "clips": {
+  "en": [
+   {
+    "id": "1089-134686-0000",
+    "reference_text": "HE HOPED THERE WOULD BE STEW FOR DINNER TURNIPS AND CARROTS AND BRUISED POTATOES AND FAT MUTTON PIECES TO BE LADLED OUT IN THICK PEPPERED FLOUR FATTENED SAUCE",
+    "duration_s": 10.435,
+    "audio_sha256": "30885601173f96b0d8ddd020dc959b055c6c1582b85a33e3fcab8c4b08ed94c2",
+    "file": "en/1089-134686-0000.flac"
+   },
+   {
+    "id": "121-127105-0002",
+    "reference_text": "CRIED ONE OF THE WOMEN HE TOOK NO NOTICE OF HER HE LOOKED AT ME BUT AS IF INSTEAD OF ME HE SAW WHAT HE SPOKE OF",
+    "duration_s": 7.495,
+    "audio_sha256": "d952ca94835dfda5013e3898edcbfd87b5f90de37a5c44e27c8448af3d2fb38f",
+    "file": "en/121-127105-0002.flac"
+   },
+   {
+    "id": "1284-134647-0001",
+    "reference_text": "THE EDICT OF MILAN THE GREAT CHARTER OF TOLERATION HAD CONFIRMED TO EACH INDIVIDUAL OF THE ROMAN WORLD THE PRIVILEGE OF CHOOSING AND PROFESSING HIS OWN RELIGION",
+    "duration_s": 10.275,
+    "audio_sha256": "40c764345c38ef4cfa288fd2bc5566a2a36e4914f3f6e5cc172b63db02ae7799",
+    "file": "en/1284-134647-0001.flac"
+   },
+   {
+    "id": "1580-141083-0037",
+    "reference_text": "WHAT COULD HE DO HE CAUGHT UP EVERYTHING WHICH WOULD BETRAY HIM AND HE RUSHED INTO YOUR BEDROOM TO CONCEAL HIMSELF",
+    "duration_s": 5.73,
+    "audio_sha256": "4431ffd65f0cb9a19e6dd0c786226ba35150e13320a271b4ff787984fa14bc6e",
+    "file": "en/1580-141083-0037.flac"
+   },
+   {
+    "id": "1995-1837-0027",
+    "reference_text": "ON SHE HURRIED UNTIL SWEEPING DOWN TO THE LAGOON AND THE ISLAND LO THE COTTON LAY BEFORE HER",
+    "duration_s": 6.705,
+    "audio_sha256": "f97f44b700d270dbf8c78f46a2fdab768d6159c2b8c8d33da08188ea720ae19a",
+    "file": "en/1995-1837-0027.flac"
+   },
+   {
+    "id": "237-134493-0006",
+    "reference_text": "THAT'S NOT MUCH OF A JOB FOR AN ATHLETE HERE I'VE BEEN TO TOWN AND BACK",
+    "duration_s": 4.395,
+    "audio_sha256": "71cd3a0e1f150d06446fb578b454be866b1c76441943c0a6380ec62836322bb0",
+    "file": "en/237-134493-0006.flac"
+   },
+   {
+    "id": "2830-3979-0006",
+    "reference_text": "A WORD SHOULD NOW BE SAID ABOUT THE ORIGIN OF LUTHER'S COMMENTARY ON GALATIANS",
+    "duration_s": 4.55,
+    "audio_sha256": "a69f3c0f765d8e4dbb4e13c8336d1154c2fb10d1e6b785aa5c71a0c86450711d",
+    "file": "en/2830-3979-0006.flac"
+   },
+   {
+    "id": "2961-961-0014",
+    "reference_text": "NINE THOUSAND YEARS HAVE ELAPSED SINCE SHE FOUNDED YOURS AND EIGHT THOUSAND SINCE SHE FOUNDED OURS AS OUR ANNALS RECORD",
+    "duration_s": 9.565,
+    "audio_sha256": "a7f01dc9ba7d8600a581d08e48b9257eada1ce77a29dfef76fe7a47cf00d31c0",
+    "file": "en/2961-961-0014.flac"
+   },
+   {
+    "id": "3575-170457-0047",
+    "reference_text": "TABBY HAD LIVED WITH THEM FOR TEN OR TWELVE YEARS AND WAS AS CHARLOTTE EXPRESSED IT ONE OF THE FAMILY",
+    "duration_s": 6.525,
+    "audio_sha256": "1686c766321471676555f3555176237ae91a78761d9fe37b96bf47dc9e94641b",
+    "file": "en/3575-170457-0047.flac"
+   },
+   {
+    "id": "4446-2275-0001",
+    "reference_text": "SHE BLUSHED AND SMILED AND FUMBLED HIS CARD IN HER CONFUSION BEFORE SHE RAN UPSTAIRS",
+    "duration_s": 4.66,
+    "audio_sha256": "cf18b3c4f8a445625c91de9d5528462a1110d7636988d0541553792bcf9f68df",
+    "file": "en/4446-2275-0001.flac"
+   },
+   {
+    "id": "4970-29095-0026",
+    "reference_text": "IF I GO TO MEETING AT ALL I LIKE BEST TO SIT IN THE QUIET OLD HOUSE IN GERMANTOWN WHERE THE WINDOWS ARE ALL OPEN AND I CAN SEE THE TREES AND HEAR THE STIR OF THE LEAVES",
+    "duration_s": 10.93,
+    "audio_sha256": "d06e41e2248a2b7ba5bee2c6a60e268247267c9e8201798a1a5b87c54858fcf0",
+    "file": "en/4970-29095-0026.flac"
+   },
+   {
+    "id": "5105-28240-0017",
+    "reference_text": "SOME MYSTERIOUS FORCE SEEMED TO HAVE BROUGHT ABOUT A CONVULSION OF THE ELEMENTS",
+    "duration_s": 5.665,
+    "audio_sha256": "0a3c16e85ad2ef7d6ae1a834b908d9c2bfaad393537f1052f7fc082219eda38f",
+    "file": "en/5105-28240-0017.flac"
+   },
+   {
+    "id": "5639-40744-0029",
+    "reference_text": "THIS TRUTH WHICH I HAVE LEARNED FROM HER LIPS IS CONFIRMED BY HIS FACE IN WHICH WE HAVE BOTH BEHELD THAT OF OUR SON",
+    "duration_s": 7.305,
+    "audio_sha256": "aa6e59548591c9927ccd622310e84d17e5f0df19d50eb27e540d27d6dbf987d8",
+    "file": "en/5639-40744-0029.flac"
+   },
+   {
+    "id": "61-70968-0032",
+    "reference_text": "HE FELT FOR AND FOUND THE WIZARD'S BLACK CLOTH THE SQUIRE WAS QUITE OUT OF BREATH",
+    "duration_s": 4.28,
+    "audio_sha256": "497006ada4c10096ef6a96908bb6df8374c130125d4ac246eecee2db9fa0a2bd",
+    "file": "en/61-70968-0032.flac"
+   },
+   {
+    "id": "672-122797-0055",
+    "reference_text": "AND THEN HE TOLD ALL ABOUT HIS YOUTH AND THE LITTLE MICE HAD NEVER HEARD THE LIKE BEFORE AND THEY LISTENED AND SAID",
+    "duration_s": 8.23,
+    "audio_sha256": "7863c30ce21c2fe4937772d90229ee7168137ccc14b981ce586a391e7916c483",
+    "file": "en/672-122797-0055.flac"
+   },
+   {
+    "id": "6829-68771-0035",
+    "reference_text": "WILL YOU LEAVE ME ALONE IN MY OWN ROOM OR MUST I GO AWAY TO ESCAPE YOU",
+    "duration_s": 4.39,
+    "audio_sha256": "680b1541bb867342ca9ad74d239bec96082a453c0cf2535f7593ad6cd1981ea3",
+    "file": "en/6829-68771-0035.flac"
+   },
+   {
+    "id": "7021-85628-0021",
+    "reference_text": "HE STILL HELD ON TO IT WITH BOTH HANDS AS HE RUSHED INTO HIS MOTHER'S COTTAGE",
+    "duration_s": 5.365,
+    "audio_sha256": "138586a099cfa9df1da0bac436a288ccdfd75642440b950662bb29381cbca750",
+    "file": "en/7021-85628-0021.flac"
+   },
+   {
+    "id": "7176-92135-0017",
+    "reference_text": "IN THE OLD BADLY MADE PLAY IT WAS FREQUENTLY NECESSARY FOR ONE OF THE CHARACTERS TO TAKE THE AUDIENCE INTO HIS CONFIDENCE",
+    "duration_s": 7.17,
+    "audio_sha256": "dc46d1aa60d3395c47636cc238317a9d470f02e23f647b67f2606592a06eb006",
+    "file": "en/7176-92135-0017.flac"
+   },
+   {
+    "id": "8230-279154-0028",
+    "reference_text": "I CAN SET TO WORK NOW TO REMEMBER THINGS I NEVER REMEMBERED BEFORE SUCH AS WHAT I HAD TO EAT FOR BREAKFAST THIS MORNING AND IT CAN HARDLY BE WHOLLY HABIT THAT ENABLES ME TO DO THIS",
+    "duration_s": 11.56,
+    "audio_sha256": "e7e82b4949a70761d362aa3fcb5688cdab8b37958797b932d80b0927f5ad91de",
+    "file": "en/8230-279154-0028.flac"
+   },
+   {
+    "id": "8463-294828-0012",
+    "reference_text": "PLEASE FORGIVE ME FOR THIS UNDERHANDED WAY OF ADMITTING I HAD TURNED FORTY",
+    "duration_s": 4.905,
+    "audio_sha256": "0a7347cb635d83c6f2219fca312e008501fa7e7c0e7666a84a5074bed3cfa437",
+    "file": "en/8463-294828-0012.flac"
+   }
+  ],
+  "vi": [
+   {
+    "id": "1660",
+    "reference_text": "chủ nghĩa lãng mạn có một yếu tố lớn về quyết định văn hóa được rút ra từ những tác giả như goethe fichte và schlegel",
+    "duration_s": 11.88,
+    "audio_sha256": "2af722d60e9d7827c395e64e616a6b8a2bc716c0a91146b076a429b092ff2dbf",
+    "file": "vi/1660.wav"
+   },
+   {
+    "id": "1679",
+    "reference_text": "aerosmith đã huỷ các buổi trình diễn còn lại trong chuyến lưu diễn của họ",
+    "duration_s": 6.96,
+    "audio_sha256": "22dffd7ccf6f83c6924e07009e6f71c19eb820ef31f901499ed25f679a93796c",
+    "file": "vi/1679.wav"
+   },
+   {
+    "id": "1701",
+    "reference_text": "loài dê được thuần hoá lần đầu vào khoảng 10.000 năm trước tại dãy núi zagros thuộc iran",
+    "duration_s": 9.84,
+    "audio_sha256": "2484cfa3be239c33b438c6a5a0a4eb3d7ddd1707ef7477cb867ca2cd0cadb829",
+    "file": "vi/1701.wav"
+   },
+   {
+    "id": "1724",
+    "reference_text": "nó nổi tiếng là tiêu điểm của sự xa hoa bắt đầu từ khoảng năm 400 tcn và kéo dài đến tận khoảng năm 1100 scn",
+    "duration_s": 9.84,
+    "audio_sha256": "08e1431180fe9e12e5b09c7fd6058ea4f30b70c28092b11669f463a76aa7a2ce",
+    "file": "vi/1724.wav"
+   },
+   {
+    "id": "1739",
+    "reference_text": "nằm trên đỉnh của một trong những ngọn núi ở phía bắc mecca hang động này hoàn toàn tách biệt với phần còn lại của thế giới",
+    "duration_s": 11.76,
+    "audio_sha256": "5a2750f88c07c8742dab669dd8ee1617bb6f40b7ec226951d304d9e8200cd280",
+    "file": "vi/1739.wav"
+   },
+   {
+    "id": "1750",
+    "reference_text": "phát hiện này cũng mang đến một cái nhìn sâu sắc cho sự tiến hóa đối với lông vũ của các loài chim",
+    "duration_s": 7.86,
+    "audio_sha256": "9e4693d5a0e5ae10e54b029d7273f2cf2f176434ec80ddf258dc98c9a0d201fe",
+    "file": "vi/1750.wav"
+   },
+   {
+    "id": "1767",
+    "reference_text": "đây là một cơ hội tốt để ngắm nhìn hiện tượng cực quang vì bầu trời sẽ ít nhiều tối hơn trong cả ngày",
+    "duration_s": 8.88,
+    "audio_sha256": "4e5246328f76739597bb1602d3be018b2a1cc3d76ceec78b8550562f4c401e9f",
+    "file": "vi/1767.wav"
+   },
+   {
+    "id": "1781",
+    "reference_text": "madagascar là khu vực rộng lớn nhất và là lục địa dành riêng cho động vật hoang dã",
+    "duration_s": 9.0,
+    "audio_sha256": "18d34cd17c886718f2eb177eee568e563834df1cdfd6897e8e37c29b9a2396f8",
+    "file": "vi/1781.wav"
+   },
+   {
+    "id": "1799",
+    "reference_text": "ngoài buổi tổ chức hôm thứ tư carpanedo đã thi đấu trong 2 chặng đua riêng biệt trong giải vô địch",
+    "duration_s": 11.64,
+    "audio_sha256": "badef6adebc5fd789b686e48b84707fde571111d8a6390abd12c4e4eec42bff3",
+    "file": "vi/1799.wav"
+   },
+   {
+    "id": "1817",
+    "reference_text": "tuy nhiên về khía cạnh này thì khu vực schengen vận hành gần như một quốc gia duy nhất",
+    "duration_s": 9.72,
+    "audio_sha256": "4d5e5db7267eb17ec9ed786153e7394f74ee1b46bf532b99b21ba55a155d1db1",
+    "file": "vi/1817.wav"
+   },
+   {
+    "id": "1830",
+    "reference_text": "đảng cầm quyền tổ chức nhân dân tây nam phi swapo cũng giữ được thế đa số trong các cuộc bầu cử nghị viện",
+    "duration_s": 10.44,
+    "audio_sha256": "e653187c8d48679b3598e0a26a05df402399aea5a717fb5e15bfcab69d5196f1",
+    "file": "vi/1830.wav"
+   },
+   {
+    "id": "1854",
+    "reference_text": "chiếc xe đã được đưa đi khỏi hiện trường tai nạn vào khoảng 12:00 giờ gmt cùng ngày hôm đó",
+    "duration_s": 7.74,
+    "audio_sha256": "d7baff7693abcf31dfd17b16998fd025fa385c53382bf20c40382c2156934c42",
+    "file": "vi/1854.wav"
+   },
+   {
+    "id": "1875",
+    "reference_text": "20% lượng nước đổ từ các con sông trên hành tinh này ra đại dương đều bắt nguồn từ amazon",
+    "duration_s": 9.12,
+    "audio_sha256": "764e46d012a41c6c7178a1c89950f3159832f115448623471f882fb863a588a7",
+    "file": "vi/1875.wav"
+   },
+   {
+    "id": "1889",
+    "reference_text": "nó mang đến cho chúng ta xe lửa xe hơi và nhiều phương tiện di chuyển khác",
+    "duration_s": 5.88,
+    "audio_sha256": "711961f6d9222535cdda2f558b4328cae59c0f10bc7b98d93f6b4345bffb739a",
+    "file": "vi/1889.wav"
+   },
+   {
+    "id": "1905",
+    "reference_text": "thủ đô của moldova là chişinău. ngôn ngữ địa phương là tiếng romania nhưng tiếng nga cũng được sử dụng rộng rãi",
+    "duration_s": 8.52,
+    "audio_sha256": "a5220a12fcaa84391895eef865456995993d4de12aba7756a063081c80358cfe",
+    "file": "vi/1905.wav"
+   },
+   {
+    "id": "1916",
+    "reference_text": "nhiều món bánh nướng của đức còn có hạnh nhân quả phỉ và các loại hạt khác bánh càng ngon hơn khi ăn kèm một tách cà phê đậm đà",
+    "duration_s": 11.58,
+    "audio_sha256": "afd184bb7abeddeec7c272f730b8de62bd4f55e668530a8d8506f08b12d0404c",
+    "file": "vi/1916.wav"
+   },
+   {
+    "id": "1933",
+    "reference_text": "cuối cùng có nhiều loài mèo nhỏ gồm cả mèo nuôi trong nhà ăn những con mồi nhỏ có số lượng lớn như côn trùng các loài gặm nhấm thằn lằn và chim",
+    "duration_s": 11.04,
+    "audio_sha256": "40e78bfe2c4e2a8fde50f1a4ea22070ca2469e5507ac0a809a8d5a469ec7fda7",
+    "file": "vi/1933.wav"
+   },
+   {
+    "id": "1949",
+    "reference_text": "các nhà côn trùng học sử dụng thuật ngữ bọ với nghĩa chính thức để đặt cho nhóm côn trùng này",
+    "duration_s": 8.04,
+    "audio_sha256": "2371509d444b7a4c0a5f856b30ec03311248ce56fd7eb46cdfd9e1668103026f",
+    "file": "vi/1949.wav"
+   },
+   {
+    "id": "1966",
+    "reference_text": "lệnh này là phản ứng của martelly với các cuộc biểu tình chống chế độ lan rộng từ tháng 10",
+    "duration_s": 9.78,
+    "audio_sha256": "180dba21f2956e08ddb8cc405b06fce4058f95368d60341912978d631097c887",
+    "file": "vi/1966.wav"
+   },
+   {
+    "id": "1991",
+    "reference_text": "trong suốt thời kỳ này của lịch sử châu âu nhà thờ công giáo lúc này đã trở nên giàu có và quyền lực bắt đầu chịu sự soi xét",
+    "duration_s": 12.0,
+    "audio_sha256": "4d3b5dd7f0bb138bce42b65834c1e358f065b3bf53afc276855336f2607a5498",
+    "file": "vi/1991.wav"
+   }
+  ]
+ }
+}

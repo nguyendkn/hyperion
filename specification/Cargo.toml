@@ -32,3 +32,8 @@ path = "src/lib.rs"
 name = "gen-schema"
 path = "src/bin/gen-schema.rs"
 required-features = ["schema"]
+
+[[bin]]
+name = "gen-family-schema"
+path = "src/bin/gen-family-schema.rs"
+required-features = ["schema"]

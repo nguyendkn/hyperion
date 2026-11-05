@@ -1,0 +1,14 @@
+[package]
+name = "helios-speech"
+description = "Model families beyond the decoder LM (ADR 0012): registry, memory partition planning, GPU arbiter. Pure host logic; family backends are added on top."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
