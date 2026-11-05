@@ -12,10 +12,14 @@
 //! definition here lets the runtime verify a package against an exact, typed
 //! contract instead of free-form JSON, and lets FFI expose the same structs.
 
+pub mod family;
+pub mod family_config;
 pub mod identity;
 pub mod sha256;
 pub mod v1;
 
+#[cfg(feature = "schema")]
+pub mod family_schema;
 #[cfg(feature = "schema")]
 pub mod schema;
 
