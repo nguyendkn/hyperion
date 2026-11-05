@@ -31,3 +31,9 @@ Separate file from `docs/unverified-ledger.md` on purpose: both tracks append, a
 | Qwen3-ASR compiler: all 708 tensors of the real index mapped, shapes equal to the inventory derived from the real config, decoder emitted as a `ModelConfig`, manifest valid against the family schema and parsed by Rust (golden `specification/fixtures/family/qwen3-asr-1.7b-sm_90.json`) | `[RUN]` 6 pytest + Rust family tests | real config and real shard headers (sha256-pinned, `testdata/models-speech.json`); payload sizes and hashes from the revision's LFS metadata, the shards themselves were not downloaded |
 | Multipart parser (RFC 2046) with limits: 3000 random round trips byte-exact, every truncation, look-alike delimiters, 413/400 limits | `[RUN]` 5 tests (+ 3 unit) | `helios/crates/helios-speech/tests/multipart_random.rs` |
 | Production gate: default profile refuses `production_approved=false`, `dev` loads with `X-Hyperion-Model-Status: provisional` | `[RUN]` 3 tests; not wired to a server yet | `helios-speech/src/profile.rs` |
+
+## Speech run, CPU reference benchmark (2026-11-06)
+
+| Item | Tag | Evidence |
+|---|---|---|
+| Qwen3-ASR reference on CPU (16 threads), 6 EN + 6 VI clips, 103 s audio: bf16 batch 6 is 3.30x faster than fp32 batch 1 (30.7 s vs 101.4 s), peak RSS 5.14 GB vs 12.37 GB, transcripts identical to fp32 on all 12 clips; int8 dynamic quantization raises VI WER vs fp32 to 17-33 % and saves no RAM (rejected) | `[RUN]` CPU reference path, 12 clips only, not the Helios engine | `scripts/bench-stt-cpu.py` |
