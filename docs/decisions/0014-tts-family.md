@@ -1,6 +1,6 @@
 # 0014: TTS family
 
-Status: **proposed** (speech run, 2026-11-05). Selection by the rule of S-A3 (weights 40/25/15/10/10). Evidence and sources: `docs/research/tts-candidates-20261105.md` (accessed 2026-11-05). Related: 0012 (families), 0013 (STT, used for round-trip evaluation).
+Status: **proposed** (speech run, 2026-11-05). **VieNeu is `provisional, not for production`** (owner direction 2026-11-05): engineering proceeds, because the host, codec and API work is reusable for any same-shape model; the manifest field `production_approved` stays false until the author confirms the training-data provenance and commercial rights in writing and the `sea-g2p` table licences are audited. A licence-clean fine-tune is evaluated in parallel; its hard part is enough clean Vietnamese data (possibly purchased or recorded). Selection by the rule of S-A3 (weights 40/25/15/10/10). Evidence and sources: `docs/research/tts-candidates-20261105.md` (accessed 2026-11-05). Related: 0012 (families), 0013 (STT, used for round-trip evaluation).
 
 ## Evidence quality (read first)
 The research read Hugging Face cards, GitHub pages and `config.json` through summarising fetches, not the raw LICENSE files or the modelling code. Licences below are **claims from model cards** until the owner or a legal pass confirms them. Items marked [I] are inference. The first task of S1.2 is to pin each repo to a commit and read the modelling code; any difference from this ADR is recorded as an amendment.
