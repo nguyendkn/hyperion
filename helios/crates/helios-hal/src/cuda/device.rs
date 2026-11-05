@@ -15,11 +15,15 @@ use super::sys::{
     cuDevicePrimaryCtxRetain, cuDeviceTotalMem_v2, cuInit, cuMemAlloc_v2, cuMemFree_v2, cuMemcpyDtoDAsync_v2,
     cuMemcpyDtoH_v2, cuMemcpyHtoD_v2, cuStreamCreate, cuStreamDestroy_v2, load_driver, CUcontext, CUdevice, CUdeviceptr,
     CUstream, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-    CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
+    CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, cuEventCreate, cuEventDestroy_v2, cuEventRecord, cuEventSynchronize, cuMemFreeHost, cuMemHostAlloc,
+    cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, CUevent,
 };
+
+const CU_EVENT_DISABLE_TIMING: std::os::raw::c_uint = 2;
 use std::os::raw::{c_int, c_void};
 
 use super::ffi::eval_cuda;
+use super::staging::{Ring, StagingError};
 use super::work_guard::{RestrictionGuard, WorkRestriction};
 
 /// `CU_STREAM_NON_BLOCKING = 1` — the driver's `cuStreamCreate` takes the
@@ -39,6 +43,15 @@ pub struct CudaDevice {
     sm_count: u32,
     stream: CUstream,
     restriction: WorkRestriction,
+    /// The pinned staging ring of the step path (see `staging.rs`), allocated by [`CudaDevice::enable_staging`] before Ready.
+    staging: std::cell::RefCell<Option<Staging>>,
+}
+
+/// Pinned host memory, the events behind each slot, and the ring rules.
+struct Staging {
+    ring: Ring,
+    host: *mut u8,
+    events: Vec<CUevent>,
 }
 
 // Safety: the device handle and context are owned by this struct and only
@@ -120,6 +133,7 @@ impl CudaDevice {
                 sm_count: sm_count.max(1) as u32,
                 stream,
                 restriction: WorkRestriction::default(),
+                staging: std::cell::RefCell::new(None),
             })
         }
     }
@@ -209,7 +223,93 @@ impl CudaDevice {
         Ok(())
     }
 
-    /// Copy host bytes to a device allocation.
+    /// Allocate the pinned staging ring of the step path: `slots` slots of `slot_bytes` bytes and one event per slot. Allocates, so it is part of the
+    /// preallocation before Ready (refused while new GPU work is forbidden). A second call is a no-op.
+    pub fn enable_staging(&self, slots: usize, slot_bytes: usize) -> Result<()> {
+        if self.staging.borrow().is_some() {
+            return Ok(());
+        }
+        self.check_new_gpu_work("pinned staging allocation")?;
+        self.set_current()?;
+        let ring = Ring::new(slots, slot_bytes);
+        let mut host: *mut c_void = std::ptr::null_mut();
+        unsafe {
+            eval_cuda("cuMemHostAlloc", cuMemHostAlloc(&mut host, ring.total_bytes(), 0))?;
+        }
+        let mut events = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            let mut event: CUevent = std::ptr::null_mut();
+            unsafe {
+                eval_cuda("cuEventCreate", cuEventCreate(&mut event, CU_EVENT_DISABLE_TIMING))?;
+            }
+            events.push(event);
+        }
+        *self.staging.borrow_mut() = Some(Staging { ring, host: host as *mut u8, events });
+        Ok(())
+    }
+
+    /// Bytes of one staging slot (the largest single transfer of the step path), or `None` before [`CudaDevice::enable_staging`].
+    pub fn staging_slot_bytes(&self) -> Option<usize> {
+        self.staging.borrow().as_ref().map(|s| s.ring.slot_bytes())
+    }
+
+    /// Copy host bytes to a device allocation, **ordered on the step stream**: the bytes go through a pinned slot and `cuMemcpyHtoDAsync`, so a kernel
+    /// launched afterwards on this stream sees them. The step path uses this and never [`CudaDevice::htod`].
+    pub fn htod_staged(&self, dst: u64, src: &[u8]) -> Result<()> {
+        if src.is_empty() {
+            return Ok(());
+        }
+        self.set_current()?;
+        let mut guard = self.staging.borrow_mut();
+        let staging = guard.as_mut().ok_or(StagingError::NotEnabled)?;
+        let acquired = staging.ring.acquire(src.len())?;
+        if acquired.wait {
+            unsafe { eval_cuda("cuEventSynchronize", cuEventSynchronize(staging.events[acquired.slot]))? };
+            staging.ring.completed(acquired.slot);
+        }
+        let host = unsafe { staging.host.add(acquired.slot * staging.ring.slot_bytes()) };
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), host, src.len());
+            eval_cuda("cuMemcpyHtoDAsync", cuMemcpyHtoDAsync_v2(dst, host as *const c_void, src.len(), self.stream))?;
+            eval_cuda("cuEventRecord", cuEventRecord(staging.events[acquired.slot], self.stream))?;
+        }
+        staging.ring.recorded(acquired.slot);
+        Ok(())
+    }
+
+    /// Copy a device allocation to host memory through a pinned slot, **after everything queued on the step stream**, and wait for it.
+    pub fn dtoh_staged(&self, dst: &mut [u8], src: u64) -> Result<()> {
+        if dst.is_empty() {
+            return Ok(());
+        }
+        self.set_current()?;
+        let mut guard = self.staging.borrow_mut();
+        let staging = guard.as_mut().ok_or(StagingError::NotEnabled)?;
+        let acquired = staging.ring.acquire(dst.len())?;
+        if acquired.wait {
+            unsafe { eval_cuda("cuEventSynchronize", cuEventSynchronize(staging.events[acquired.slot]))? };
+            staging.ring.completed(acquired.slot);
+        }
+        let host = unsafe { staging.host.add(acquired.slot * staging.ring.slot_bytes()) };
+        unsafe {
+            eval_cuda("cuMemcpyDtoHAsync", cuMemcpyDtoHAsync_v2(host as *mut c_void, src, dst.len(), self.stream))?;
+            eval_cuda("cuEventRecord", cuEventRecord(staging.events[acquired.slot], self.stream))?;
+            staging.ring.recorded(acquired.slot);
+            eval_cuda("cuEventSynchronize", cuEventSynchronize(staging.events[acquired.slot]))?;
+            staging.ring.completed(acquired.slot);
+            std::ptr::copy_nonoverlapping(host as *const u8, dst.as_mut_ptr(), dst.len());
+        }
+        Ok(())
+    }
+
+    /// Fill `bytes` bytes at `dst` with `value`, ordered on the step stream (no host memory involved).
+    pub fn memset_staged(&self, dst: u64, value: u8, bytes: usize) -> Result<()> {
+        self.set_current()?;
+        unsafe { eval_cuda("cuMemsetD8Async", cuMemsetD8Async(dst, value, bytes, self.stream)) }
+    }
+
+    /// Copy host bytes to a device allocation. **Not ordered with the step stream** (a copy from pageable memory may still be in flight when a kernel
+    /// starts): for load time and tests that follow it with a synchronize; the step path uses [`CudaDevice::htod_staged`].
     pub fn htod(&self, dst: u64, src: &[u8]) -> Result<()> {
         self.set_current()?;
         unsafe {
@@ -258,6 +358,14 @@ impl CudaDevice {
         // Idempotent: a second call (explicit `shutdown` then `Drop`) is a no-op.
         if self.ctx.is_null() {
             return Ok(());
+        }
+        if let Some(staging) = self.staging.get_mut().take() {
+            unsafe {
+                for event in staging.events {
+                    cuEventDestroy_v2(event);
+                }
+                cuMemFreeHost(staging.host as *mut c_void);
+            }
         }
         unsafe {
             eval_cuda("cuStreamDestroy", cuStreamDestroy_v2(self.stream))?;

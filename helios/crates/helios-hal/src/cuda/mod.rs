@@ -16,6 +16,7 @@ pub mod loader;
 pub mod module;
 pub mod nccl;
 pub mod profile;
+pub mod staging;
 pub mod sys;
 pub mod vmm;
 pub mod work_guard;

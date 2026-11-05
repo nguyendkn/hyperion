@@ -43,6 +43,8 @@ const MAX_SPLIT_PAGES: usize = 96;
 pub(super) const RING: usize = 64;
 /// Table deltas a step may carry beyond one full table (a decode step adds at most one page per row).
 const DELTA_SLACK: usize = 64;
+/// Slots of the pinned staging ring (`cuda/staging.rs`).
+const STAGING_SLOTS: usize = 32;
 /// Vocabulary-sized 4-byte arrays per row in the sampler scratch: `z`, and the keys and indices of the two buffers of the full sort (`sample_rows_bf16`).
 const SAMPLE_WS_ROWS: usize = 5;
 /// Words of the per-slot sampling parameters the sampler kernel reads.
@@ -307,6 +309,11 @@ impl Session {
         let bf = 2usize;
         let stride = capacity.div_ceil(PAGE_TOKENS);
 
+        // The pinned staging ring of the step path (owner decision D4): one slot holds the largest single transfer of a step (the logits of a row, a padded
+        // chunk of ids, the page-table deltas), 32 slots, allocated here so nothing is allocated after Ready.
+        let slot_bytes = (d.vocab * 4).max(chunk_rows * 4).max((stride + DELTA_SLACK) * 8).max(1 << 20).next_multiple_of(1 << 16);
+        dev.enable_staging(STAGING_SLOTS, slot_bytes)?;
+
         // Every buffer starts as zeros: the warm-up launches (cuBLAS included) read buffers no step has written yet, and a read of memory nobody
         // initialised is both a sanitizer report and a result that could differ between runs.
         let zeros = vec![0u8; 16 << 20];
@@ -316,7 +323,7 @@ impl Session {
             let mut done = 0;
             while done < bytes {
                 let n = zeros.len().min(bytes - done);
-                dev.htod(pointer + done as u64, &zeros[..n])?;
+                dev.htod(pointer + done as u64, &zeros[..n])?; // allowed: load-time
                 done += n;
             }
             Ok(pointer)
@@ -358,14 +365,14 @@ impl Session {
 
         let (cos, sin) = rope_tables(capacity, hd, d.rope_theta);
         let to_bytes = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-        dev.htod(b.cos, &to_bytes(&cos))?;
-        dev.htod(b.sin, &to_bytes(&sin))?;
+        dev.htod(b.cos, &to_bytes(&cos))?; // allowed: load-time
+        dev.htod(b.sin, &to_bytes(&sin))?; // allowed: load-time
         // Every table starts empty (NO_PAGE = -1, all bits set), so the warm-up launches skip the pool.
-        dev.htod(b.tables, &vec![0xFFu8; (max_batch + 1) * stride * 4])?;
-        dev.htod(b.stage, &vec![0xFFu8; stride * 4])?;
-        dev.htod(b.slot_token, &vec![0u8; (max_batch + 1) * 4])?;
-        dev.htod(b.sample_params, &vec![0u8; (max_batch + 1) * SAMPLE_PARAM_WORDS * 4])?;
-        dev.htod(b.seen, &vec![0u8; (max_batch + 1) * seen_words(d.vocab) * 4])?;
+        dev.htod(b.tables, &vec![0xFFu8; (max_batch + 1) * stride * 4])?; // allowed: load-time
+        dev.htod(b.stage, &vec![0xFFu8; stride * 4])?; // allowed: load-time
+        dev.htod(b.slot_token, &vec![0u8; (max_batch + 1) * 4])?; // allowed: load-time
+        dev.htod(b.sample_params, &vec![0u8; (max_batch + 1) * SAMPLE_PARAM_WORDS * 4])?; // allowed: load-time
+        dev.htod(b.seen, &vec![0u8; (max_batch + 1) * seen_words(d.vocab) * 4])?; // allowed: load-time
 
         let mut cublas_slot = backend.cublas.lock().expect("cublas mutex poisoned");
         if cublas_slot.is_none() {
@@ -538,27 +545,27 @@ impl Session {
             slots[r] = slot;
             positions[r] = position;
         }
-        dev.htod(self.b.slots, &slots.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
-        dev.htod(self.b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
+        dev.htod_staged(self.b.slots, &slots.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+        dev.htod_staged(self.b.positions, &positions.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())
     }
 
     /// Set the sampling state of the slots admitted by a plan: the parameters, the draw counter at 0 and an empty history. Greedy slots are written
     /// too (temperature 0), so a slot that is reused never keeps the parameters of the sequence before it.
     pub(super) fn apply_inits(&self, dev: &CudaDevice, inits: &[crate::step::SlotInit]) -> Result<()> {
-        let zeros = vec![0u8; seen_words(self.dims.vocab) * 4];
+        let seen_bytes = seen_words(self.dims.vocab) * 4;
         for init in inits {
             let s = &init.sampling;
             let words = [s.temperature.to_bits(), s.top_p.to_bits(), s.top_k, s.repetition_penalty.to_bits(), s.seed as u32, (s.seed >> 32) as u32, 0, 0];
             let slot = init.slot as usize;
-            dev.htod(self.b.sample_params + (slot * SAMPLE_PARAM_WORDS * 4) as u64, &words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>())?;
-            dev.htod(self.b.seen + (slot * zeros.len()) as u64, &zeros)?;
+            dev.htod_staged(self.b.sample_params + (slot * SAMPLE_PARAM_WORDS * 4) as u64, &words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>())?;
+            dev.memset_staged(self.b.seen + (slot * seen_bytes) as u64, 0, seen_bytes)?;
         }
         Ok(())
     }
 
     /// Set the token `slot` feeds into its next decode step.
     pub(super) fn set_slot_token(&self, dev: &CudaDevice, slot: usize, token: u32) -> Result<()> {
-        dev.htod(self.b.slot_token + (slot * 4) as u64, &token.to_le_bytes())
+        dev.htod_staged(self.b.slot_token + (slot * 4) as u64, &token.to_le_bytes())
     }
 
     /// Apply page-table deltas given as `(word, page)` pairs (see `PageTableLayout::encode`), before the step that reads them.
@@ -570,21 +577,21 @@ impl Session {
         if n > self.stride + DELTA_SLACK {
             return Err(anyhow!("{n} page-table deltas in one step; a step holds at most {}", self.stride + DELTA_SLACK));
         }
-        dev.htod(self.b.deltas, &pairs.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+        dev.htod_staged(self.b.deltas, &pairs.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
         launch(dev, self.kernels.apply_deltas, u32::try_from(n.div_ceil(ELEMENT_BLOCK as usize))?, ELEMENT_BLOCK, 0, &[Arg::Ptr(self.b.tables), Arg::Ptr(self.b.deltas), Arg::Int(i32::try_from(n)?)])
     }
 
     /// The f32 logits of decode row `row` after a step.
     pub(super) fn read_logits(&self, dev: &CudaDevice, row: usize) -> Result<Vec<f32>> {
         let mut raw = vec![0u8; self.dims.vocab * 4];
-        dev.dtoh(&mut raw, self.b.logits + (row * self.dims.vocab * 4) as u64)?;
+        dev.dtoh_staged(&mut raw, self.b.logits + (row * self.dims.vocab * 4) as u64)?;
         Ok(raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
     }
 
     /// The token the argmax kernel chose for `row` when it sampled at `position`.
     pub(super) fn read_token(&self, dev: &CudaDevice, row: usize, position: usize) -> Result<u32> {
         let mut raw = [0u8; 4];
-        dev.dtoh(&mut raw, self.b.tokens_ring + ((row * RING + (position & (RING - 1))) * 4) as u64)?;
+        dev.dtoh_staged(&mut raw, self.b.tokens_ring + ((row * RING + (position & (RING - 1))) * 4) as u64)?;
         Ok(u32::from_le_bytes(raw))
     }
 
@@ -766,9 +773,9 @@ impl Session {
         padded.resize(capacity, 0);
         let positions: Vec<u32> = (0..capacity).map(|i| (start + i.min(valid - 1)) as u32).collect();
         let bytes = |v: &[u32]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-        dev.htod(self.b.ids, &bytes(&padded))?;
-        dev.htod(self.b.positions, &bytes(&positions))?;
-        dev.htod(self.b.rows, &(valid as i32).to_le_bytes())
+        dev.htod_staged(self.b.ids, &bytes(&padded))?;
+        dev.htod_staged(self.b.positions, &bytes(&positions))?;
+        dev.htod_staged(self.b.rows, &(valid as i32).to_le_bytes())
     }
 
     /// Final norm and output head of row `row` of the activations, leaving the logits in row 0 of `b.logits`.

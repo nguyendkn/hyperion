@@ -154,6 +154,11 @@ driver_api! {
     cuMemcpyHtoD_v2(destination: CUdeviceptr, source: *const c_void, bytes: usize);
     cuMemcpyDtoH_v2(destination: *mut c_void, source: CUdeviceptr, bytes: usize);
     cuMemcpyDtoDAsync_v2(destination: CUdeviceptr, source: CUdeviceptr, bytes: usize, stream: CUstream);
+    cuMemcpyHtoDAsync_v2(destination: CUdeviceptr, source: *const c_void, bytes: usize, stream: CUstream);
+    cuMemcpyDtoHAsync_v2(destination: *mut c_void, source: CUdeviceptr, bytes: usize, stream: CUstream);
+    cuMemsetD8Async(destination: CUdeviceptr, value: u8, count: usize, stream: CUstream);
+    cuMemHostAlloc(pointer: *mut *mut c_void, bytes: usize, flags: c_uint);
+    cuMemFreeHost(pointer: *mut c_void);
     cuStreamCreate(stream: *mut CUstream, flags: c_uint);
     cuStreamDestroy_v2(stream: CUstream);
     cuStreamSynchronize(stream: CUstream);
