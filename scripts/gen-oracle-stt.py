@@ -105,7 +105,7 @@ def run_clip(m, clip: dict, lang: str, meta: dict, taps: Tap, dtype: torch.dtype
         ids = forced_ids if forced_ids is not None else gen
         full = torch.tensor([inp["input_ids"][0].tolist() + ids])
         taps.take()
-        out = model(input_ids=full, attention_mask=torch.ones_like(full), input_features=inp["input_features"], feature_attention_mask=inp["feature_attention_mask"])
+        out = model.thinker(input_ids=full, attention_mask=torch.ones_like(full), input_features=inp["input_features"], feature_attention_mask=inp["feature_attention_mask"])
         enc = {k: summ(v) for k, v in taps.take().items()}
         recs = decoder_records(out.logits[0, p_len - 1:p_len - 1 + len(ids)])
     rec = {"id": clip["id"], "lang": lang, "prompt_ids": inp["input_ids"][0].tolist(), "generated_ids": gen, "forced_ids": ids,

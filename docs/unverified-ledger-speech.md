@@ -37,3 +37,12 @@ Separate file from `docs/unverified-ledger.md` on purpose: both tracks append, a
 | Item | Tag | Evidence |
 |---|---|---|
 | Qwen3-ASR reference on CPU (16 threads), 6 EN + 6 VI clips, 103 s audio: bf16 batch 6 is 3.30x faster than fp32 batch 1 (30.7 s vs 101.4 s), peak RSS 5.14 GB vs 12.37 GB, transcripts identical to fp32 on all 12 clips; int8 dynamic quantization raises VI WER vs fp32 to 17-33 % and saves no RAM (rejected) | `[RUN]` CPU reference path, 12 clips only, not the Helios engine | `scripts/bench-stt-cpu.py` |
+
+## Speech run, STT oracle (2026-11-06)
+
+| Item | Tag | Evidence |
+|---|---|---|
+| Qwen3-ASR oracle: 20 EN (LibriSpeech test-clean) + 20 VI (FLEURS vi_vn test) fixed clips, fp32 and bf16 on CPU; per clip: prompt ids, greedy ids, features summary, 24 encoder layer taps, top-k logits and logsumexp per generated position (teacher-forced); full mel dump for one EN and one VI clip | `[RUN]` CPU reference, pinned revision and shard sha256 recorded | `testdata/oracle/qwen3-asr-1.7b.stt.json`, `scripts/gen-oracle-stt.py` |
+| Tolerances (declared before any Helios run): encoder per tap relative to tap max-abs, 0.01 floor up to 0.166; top logits 1.488 abs, logsumexp 0.974 abs (observed bf16 drift 0.992 / 0.650, margin 1.5); mel 1e-3 abs | declared | same file, `tolerance` |
+| The logit tolerance is wide because bf16 drift of the reference is large on the last encoder layers (up to 0.11 relative at layer 21); a Helios bf16 run is judged against it, and the argmax and text rules stay the real gate | note | same file |
+| Helios encoder, decoder, mel against this oracle | `[NEEDS-GPU]` / not run: mel Rust test still to write; decode blocked on R1 | open |
