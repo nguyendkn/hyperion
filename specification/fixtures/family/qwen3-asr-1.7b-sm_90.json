@@ -1,0 +1,8980 @@
+{
+ "contract_revision": 1,
+ "family": "stt_qwen3_asr",
+ "license_spdx": "Apache-2.0",
+ "model_id": "qwen3-asr-1.7b",
+ "payloads": [
+  {
+   "byte_length": 4220320824,
+   "file": "model-00001-of-00002.safetensors",
+   "sha256": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6"
+  },
+  {
+   "byte_length": 478200688,
+   "file": "model-00002-of-00002.safetensors",
+   "sha256": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc"
+  }
+ ],
+ "production_approved": false,
+ "qualified_checkpoint": {
+  "repo": "Qwen/Qwen3-ASR-1.7B",
+  "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5"
+ },
+ "signature": null,
+ "stt": {
+  "architecture": "qwen3_asr",
+  "audio_end_token_id": 151670,
+  "audio_start_token_id": 151669,
+  "audio_token_id": 151676,
+  "decoder": {
+   "activation": "silu",
+   "attention": "gqa",
+   "head_dim": 128,
+   "hidden_size": 2048,
+   "intermediate_size": 6144,
+   "max_seq_len": 65536,
+   "num_attention_heads": 16,
+   "num_kv_heads": 8,
+   "num_layers": 28,
+   "qk_norm": true,
+   "qkv_bias": false,
+   "rms_norm_eps": 1e-06,
+   "rope_style": "rotate_half",
+   "rope_theta": 1000000.0,
+   "tie_word_embeddings": true,
+   "vocab_size": 151936
+  },
+  "encoder": {
+   "attention_window_mel_frames": 800,
+   "chunk_mel_frames": 100,
+   "conv_channels": 480,
+   "hidden_size": 1024,
+   "intermediate_size": 4096,
+   "max_source_positions": 1500,
+   "num_heads": 16,
+   "num_layers": 24,
+   "output_dim": 2048,
+   "subsample": 8
+  },
+  "frontend": {
+   "chunk_seconds": 30,
+   "f_max": 8000.0,
+   "f_min": 0.0,
+   "hop": 160,
+   "mel_scale": "slaney",
+   "n_fft": 400,
+   "n_mels": 128,
+   "normalization": "whisper_log_max8",
+   "sample_rate": 16000,
+   "window": "hann_periodic"
+  }
+ },
+ "target_arch": "sm_90",
+ "tensor_format": "bf16",
+ "tensors": [
+  {
+   "byte_length": 960,
+   "byte_offset": 0,
+   "index": 0,
+   "name": "thinker.audio_tower.conv2d1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     480
+    ]
+   }
+  },
+  {
+   "byte_length": 8640,
+   "byte_offset": 960,
+   "index": 0,
+   "name": "thinker.audio_tower.conv2d1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     480,
+     1,
+     3,
+     3
+    ]
+   }
+  },
+  {
+   "byte_length": 960,
+   "byte_offset": 9600,
+   "index": 0,
+   "name": "thinker.audio_tower.conv2d2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     480
+    ]
+   }
+  },
+  {
+   "byte_length": 4147200,
+   "byte_offset": 10560,
+   "index": 0,
+   "name": "thinker.audio_tower.conv2d2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     480,
+     480,
+     3,
+     3
+    ]
+   }
+  },
+  {
+   "byte_length": 960,
+   "byte_offset": 4157760,
+   "index": 0,
+   "name": "thinker.audio_tower.conv2d3.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     480
+    ]
+   }
+  },
+  {
+   "byte_length": 4147200,
+   "byte_offset": 4158720,
+   "index": 0,
+   "name": "thinker.audio_tower.conv2d3.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     480,
+     480,
+     3,
+     3
+    ]
+   }
+  },
+  {
+   "byte_length": 15728640,
+   "byte_offset": 8305920,
+   "index": 0,
+   "name": "thinker.audio_tower.conv_out.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     7680
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 24034560,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 24042752,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 32431360,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 32433408,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 40822016,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 40824064,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 40826112,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 40828160,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 42925312,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 42927360,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 45024512,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 45026560,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 47123712,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 47125760,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 49222912,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 49224960,
+   "index": 0,
+   "name": "thinker.audio_tower.layers.0.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 49227008,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 49235200,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 57623808,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 57625856,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 66014464,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 66016512,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 66018560,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 66020608,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 68117760,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 68119808,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 70216960,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 70219008,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 72316160,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 72318208,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 74415360,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 74417408,
+   "index": 1,
+   "name": "thinker.audio_tower.layers.1.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 74419456,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 74427648,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 82816256,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 82818304,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 91206912,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 91208960,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 91211008,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 91213056,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 93310208,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 93312256,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 95409408,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 95411456,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 97508608,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 97510656,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 99607808,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 99609856,
+   "index": 10,
+   "name": "thinker.audio_tower.layers.10.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 99611904,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 99620096,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 108008704,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 108010752,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 116399360,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 116401408,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 116403456,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 116405504,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 118502656,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 118504704,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 120601856,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 120603904,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 122701056,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 122703104,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 124800256,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 124802304,
+   "index": 11,
+   "name": "thinker.audio_tower.layers.11.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 124804352,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 124812544,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 133201152,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 133203200,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 141591808,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 141593856,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 141595904,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 141597952,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 143695104,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 143697152,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 145794304,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 145796352,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 147893504,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 147895552,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 149992704,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 149994752,
+   "index": 12,
+   "name": "thinker.audio_tower.layers.12.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 149996800,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 150004992,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 158393600,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 158395648,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 166784256,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 166786304,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 166788352,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 166790400,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 168887552,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 168889600,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 170986752,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 170988800,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 173085952,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 173088000,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 175185152,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 175187200,
+   "index": 13,
+   "name": "thinker.audio_tower.layers.13.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 175189248,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 175197440,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 183586048,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 183588096,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 191976704,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 191978752,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 191980800,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 191982848,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 194080000,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 194082048,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 196179200,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 196181248,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 198278400,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 198280448,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 200377600,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 200379648,
+   "index": 14,
+   "name": "thinker.audio_tower.layers.14.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 200381696,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 200389888,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 208778496,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 208780544,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 217169152,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 217171200,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 217173248,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 217175296,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 219272448,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 219274496,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 221371648,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 221373696,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 223470848,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 223472896,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 225570048,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 225572096,
+   "index": 15,
+   "name": "thinker.audio_tower.layers.15.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 225574144,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 225582336,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 233970944,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 233972992,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 242361600,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 242363648,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 242365696,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 242367744,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 244464896,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 244466944,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 246564096,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 246566144,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 248663296,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 248665344,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 250762496,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 250764544,
+   "index": 16,
+   "name": "thinker.audio_tower.layers.16.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 250766592,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 250774784,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 259163392,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 259165440,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 267554048,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 267556096,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 267558144,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 267560192,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 269657344,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 269659392,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 271756544,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 271758592,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 273855744,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 273857792,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 275954944,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 275956992,
+   "index": 17,
+   "name": "thinker.audio_tower.layers.17.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 275959040,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 275967232,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 284355840,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 284357888,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 292746496,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 292748544,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 292750592,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 292752640,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 294849792,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 294851840,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 296948992,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 296951040,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 299048192,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 299050240,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 301147392,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 301149440,
+   "index": 18,
+   "name": "thinker.audio_tower.layers.18.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 301151488,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 301159680,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 309548288,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 309550336,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 317938944,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 317940992,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 317943040,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 317945088,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 320042240,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 320044288,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 322141440,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 322143488,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 324240640,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 324242688,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 326339840,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 326341888,
+   "index": 19,
+   "name": "thinker.audio_tower.layers.19.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 326343936,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 326352128,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 334740736,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 334742784,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 343131392,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 343133440,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 343135488,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 343137536,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 345234688,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 345236736,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 347333888,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 347335936,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 349433088,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 349435136,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 351532288,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 351534336,
+   "index": 2,
+   "name": "thinker.audio_tower.layers.2.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 351536384,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 351544576,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 359933184,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 359935232,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 368323840,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 368325888,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 368327936,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 368329984,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 370427136,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 370429184,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 372526336,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 372528384,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 374625536,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 374627584,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 376724736,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 376726784,
+   "index": 20,
+   "name": "thinker.audio_tower.layers.20.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 376728832,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 376737024,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 385125632,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 385127680,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 393516288,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 393518336,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 393520384,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 393522432,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 395619584,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 395621632,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 397718784,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 397720832,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 399817984,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 399820032,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 401917184,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 401919232,
+   "index": 21,
+   "name": "thinker.audio_tower.layers.21.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 401921280,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 401929472,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 410318080,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 410320128,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 418708736,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 418710784,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 418712832,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 418714880,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 420812032,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 420814080,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 422911232,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 422913280,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 425010432,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 425012480,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 427109632,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 427111680,
+   "index": 22,
+   "name": "thinker.audio_tower.layers.22.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 427113728,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 427121920,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 435510528,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 435512576,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 443901184,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 443903232,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 443905280,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 443907328,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 446004480,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 446006528,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 448103680,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 448105728,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 450202880,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 450204928,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 452302080,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 452304128,
+   "index": 23,
+   "name": "thinker.audio_tower.layers.23.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 452306176,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 452314368,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 460702976,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 460705024,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 469093632,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 469095680,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 469097728,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 469099776,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 471196928,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 471198976,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 473296128,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 473298176,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 475395328,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 475397376,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 477494528,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 477496576,
+   "index": 3,
+   "name": "thinker.audio_tower.layers.3.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 477498624,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 477506816,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 485895424,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 485897472,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 494286080,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 494288128,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 494290176,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 494292224,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 496389376,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 496391424,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 498488576,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 498490624,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 500587776,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 500589824,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 502686976,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 502689024,
+   "index": 4,
+   "name": "thinker.audio_tower.layers.4.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 502691072,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 502699264,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 511087872,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 511089920,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 519478528,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 519480576,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 519482624,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 519484672,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 521581824,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 521583872,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 523681024,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 523683072,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 525780224,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 525782272,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 527879424,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 527881472,
+   "index": 5,
+   "name": "thinker.audio_tower.layers.5.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 527883520,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 527891712,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 536280320,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 536282368,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 544670976,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 544673024,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 544675072,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 544677120,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 546774272,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 546776320,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 548873472,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 548875520,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 550972672,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 550974720,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 553071872,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 553073920,
+   "index": 6,
+   "name": "thinker.audio_tower.layers.6.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 553075968,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 553084160,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 561472768,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 561474816,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 569863424,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 569865472,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 569867520,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 569869568,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 571966720,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 571968768,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 574065920,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 574067968,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 576165120,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 576167168,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 578264320,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 578266368,
+   "index": 7,
+   "name": "thinker.audio_tower.layers.7.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 578268416,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 578276608,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 586665216,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 586667264,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 595055872,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 595057920,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 595059968,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 595062016,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 597159168,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 597161216,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 599258368,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 599260416,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 601357568,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 601359616,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 603456768,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 603458816,
+   "index": 8,
+   "name": "thinker.audio_tower.layers.8.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8192,
+   "byte_offset": 603460864,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.fc1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 603469056,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.fc1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     4096,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 611857664,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.fc2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 611859712,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.fc2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     4096
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 620248320,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.final_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 620250368,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.final_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 620252416,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.k_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 620254464,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 622351616,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.out_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 622353664,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.out_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 624450816,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.q_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 624452864,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 626550016,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.v_proj.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 626552064,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 628649216,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn_layer_norm.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 628651264,
+   "index": 9,
+   "name": "thinker.audio_tower.layers.9.self_attn_layer_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 628653312,
+   "index": 0,
+   "name": "thinker.audio_tower.ln_post.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 628655360,
+   "index": 0,
+   "name": "thinker.audio_tower.ln_post.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2048,
+   "byte_offset": 628657408,
+   "index": 0,
+   "name": "thinker.audio_tower.proj1.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 2097152,
+   "byte_offset": 628659456,
+   "index": 0,
+   "name": "thinker.audio_tower.proj1.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 630756608,
+   "index": 0,
+   "name": "thinker.audio_tower.proj2.bias",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 630760704,
+   "index": 0,
+   "name": "thinker.audio_tower.proj2.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     1024
+    ]
+   }
+  },
+  {
+   "byte_length": 622329856,
+   "byte_offset": 634955008,
+   "index": 0,
+   "name": "thinker.lm_head.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     151936,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 622329856,
+   "byte_offset": 1257284864,
+   "index": 0,
+   "name": "thinker.model.embed_tokens.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     151936,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 1879614720,
+   "index": 0,
+   "name": "thinker.model.layers.0.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 1879618816,
+   "index": 0,
+   "name": "thinker.model.layers.0.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 1904784640,
+   "index": 0,
+   "name": "thinker.model.layers.0.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 1929950464,
+   "index": 0,
+   "name": "thinker.model.layers.0.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 1955116288,
+   "index": 0,
+   "name": "thinker.model.layers.0.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 1955120384,
+   "index": 0,
+   "name": "thinker.model.layers.0.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 1955120640,
+   "index": 0,
+   "name": "thinker.model.layers.0.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 1959314944,
+   "index": 0,
+   "name": "thinker.model.layers.0.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 1967703552,
+   "index": 0,
+   "name": "thinker.model.layers.0.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 1967703808,
+   "index": 0,
+   "name": "thinker.model.layers.0.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 1976092416,
+   "index": 0,
+   "name": "thinker.model.layers.0.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 1980286720,
+   "index": 1,
+   "name": "thinker.model.layers.1.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 1980290816,
+   "index": 1,
+   "name": "thinker.model.layers.1.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2005456640,
+   "index": 1,
+   "name": "thinker.model.layers.1.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2030622464,
+   "index": 1,
+   "name": "thinker.model.layers.1.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2055788288,
+   "index": 1,
+   "name": "thinker.model.layers.1.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2055792384,
+   "index": 1,
+   "name": "thinker.model.layers.1.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2055792640,
+   "index": 1,
+   "name": "thinker.model.layers.1.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2059986944,
+   "index": 1,
+   "name": "thinker.model.layers.1.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2068375552,
+   "index": 1,
+   "name": "thinker.model.layers.1.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2068375808,
+   "index": 1,
+   "name": "thinker.model.layers.1.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2076764416,
+   "index": 1,
+   "name": "thinker.model.layers.1.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2080958720,
+   "index": 10,
+   "name": "thinker.model.layers.10.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2080962816,
+   "index": 10,
+   "name": "thinker.model.layers.10.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2106128640,
+   "index": 10,
+   "name": "thinker.model.layers.10.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2131294464,
+   "index": 10,
+   "name": "thinker.model.layers.10.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2156460288,
+   "index": 10,
+   "name": "thinker.model.layers.10.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2156464384,
+   "index": 10,
+   "name": "thinker.model.layers.10.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2156464640,
+   "index": 10,
+   "name": "thinker.model.layers.10.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2160658944,
+   "index": 10,
+   "name": "thinker.model.layers.10.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2169047552,
+   "index": 10,
+   "name": "thinker.model.layers.10.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2169047808,
+   "index": 10,
+   "name": "thinker.model.layers.10.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2177436416,
+   "index": 10,
+   "name": "thinker.model.layers.10.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2181630720,
+   "index": 11,
+   "name": "thinker.model.layers.11.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2181634816,
+   "index": 11,
+   "name": "thinker.model.layers.11.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2206800640,
+   "index": 11,
+   "name": "thinker.model.layers.11.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2231966464,
+   "index": 11,
+   "name": "thinker.model.layers.11.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2257132288,
+   "index": 11,
+   "name": "thinker.model.layers.11.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2257136384,
+   "index": 11,
+   "name": "thinker.model.layers.11.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2257136640,
+   "index": 11,
+   "name": "thinker.model.layers.11.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2261330944,
+   "index": 11,
+   "name": "thinker.model.layers.11.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2269719552,
+   "index": 11,
+   "name": "thinker.model.layers.11.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2269719808,
+   "index": 11,
+   "name": "thinker.model.layers.11.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2278108416,
+   "index": 11,
+   "name": "thinker.model.layers.11.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2282302720,
+   "index": 12,
+   "name": "thinker.model.layers.12.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2282306816,
+   "index": 12,
+   "name": "thinker.model.layers.12.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2307472640,
+   "index": 12,
+   "name": "thinker.model.layers.12.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2332638464,
+   "index": 12,
+   "name": "thinker.model.layers.12.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2357804288,
+   "index": 12,
+   "name": "thinker.model.layers.12.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2357808384,
+   "index": 12,
+   "name": "thinker.model.layers.12.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2357808640,
+   "index": 12,
+   "name": "thinker.model.layers.12.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2362002944,
+   "index": 12,
+   "name": "thinker.model.layers.12.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2370391552,
+   "index": 12,
+   "name": "thinker.model.layers.12.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2370391808,
+   "index": 12,
+   "name": "thinker.model.layers.12.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2378780416,
+   "index": 12,
+   "name": "thinker.model.layers.12.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2382974720,
+   "index": 13,
+   "name": "thinker.model.layers.13.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2382978816,
+   "index": 13,
+   "name": "thinker.model.layers.13.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2408144640,
+   "index": 13,
+   "name": "thinker.model.layers.13.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2433310464,
+   "index": 13,
+   "name": "thinker.model.layers.13.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2458476288,
+   "index": 13,
+   "name": "thinker.model.layers.13.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2458480384,
+   "index": 13,
+   "name": "thinker.model.layers.13.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2458480640,
+   "index": 13,
+   "name": "thinker.model.layers.13.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2462674944,
+   "index": 13,
+   "name": "thinker.model.layers.13.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2471063552,
+   "index": 13,
+   "name": "thinker.model.layers.13.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2471063808,
+   "index": 13,
+   "name": "thinker.model.layers.13.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2479452416,
+   "index": 13,
+   "name": "thinker.model.layers.13.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2483646720,
+   "index": 14,
+   "name": "thinker.model.layers.14.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2483650816,
+   "index": 14,
+   "name": "thinker.model.layers.14.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2508816640,
+   "index": 14,
+   "name": "thinker.model.layers.14.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2533982464,
+   "index": 14,
+   "name": "thinker.model.layers.14.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2559148288,
+   "index": 14,
+   "name": "thinker.model.layers.14.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2559152384,
+   "index": 14,
+   "name": "thinker.model.layers.14.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2559152640,
+   "index": 14,
+   "name": "thinker.model.layers.14.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2563346944,
+   "index": 14,
+   "name": "thinker.model.layers.14.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2571735552,
+   "index": 14,
+   "name": "thinker.model.layers.14.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2571735808,
+   "index": 14,
+   "name": "thinker.model.layers.14.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2580124416,
+   "index": 14,
+   "name": "thinker.model.layers.14.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2584318720,
+   "index": 15,
+   "name": "thinker.model.layers.15.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2584322816,
+   "index": 15,
+   "name": "thinker.model.layers.15.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2609488640,
+   "index": 15,
+   "name": "thinker.model.layers.15.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2634654464,
+   "index": 15,
+   "name": "thinker.model.layers.15.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2659820288,
+   "index": 15,
+   "name": "thinker.model.layers.15.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2659824384,
+   "index": 15,
+   "name": "thinker.model.layers.15.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2659824640,
+   "index": 15,
+   "name": "thinker.model.layers.15.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2664018944,
+   "index": 15,
+   "name": "thinker.model.layers.15.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2672407552,
+   "index": 15,
+   "name": "thinker.model.layers.15.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2672407808,
+   "index": 15,
+   "name": "thinker.model.layers.15.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2680796416,
+   "index": 15,
+   "name": "thinker.model.layers.15.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2684990720,
+   "index": 16,
+   "name": "thinker.model.layers.16.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2684994816,
+   "index": 16,
+   "name": "thinker.model.layers.16.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2710160640,
+   "index": 16,
+   "name": "thinker.model.layers.16.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2735326464,
+   "index": 16,
+   "name": "thinker.model.layers.16.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2760492288,
+   "index": 16,
+   "name": "thinker.model.layers.16.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2760496384,
+   "index": 16,
+   "name": "thinker.model.layers.16.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2760496640,
+   "index": 16,
+   "name": "thinker.model.layers.16.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2764690944,
+   "index": 16,
+   "name": "thinker.model.layers.16.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2773079552,
+   "index": 16,
+   "name": "thinker.model.layers.16.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2773079808,
+   "index": 16,
+   "name": "thinker.model.layers.16.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2781468416,
+   "index": 16,
+   "name": "thinker.model.layers.16.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2785662720,
+   "index": 17,
+   "name": "thinker.model.layers.17.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2785666816,
+   "index": 17,
+   "name": "thinker.model.layers.17.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2810832640,
+   "index": 17,
+   "name": "thinker.model.layers.17.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2835998464,
+   "index": 17,
+   "name": "thinker.model.layers.17.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2861164288,
+   "index": 17,
+   "name": "thinker.model.layers.17.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2861168384,
+   "index": 17,
+   "name": "thinker.model.layers.17.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2861168640,
+   "index": 17,
+   "name": "thinker.model.layers.17.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2865362944,
+   "index": 17,
+   "name": "thinker.model.layers.17.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2873751552,
+   "index": 17,
+   "name": "thinker.model.layers.17.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2873751808,
+   "index": 17,
+   "name": "thinker.model.layers.17.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2882140416,
+   "index": 17,
+   "name": "thinker.model.layers.17.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2886334720,
+   "index": 18,
+   "name": "thinker.model.layers.18.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2886338816,
+   "index": 18,
+   "name": "thinker.model.layers.18.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2911504640,
+   "index": 18,
+   "name": "thinker.model.layers.18.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2936670464,
+   "index": 18,
+   "name": "thinker.model.layers.18.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2961836288,
+   "index": 18,
+   "name": "thinker.model.layers.18.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2961840384,
+   "index": 18,
+   "name": "thinker.model.layers.18.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2961840640,
+   "index": 18,
+   "name": "thinker.model.layers.18.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2966034944,
+   "index": 18,
+   "name": "thinker.model.layers.18.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 2974423552,
+   "index": 18,
+   "name": "thinker.model.layers.18.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 2974423808,
+   "index": 18,
+   "name": "thinker.model.layers.18.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 2982812416,
+   "index": 18,
+   "name": "thinker.model.layers.18.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 2987006720,
+   "index": 19,
+   "name": "thinker.model.layers.19.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 2987010816,
+   "index": 19,
+   "name": "thinker.model.layers.19.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3012176640,
+   "index": 19,
+   "name": "thinker.model.layers.19.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3037342464,
+   "index": 19,
+   "name": "thinker.model.layers.19.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3062508288,
+   "index": 19,
+   "name": "thinker.model.layers.19.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3062512384,
+   "index": 19,
+   "name": "thinker.model.layers.19.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3062512640,
+   "index": 19,
+   "name": "thinker.model.layers.19.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3066706944,
+   "index": 19,
+   "name": "thinker.model.layers.19.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3075095552,
+   "index": 19,
+   "name": "thinker.model.layers.19.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3075095808,
+   "index": 19,
+   "name": "thinker.model.layers.19.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3083484416,
+   "index": 19,
+   "name": "thinker.model.layers.19.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3087678720,
+   "index": 2,
+   "name": "thinker.model.layers.2.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3087682816,
+   "index": 2,
+   "name": "thinker.model.layers.2.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3112848640,
+   "index": 2,
+   "name": "thinker.model.layers.2.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3138014464,
+   "index": 2,
+   "name": "thinker.model.layers.2.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3163180288,
+   "index": 2,
+   "name": "thinker.model.layers.2.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3163184384,
+   "index": 2,
+   "name": "thinker.model.layers.2.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3163184640,
+   "index": 2,
+   "name": "thinker.model.layers.2.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3167378944,
+   "index": 2,
+   "name": "thinker.model.layers.2.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3175767552,
+   "index": 2,
+   "name": "thinker.model.layers.2.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3175767808,
+   "index": 2,
+   "name": "thinker.model.layers.2.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3184156416,
+   "index": 2,
+   "name": "thinker.model.layers.2.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3188350720,
+   "index": 20,
+   "name": "thinker.model.layers.20.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3188354816,
+   "index": 20,
+   "name": "thinker.model.layers.20.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3213520640,
+   "index": 20,
+   "name": "thinker.model.layers.20.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3238686464,
+   "index": 20,
+   "name": "thinker.model.layers.20.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3263852288,
+   "index": 20,
+   "name": "thinker.model.layers.20.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3263856384,
+   "index": 20,
+   "name": "thinker.model.layers.20.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3263856640,
+   "index": 20,
+   "name": "thinker.model.layers.20.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3268050944,
+   "index": 20,
+   "name": "thinker.model.layers.20.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3276439552,
+   "index": 20,
+   "name": "thinker.model.layers.20.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3276439808,
+   "index": 20,
+   "name": "thinker.model.layers.20.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3284828416,
+   "index": 20,
+   "name": "thinker.model.layers.20.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3289022720,
+   "index": 21,
+   "name": "thinker.model.layers.21.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3289026816,
+   "index": 21,
+   "name": "thinker.model.layers.21.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3314192640,
+   "index": 21,
+   "name": "thinker.model.layers.21.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3339358464,
+   "index": 21,
+   "name": "thinker.model.layers.21.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3364524288,
+   "index": 21,
+   "name": "thinker.model.layers.21.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3364528384,
+   "index": 21,
+   "name": "thinker.model.layers.21.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3364528640,
+   "index": 21,
+   "name": "thinker.model.layers.21.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3368722944,
+   "index": 21,
+   "name": "thinker.model.layers.21.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3377111552,
+   "index": 21,
+   "name": "thinker.model.layers.21.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3377111808,
+   "index": 21,
+   "name": "thinker.model.layers.21.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3385500416,
+   "index": 21,
+   "name": "thinker.model.layers.21.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3389694720,
+   "index": 22,
+   "name": "thinker.model.layers.22.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3389698816,
+   "index": 22,
+   "name": "thinker.model.layers.22.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3414864640,
+   "index": 22,
+   "name": "thinker.model.layers.22.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3440030464,
+   "index": 22,
+   "name": "thinker.model.layers.22.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3465196288,
+   "index": 22,
+   "name": "thinker.model.layers.22.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3465200384,
+   "index": 22,
+   "name": "thinker.model.layers.22.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3465200640,
+   "index": 22,
+   "name": "thinker.model.layers.22.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3469394944,
+   "index": 22,
+   "name": "thinker.model.layers.22.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3477783552,
+   "index": 22,
+   "name": "thinker.model.layers.22.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3477783808,
+   "index": 22,
+   "name": "thinker.model.layers.22.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3486172416,
+   "index": 22,
+   "name": "thinker.model.layers.22.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3490366720,
+   "index": 23,
+   "name": "thinker.model.layers.23.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3490370816,
+   "index": 23,
+   "name": "thinker.model.layers.23.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3515536640,
+   "index": 23,
+   "name": "thinker.model.layers.23.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3540702464,
+   "index": 23,
+   "name": "thinker.model.layers.23.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3565868288,
+   "index": 23,
+   "name": "thinker.model.layers.23.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3565872384,
+   "index": 23,
+   "name": "thinker.model.layers.23.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3565872640,
+   "index": 23,
+   "name": "thinker.model.layers.23.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3570066944,
+   "index": 23,
+   "name": "thinker.model.layers.23.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3578455552,
+   "index": 23,
+   "name": "thinker.model.layers.23.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3578455808,
+   "index": 23,
+   "name": "thinker.model.layers.23.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3586844416,
+   "index": 23,
+   "name": "thinker.model.layers.23.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3591038720,
+   "index": 24,
+   "name": "thinker.model.layers.24.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3591042816,
+   "index": 24,
+   "name": "thinker.model.layers.24.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3616208640,
+   "index": 24,
+   "name": "thinker.model.layers.24.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3641374464,
+   "index": 24,
+   "name": "thinker.model.layers.24.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3666540288,
+   "index": 24,
+   "name": "thinker.model.layers.24.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3666544384,
+   "index": 24,
+   "name": "thinker.model.layers.24.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3666544640,
+   "index": 24,
+   "name": "thinker.model.layers.24.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3670738944,
+   "index": 24,
+   "name": "thinker.model.layers.24.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3679127552,
+   "index": 24,
+   "name": "thinker.model.layers.24.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3679127808,
+   "index": 24,
+   "name": "thinker.model.layers.24.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3687516416,
+   "index": 24,
+   "name": "thinker.model.layers.24.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3691710720,
+   "index": 25,
+   "name": "thinker.model.layers.25.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3691714816,
+   "index": 25,
+   "name": "thinker.model.layers.25.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3716880640,
+   "index": 25,
+   "name": "thinker.model.layers.25.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3742046464,
+   "index": 25,
+   "name": "thinker.model.layers.25.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3767212288,
+   "index": 25,
+   "name": "thinker.model.layers.25.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3767216384,
+   "index": 25,
+   "name": "thinker.model.layers.25.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3767216640,
+   "index": 25,
+   "name": "thinker.model.layers.25.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3771410944,
+   "index": 25,
+   "name": "thinker.model.layers.25.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3779799552,
+   "index": 25,
+   "name": "thinker.model.layers.25.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3779799808,
+   "index": 25,
+   "name": "thinker.model.layers.25.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3788188416,
+   "index": 25,
+   "name": "thinker.model.layers.25.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3792382720,
+   "index": 26,
+   "name": "thinker.model.layers.26.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3792386816,
+   "index": 26,
+   "name": "thinker.model.layers.26.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3817552640,
+   "index": 26,
+   "name": "thinker.model.layers.26.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3842718464,
+   "index": 26,
+   "name": "thinker.model.layers.26.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3867884288,
+   "index": 26,
+   "name": "thinker.model.layers.26.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3867888384,
+   "index": 26,
+   "name": "thinker.model.layers.26.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3867888640,
+   "index": 26,
+   "name": "thinker.model.layers.26.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3872082944,
+   "index": 26,
+   "name": "thinker.model.layers.26.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3880471552,
+   "index": 26,
+   "name": "thinker.model.layers.26.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3880471808,
+   "index": 26,
+   "name": "thinker.model.layers.26.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3888860416,
+   "index": 26,
+   "name": "thinker.model.layers.26.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3893054720,
+   "index": 27,
+   "name": "thinker.model.layers.27.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3893058816,
+   "index": 27,
+   "name": "thinker.model.layers.27.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3918224640,
+   "index": 27,
+   "name": "thinker.model.layers.27.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3943390464,
+   "index": 27,
+   "name": "thinker.model.layers.27.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3968556288,
+   "index": 27,
+   "name": "thinker.model.layers.27.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3968560384,
+   "index": 27,
+   "name": "thinker.model.layers.27.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3968560640,
+   "index": 27,
+   "name": "thinker.model.layers.27.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3972754944,
+   "index": 27,
+   "name": "thinker.model.layers.27.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 3981143552,
+   "index": 27,
+   "name": "thinker.model.layers.27.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 3981143808,
+   "index": 27,
+   "name": "thinker.model.layers.27.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 3989532416,
+   "index": 27,
+   "name": "thinker.model.layers.27.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 3993726720,
+   "index": 3,
+   "name": "thinker.model.layers.3.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 3993730816,
+   "index": 3,
+   "name": "thinker.model.layers.3.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 4018896640,
+   "index": 3,
+   "name": "thinker.model.layers.3.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 4044062464,
+   "index": 3,
+   "name": "thinker.model.layers.3.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 4069228288,
+   "index": 3,
+   "name": "thinker.model.layers.3.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 4069232384,
+   "index": 3,
+   "name": "thinker.model.layers.3.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 4069232640,
+   "index": 3,
+   "name": "thinker.model.layers.3.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 4073426944,
+   "index": 3,
+   "name": "thinker.model.layers.3.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 4081815552,
+   "index": 3,
+   "name": "thinker.model.layers.3.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 4081815808,
+   "index": 3,
+   "name": "thinker.model.layers.3.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 4090204416,
+   "index": 3,
+   "name": "thinker.model.layers.3.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 4094398720,
+   "index": 4,
+   "name": "thinker.model.layers.4.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 4094402816,
+   "index": 4,
+   "name": "thinker.model.layers.4.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 4119568640,
+   "index": 4,
+   "name": "thinker.model.layers.4.mlp.gate_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 4144734464,
+   "index": 4,
+   "name": "thinker.model.layers.4.mlp.up_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 4169900288,
+   "index": 4,
+   "name": "thinker.model.layers.4.post_attention_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 4169904384,
+   "index": 4,
+   "name": "thinker.model.layers.4.self_attn.k_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 4169904640,
+   "index": 4,
+   "name": "thinker.model.layers.4.self_attn.k_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 4174098944,
+   "index": 4,
+   "name": "thinker.model.layers.4.self_attn.o_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 4182487552,
+   "index": 4,
+   "name": "thinker.model.layers.4.self_attn.q_norm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 4182487808,
+   "index": 4,
+   "name": "thinker.model.layers.4.self_attn.q_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 4190876416,
+   "index": 4,
+   "name": "thinker.model.layers.4.self_attn.v_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 4195070720,
+   "index": 5,
+   "name": "thinker.model.layers.5.input_layernorm.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 4195074816,
+   "index": 5,
+   "name": "thinker.model.layers.5.mlp.down_proj.weight",
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 0,
+   "index": 5,
+   "name": "thinker.model.layers.5.mlp.gate_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 25165824,
+   "index": 5,
+   "name": "thinker.model.layers.5.mlp.up_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 50331648,
+   "index": 5,
+   "name": "thinker.model.layers.5.post_attention_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 50335744,
+   "index": 5,
+   "name": "thinker.model.layers.5.self_attn.k_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 50336000,
+   "index": 5,
+   "name": "thinker.model.layers.5.self_attn.k_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 54530304,
+   "index": 5,
+   "name": "thinker.model.layers.5.self_attn.o_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 62918912,
+   "index": 5,
+   "name": "thinker.model.layers.5.self_attn.q_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 62919168,
+   "index": 5,
+   "name": "thinker.model.layers.5.self_attn.q_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 71307776,
+   "index": 5,
+   "name": "thinker.model.layers.5.self_attn.v_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 75502080,
+   "index": 6,
+   "name": "thinker.model.layers.6.input_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 75506176,
+   "index": 6,
+   "name": "thinker.model.layers.6.mlp.down_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 100672000,
+   "index": 6,
+   "name": "thinker.model.layers.6.mlp.gate_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 125837824,
+   "index": 6,
+   "name": "thinker.model.layers.6.mlp.up_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 151003648,
+   "index": 6,
+   "name": "thinker.model.layers.6.post_attention_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 151007744,
+   "index": 6,
+   "name": "thinker.model.layers.6.self_attn.k_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 151008000,
+   "index": 6,
+   "name": "thinker.model.layers.6.self_attn.k_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 155202304,
+   "index": 6,
+   "name": "thinker.model.layers.6.self_attn.o_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 163590912,
+   "index": 6,
+   "name": "thinker.model.layers.6.self_attn.q_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 163591168,
+   "index": 6,
+   "name": "thinker.model.layers.6.self_attn.q_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 171979776,
+   "index": 6,
+   "name": "thinker.model.layers.6.self_attn.v_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 176174080,
+   "index": 7,
+   "name": "thinker.model.layers.7.input_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 176178176,
+   "index": 7,
+   "name": "thinker.model.layers.7.mlp.down_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 201344000,
+   "index": 7,
+   "name": "thinker.model.layers.7.mlp.gate_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 226509824,
+   "index": 7,
+   "name": "thinker.model.layers.7.mlp.up_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 251675648,
+   "index": 7,
+   "name": "thinker.model.layers.7.post_attention_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 251679744,
+   "index": 7,
+   "name": "thinker.model.layers.7.self_attn.k_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 251680000,
+   "index": 7,
+   "name": "thinker.model.layers.7.self_attn.k_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 255874304,
+   "index": 7,
+   "name": "thinker.model.layers.7.self_attn.o_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 264262912,
+   "index": 7,
+   "name": "thinker.model.layers.7.self_attn.q_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 264263168,
+   "index": 7,
+   "name": "thinker.model.layers.7.self_attn.q_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 272651776,
+   "index": 7,
+   "name": "thinker.model.layers.7.self_attn.v_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 276846080,
+   "index": 8,
+   "name": "thinker.model.layers.8.input_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 276850176,
+   "index": 8,
+   "name": "thinker.model.layers.8.mlp.down_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 302016000,
+   "index": 8,
+   "name": "thinker.model.layers.8.mlp.gate_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 327181824,
+   "index": 8,
+   "name": "thinker.model.layers.8.mlp.up_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 352347648,
+   "index": 8,
+   "name": "thinker.model.layers.8.post_attention_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 352351744,
+   "index": 8,
+   "name": "thinker.model.layers.8.self_attn.k_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 352352000,
+   "index": 8,
+   "name": "thinker.model.layers.8.self_attn.k_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 356546304,
+   "index": 8,
+   "name": "thinker.model.layers.8.self_attn.o_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 364934912,
+   "index": 8,
+   "name": "thinker.model.layers.8.self_attn.q_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 364935168,
+   "index": 8,
+   "name": "thinker.model.layers.8.self_attn.q_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 373323776,
+   "index": 8,
+   "name": "thinker.model.layers.8.self_attn.v_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 377518080,
+   "index": 9,
+   "name": "thinker.model.layers.9.input_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 377522176,
+   "index": 9,
+   "name": "thinker.model.layers.9.mlp.down_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     6144
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 402688000,
+   "index": 9,
+   "name": "thinker.model.layers.9.mlp.gate_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 25165824,
+   "byte_offset": 427853824,
+   "index": 9,
+   "name": "thinker.model.layers.9.mlp.up_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     6144,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 453019648,
+   "index": 9,
+   "name": "thinker.model.layers.9.post_attention_layernorm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 453023744,
+   "index": 9,
+   "name": "thinker.model.layers.9.self_attn.k_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 453024000,
+   "index": 9,
+   "name": "thinker.model.layers.9.self_attn.k_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 457218304,
+   "index": 9,
+   "name": "thinker.model.layers.9.self_attn.o_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 256,
+   "byte_offset": 465606912,
+   "index": 9,
+   "name": "thinker.model.layers.9.self_attn.q_norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     128
+    ]
+   }
+  },
+  {
+   "byte_length": 8388608,
+   "byte_offset": 465607168,
+   "index": 9,
+   "name": "thinker.model.layers.9.self_attn.q_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4194304,
+   "byte_offset": 473995776,
+   "index": 9,
+   "name": "thinker.model.layers.9.self_attn.v_proj.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     1024,
+     2048
+    ]
+   }
+  },
+  {
+   "byte_length": 4096,
+   "byte_offset": 478190080,
+   "index": 0,
+   "name": "thinker.model.norm.weight",
+   "payload": 1,
+   "tensor": {
+    "dtype": "bf16",
+    "shape": [
+     2048
+    ]
+   }
+  }
+ ]
+}

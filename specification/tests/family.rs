@@ -159,3 +159,20 @@ fn committed_family_schema_is_up_to_date() {
     let committed = std::fs::read_to_string(spec_dir().join("schema/family-manifest.v1.json")).expect("schema file exists").replace("\r\n", "\n");
     assert_eq!(committed, hyperion_specification::family_schema::family_schema_json(), "family-manifest.v1.json is stale: run gen-family-schema");
 }
+
+#[test]
+fn python_written_family_goldens_parse_and_dispatch() {
+    let dir = spec_dir().join("fixtures/family");
+    let mut n = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+        match parse_any(&bytes).unwrap() {
+            AnyManifest::Family(f) => {
+                f.validate().unwrap();
+                n += 1;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(n >= 1);
+}
