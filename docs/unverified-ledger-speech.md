@@ -60,3 +60,5 @@ Separate file from `docs/unverified-ledger.md` on purpose: both tracks append, a
 | int8 encoder only | 153.0 s (0.93x) | 12.19 GB | 0.00 / 1.30 | rejected: slower, no RAM saving, VI over the rule |
 
 Open: bf16 batch 1 on the oracle path gave VI 0.22 points over fp32, batch 6 through `transcribe` gives 1.09. Cause not established (padding in a batch, or the other code path); needs bf16 b1 on these 40 clips in this script. `[RUN]` CPU reference only, `scripts/bench-stt-cpu.py`.
+
+Follow-up, same script, same 40 clips: bf16 batch 1, 8 threads: 160.7 s (RTF 0.485), 4.90 GB, WER vs fp32 0.00 / 0.22 (passes the 0.3 rule; equals the oracle figure). Only the batch size differs from the bf16 batch 6 row (VI 1.09), so batching is what moves bf16 text, not the code path. Cause inside the batch (padding) not isolated. fp32 batch 1 and 6 gave identical text on the earlier 12 clips. fp32 batch 1 speed was measured on 12 clips only (RTF 0.98), not on these 40. `[RUN]` CPU reference.
