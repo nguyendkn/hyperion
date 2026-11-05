@@ -1,6 +1,6 @@
 # 0011: mixed prefill + decode steps (one flattened token batch)
 
-Status: **proposed** (drafted 2026-11-04 for owner sign-off; nothing in this ADR is implemented). Changes ADR 0007 (`StepPlan`) in one version bump
+Status: **accepted** (owner, 2026-11-05) with the four edits listed under "Owner decisions" below; nothing in this ADR is implemented yet. Changes ADR 0007 (`StepPlan`) in one version bump
 (v1 -> v2) that also carries presence/frequency penalties, so the encoding is bumped once. No trait change (ADR 0006): `submit_step` / `take_output`
 already take a `StepPlan`.
 
@@ -26,9 +26,9 @@ device-side descriptor array (`row_kind`, `first_token`, `n_tokens`, `position`,
 row that asks for a token (`Want::Token`), as today. KV append is per token with the slot's table (as `kv_append_rows_paged`).
 
 ### 2. Graph capacities by total token count
-The graph is chosen by `T`: **`Capacity::Mixed { tokens }`** with `tokens` in {32, 64, 128, 256, 384, 512, 768, 1024} (the decode-only buckets
+The graph is chosen by `T`: **`Capacity::Mixed { tokens }`** with `tokens` in {64, 128, 256, 384, 512, 768, 1024} (the decode-only buckets
 {1, 2, 4, 8, 16, 32} stay as the decode-only graphs: they are the same flattened batch with `T = rows` and keep their measured speed and bit-exact
-behavior; a mixed capacity <= 32 is not used). Rows are padded to the capacity with masked tokens (`slot = -1`, as masked rows today). The list is
+behavior; mixed capacities start at 64). Rows are padded to the capacity with masked tokens (`slot = -1`, as masked rows today). The list is
 short on purpose: every capacity is a graph (the current prefill ladder 128..4096 is 6 graphs and decode buckets are 6; mixed adds 8, each a few MiB of
 graph memory plus the shared activation workspace sized for the largest capacity). The 1024 limit follows from the budget in section 3; prompts that
 should go faster than 1024 tokens per step when no decode row waits keep using the existing prefill capacities (2048, 4096). `capture_graphs` captures
@@ -48,8 +48,9 @@ all of them before Ready; nothing is captured afterwards (invariant).
 
 ### 4. `StepPlan` v2 (one bump)
 * New `Capacity::Mixed { tokens: u32 }` (tag 2).
-* `SamplingInit` gains `presence_penalty: f32` and `frequency_penalty: f32` (OpenAI semantics: `z_i -= presence * [count_i > 0] + frequency * count_i`
-  applied before the repetition penalty and the temperature); the device keeps per-slot token counts next to the `seen` bitmap
+* `SamplingInit` gains `presence_penalty: f32` and `frequency_penalty: f32` (OpenAI/vLLM semantics: `z_i -= presence * [count_i > 0] + frequency * count_i`
+  applied before the repetition penalty and the temperature; **the counts are of generated (output) tokens only**, the prompt does not count; the repetition
+  penalty keeps its scope, prompt and output together); the device keeps per-slot token counts next to the `seen` bitmap
   (`slots * vocab * 2 bytes`, 16-bit saturating counts: 304 KB per slot for a 152k vocabulary, 9.7 MB at 32 slots; a `seen`-only fast path when both
   are 0). The sampler reference gets the same terms in the same operation order, and the exact-match test grows two modes.
 * Rows are unchanged. `Row.want = Logits` stays verification-only.
@@ -102,8 +103,10 @@ descriptor array. The verification plan below measures them first.
 * Not decided here: preemption of a waiting sequence, bucket sizes above 32, logprobs (`Want::Logprobs`), speculative decoding. The v2 encoding does
   not block them.
 
-## Owner decisions requested
-1. Approve the design (and the single v1 -> v2 bump including presence/frequency penalties), or request changes.
-2. Default token budget: 384 (estimate) pending the sweep, or a different starting point.
-3. Memory: 9.7 MB of per-slot token counts at 32 slots for the 152k vocabulary (allocated always, which keeps the no-allocation-after-Ready invariant):
-   accept, or restrict penalties to a `seen`-style bitmap (presence only) now.
+## Owner decisions (2026-11-05, recorded)
+1. Approved with four edits, all applied above: (1) no `Mixed` capacity of 32 (mixed capacities 64 to 1024; decode-only buckets stay 1-32); (2) presence and
+   frequency penalties count output tokens only, the repetition penalty keeps prompt + output (also in `sampler_reference.rs` and `docs/sampler-v2.md`);
+   (3) startup check: `--step-token-budget` must be at least `max_batch + 64`, otherwise the CLI refuses to start with a typed error naming both values;
+   (4) the per-slot 16-bit output-token counts (9.7 MB at 32 slots for a 152k vocabulary) are accepted and allocated before Ready.
+2. The default budget starts at 384 and is set by the sweep of the verification plan.
+3. StepPlan v1 -> v2 is one bump exactly as section 4 says (with edit 2).
