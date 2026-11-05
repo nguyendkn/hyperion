@@ -21,3 +21,13 @@ Separate file from `docs/unverified-ledger.md` on purpose: both tracks append, a
 | Family manifest: LLM fixtures parse unchanged through `parse_any`, speech manifests strict, schema committed and drift-tested | `[RUN]` 6 new + 27 existing tests | `cargo test -p hyperion-specification --features schema` |
 | Whole workspace, default `stub` | `[RUN]` 320 tests passed, 0 failing suites, at `speech/main` (Windows). pytest not run | `cargo test --workspace` |
 | Everything on a GPU (encoder, codec, kernels, graphs, WER, round-trip WER, RTF, co-hosting regression, arbiter under load) | `[NEEDS-GPU]` not started | parts S2 to S4 |
+
+## Speech run W1/W3 (2026-11-05, later)
+
+| Item | Tag | Evidence |
+|---|---|---|
+| `Input::Embeddings` has NOT landed on `origin/main` (checked 2026-11-05: no `Embeddings` in `helios`; the LLM track works on TP) | fact | `git grep Embeddings origin/main -- helios` empty; decode of STT and TTS stays blocked (E6) |
+| VieNeu: two checkpoints in the pinned repo; target is `update/` (vieneu_v3, speaker embedding, 1 acoustic layer); heads tied; backbone returns hidden rows; G2P required, sea-g2p unusable | VERIFIED by reading code and headers | ADR 0014 amendment 2; requests R1, R3 |
+| Qwen3-ASR compiler: all 708 tensors of the real index mapped, shapes equal to the inventory derived from the real config, decoder emitted as a `ModelConfig`, manifest valid against the family schema and parsed by Rust (golden `specification/fixtures/family/qwen3-asr-1.7b-sm_90.json`) | `[RUN]` 6 pytest + Rust family tests | real config and real shard headers (sha256-pinned, `testdata/models-speech.json`); payload sizes and hashes from the revision's LFS metadata, the shards themselves were not downloaded |
+| Multipart parser (RFC 2046) with limits: 3000 random round trips byte-exact, every truncation, look-alike delimiters, 413/400 limits | `[RUN]` 5 tests (+ 3 unit) | `helios/crates/helios-speech/tests/multipart_random.rs` |
+| Production gate: default profile refuses `production_approved=false`, `dev` loads with `X-Hyperion-Model-Status: provisional` | `[RUN]` 3 tests; not wired to a server yet | `helios-speech/src/profile.rs` |
